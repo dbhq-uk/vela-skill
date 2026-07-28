@@ -4,8 +4,38 @@ namespace Vela.Indexing;
 
 public static class ScipLoader
 {
+    /// <summary>
+    /// Loads a freshly emitted SCIP index into the database. This is a one-shot bulk
+    /// load and requires an empty schema: a database that has just had
+    /// <see cref="Schema.Create"/> called on it, or an equivalently empty one.
+    /// <see cref="Schema.Create"/> uses "CREATE TABLE IF NOT EXISTS" and never
+    /// truncates existing rows, so this is not an incremental update - re-running
+    /// Load against a database that already holds a previous index (the normal
+    /// re-index scenario) is a precondition violation, not a supported code path.
+    /// Incremental updates are explicitly out of scope for now (YAGNI). Callers that
+    /// are re-indexing must delete or recreate the database file before calling
+    /// Load again.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown up front if the document table already contains rows, so the failure
+    /// is intelligible rather than a raw SqliteException from the relative_path
+    /// UNIQUE constraint partway through the load.
+    /// </exception>
     public static void Load(SqliteConnection db, Scip.Index index)
     {
+        using (var checkCmd = db.CreateCommand())
+        {
+            checkCmd.CommandText = "SELECT COUNT(*) FROM document";
+            var existing = Convert.ToInt64(checkCmd.ExecuteScalar());
+            if (existing > 0)
+            {
+                throw new InvalidOperationException(
+                    "The index already contains data; delete the file and re-index. " +
+                    "ScipLoader.Load requires an empty schema and does not support " +
+                    "incremental updates.");
+            }
+        }
+
         using var tx = db.BeginTransaction();
 
         // Commands are prepared once outside the row loop, and each is bound to the
