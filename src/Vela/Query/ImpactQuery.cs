@@ -15,18 +15,33 @@ public static class ImpactQuery
     /// with things that call nothing, and an agent reading a blast radius acts on
     /// every name in it.
     ///
-    /// Innermost means the smallest line span, enc_end_line - start_line. Ties are
-    /// broken here rather than left to the engine, because the same query over the
-    /// same index must answer identically on every run and every machine
-    /// (Constraint 1): first the candidate that starts latest, since of two ranges
-    /// of equal height the later one is the more deeply nested; then the one that
-    /// starts furthest right on that line; then the symbol name; and last the
-    /// occurrence id, which is unique and so always settles it.
+    /// Containment is tested on (line, character) pairs, not on lines. Both halves of
+    /// a stored enclosing range carry a character, and a line-granular test says a
+    /// reference is inside every definition that merely shares a line with it. C#
+    /// permits several members on one line, and generated Razor emits a great deal of
+    /// code that way, so "class C { void A(){ Helper.Do(); } void B(){} }" attributed
+    /// the call in A to B: not noise beside the right answer, but a single confident
+    /// wrong one. A named caller invites no second look, so a line-granular bound is
+    /// the more damaging of the two errors.
+    ///
+    /// Innermost is then the candidate that opens last. Definitions that all contain
+    /// the same point nest, so of two of them the one that opens later is the one
+    /// inside the other, and comparing (start_line, start_char) descending settles
+    /// same-line nesting as well: the method opening at character 10 wins over the
+    /// type opening at character 0. This replaces the line-span key the previous
+    /// version led with, which could not see inside a line at all.
+    ///
+    /// The remaining keys exist so that the same query over the same index answers
+    /// identically on every run and every machine (Constraint 1), rather than however
+    /// SQLite happens to break a tie: the earlier end (enc_end_line, enc_end_char) for
+    /// two ranges that also open at the same place, then the symbol name, then the
+    /// occurrence id, which is unique and so always settles it. Every key is an exact
+    /// stored value; nothing here is scored, ranked or guessed.
     /// </summary>
     public static IReadOnlyList<Hit> Run(SqliteConnection db, string symbolPattern)
         => QueryHelper.SelectBySymbolSuffix(db, """
             WITH target AS (
-                SELECT o.id, o.document_id, o.start_line
+                SELECT o.id, o.document_id, o.start_line, o.start_char
                 FROM occurrence o
                 WHERE o.is_definition = 0
                   AND (o.symbol LIKE '%' || $s ESCAPE '\' OR o.symbol LIKE '%' || $s || '(%' ESCAPE '\')
@@ -39,9 +54,10 @@ public static class ImpactQuery
                        caller.start_char AS start_char,
                        ROW_NUMBER() OVER (
                            PARTITION BY target.id
-                           ORDER BY caller.enc_end_line - caller.start_line ASC,
-                                    caller.start_line DESC,
+                           ORDER BY caller.start_line DESC,
                                     caller.start_char DESC,
+                                    caller.enc_end_line ASC,
+                                    caller.enc_end_char ASC,
                                     caller.symbol ASC,
                                     caller.id ASC
                        ) AS depth
@@ -50,7 +66,13 @@ public static class ImpactQuery
                   ON caller.document_id = target.document_id
                  AND caller.is_definition = 1
                  AND caller.enc_end_line IS NOT NULL
-                 AND target.start_line BETWEEN caller.start_line AND caller.enc_end_line
+                 AND caller.enc_end_char IS NOT NULL
+                 AND (target.start_line > caller.start_line
+                      OR (target.start_line = caller.start_line
+                          AND target.start_char >= caller.start_char))
+                 AND (target.start_line < caller.enc_end_line
+                      OR (target.start_line = caller.enc_end_line
+                          AND target.start_char <= caller.enc_end_char))
             )
             SELECT d.relative_path, ranked.start_line, ranked.start_char, ranked.symbol, 1
             FROM ranked

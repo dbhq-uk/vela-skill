@@ -240,6 +240,75 @@ public class ScipEmitterTests
             o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
     }
 
+    [Fact]
+    public async Task EmitAsync_EmitsOneOccurrencePerReference_AndKeepsDistinctCallSitesApart()
+    {
+        // Collapsing occurrences that agree on position is not enough. A qualified
+        // call is spelled by a chain of nodes that resolve to the same symbol at
+        // different columns: for `Helper.Do()` the invocation and the member access
+        // start at `Helper`, and the identifier `Do` starts seven characters later.
+        // One call therefore arrived as two occurrences, so refs roughly doubled its
+        // count for every qualified call in the codebase, which is the number an
+        // agent uses to size a change.
+        //
+        // The other direction has to hold too: collapsing must be about one reference
+        // spelled by several nodes, never about two references that happen to share a
+        // line, so `Helper.Do() + Helper.Do()` must stay two.
+        var root = SyntheticRoot();
+        var file = Path.Combine(root, "App", "Caller.cs");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 1 "{{Escape(file)}}"
+            public static class Helper
+            {
+                public static int Do() => 0;
+            }
+
+            public class Caller
+            {
+                public int Go()
+                {
+                    Helper.Do();
+                    return Helper.Do() + Helper.Do();
+                }
+            }
+            #line default
+            """);
+
+        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
+
+        var references = occurrences
+            .Where(o => o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0)
+            .Select(o => (Line: o.Range[0], Character: o.Range[1]))
+            .OrderBy(o => o.Line).ThenBy(o => o.Character)
+            .ToList();
+
+        // Three call sites in the source, so three references and no more.
+        Assert.Equal(3, references.Count);
+
+        // Mapped lines are zero-based, and `#line 1` puts the first source line at 0:
+        //
+        //     9:  "        Helper.Do();"
+        //     10: "        return Helper.Do() + Helper.Do();"
+        //
+        // Line 9 is one call, and one hit. The canonical position is the identifier
+        // that names the symbol, `Do` at character 15, not the receiver at 8.
+        Assert.Equal(new[] { (9, 15) }, references.Where(r => r.Line == 9).ToArray());
+
+        // Line 10 is two calls, and two hits at two distinct columns.
+        Assert.Equal(new[] { (10, 22), (10, 36) }, references.Where(r => r.Line == 10).ToArray());
+
+        // The receiver is a different symbol at a different position, and folding a
+        // reference onto its name node must not lose it.
+        Assert.Contains(occurrences, o =>
+            o.Symbol == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0);
+
+        // And the definition is still exactly one, still where it was.
+        Assert.Single(occurrences.Where(o =>
+            o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+    }
+
     private static string SyntheticRoot() =>
         Path.Combine(Path.GetTempPath(), "vela-synth-" + Guid.NewGuid().ToString("N")[..8]);
 

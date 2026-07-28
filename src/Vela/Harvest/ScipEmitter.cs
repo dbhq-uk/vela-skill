@@ -33,12 +33,14 @@ public static class ScipEmitter
         var byOriginalPath = new Dictionary<string, Scip.Document?>(StringComparer.OrdinalIgnoreCase);
 
         // What has already been recorded, per document. The walk below visits every
-        // descendant node, and several nodes can carry the same fact: an invocation
-        // and the member access it is made through begin at the same position and
-        // resolve to the same symbol, so one call site arrives here twice. Emitting
-        // it twice makes refs print a duplicate hit and report a count that is
-        // simply wrong, so the second arrival is dropped at the source rather than
-        // hidden by the query. Keyed by relative path, which is unique per document.
+        // descendant node, and several nodes can carry the same fact: an invocation,
+        // the member access it is made through and the identifier that names the
+        // method are three nodes and one call site. Each is anchored at the name it
+        // spells (see NamingNode), so all three arrive here at one position, and the
+        // second and third arrivals are dropped. Emitting them would make refs print
+        // the same hit repeatedly and report a count that is simply wrong, so it is
+        // stopped at the source rather than hidden by the query. Keyed by relative
+        // path, which is unique per document.
         var emitted = new Dictionary<string, Dictionary<OccurrenceKey, Scip.Occurrence>>(StringComparer.Ordinal);
 
         foreach (var project in solution.Projects)
@@ -64,13 +66,21 @@ public static class ScipEmitter
                     var symbol = declared ?? model.GetSymbolInfo(node, ct).Symbol;
                     if (symbol is null) continue;
 
-                    var location = RazorMapper.MapToOriginal(harvested.Tree, node.SpanStart);
+                    var isDefinition = declared is not null;
+
+                    // Where the occurrence is recorded. A declaration is recorded where
+                    // it begins, because that is where its enclosing range begins too.
+                    // A reference is recorded at the name that spells it, which folds
+                    // the chain of nodes describing one reference into one occurrence:
+                    // see NamingNode.
+                    var anchor = isDefinition ? node : NamingNode(node);
+
+                    var location = RazorMapper.MapToOriginal(harvested.Tree, anchor.SpanStart);
                     if (location is null) continue;
 
                     var doc = GetOrAddDocument(byOriginalPath, index, location.FilePath, projectRoot);
                     if (doc is null) continue;
 
-                    var isDefinition = declared is not null;
                     var name = SymbolIdentity.For(symbol);
 
                     int[]? enclosingRange = null;
@@ -121,6 +131,48 @@ public static class ScipEmitter
 
         return index;
     }
+
+    /// <summary>
+    /// The node that actually names the symbol a reference resolves to.
+    ///
+    /// The walk visits every descendant node, and one reference is spelled by a chain
+    /// of nested nodes that all resolve to the same symbol: `Helper.Do()` is an
+    /// invocation, a member access and the identifier `Do`, three nodes and one call.
+    /// The invocation and the member access begin at the receiver and the identifier
+    /// begins seven characters later, so deduplicating by position cannot see that
+    /// they are the same fact, and refs reported two hits per qualified call. Both
+    /// locations are real, but the count is not, and the count is the number an agent
+    /// uses to size a change.
+    ///
+    /// The rule, deterministically (Constraint 1): a reference is recorded at the
+    /// simple name that spells the symbol. Every node in the chain then resolves to
+    /// the same position and the per-document dedup above folds them into one. It also
+    /// puts a reference on the identifier itself, which is what a reader is looking
+    /// for when they jump to it.
+    ///
+    /// The descent follows the naming spine only, never a receiver, an argument or an
+    /// operand, so two genuinely distinct references stay two: in `Foo(Foo(x))` the
+    /// outer invocation names its own callee and the inner invocation is a separate
+    /// node with a name of its own. Anything not on the spine is its own anchor, and a
+    /// receiver such as `Helper` is a different symbol at a different position and is
+    /// recorded in its own right.
+    /// </summary>
+    private static SyntaxNode NamingNode(SyntaxNode node) => node switch
+    {
+        // The callee of a call: Helper.Do() -> Helper.Do -> Do.
+        InvocationExpressionSyntax invocation => NamingNode(invocation.Expression),
+        // The member of a member access, whether or not it is called: perfume.Status
+        // resolves to Status on both nodes.
+        MemberAccessExpressionSyntax access => access.Name,
+        // The member of a conditional access: perfume?.Status.
+        MemberBindingExpressionSyntax binding => binding.Name,
+        // A dotted type or namespace name: App.Models.Perfume resolves to Perfume on
+        // the qualified name and on its right-hand identifier alike.
+        QualifiedNameSyntax qualified => qualified.Right,
+        // global::App.Models and the like.
+        AliasQualifiedNameSyntax alias => alias.Name,
+        _ => node
+    };
 
     /// <summary>
     /// Creates a document for every distinct source file this tree was generated from:

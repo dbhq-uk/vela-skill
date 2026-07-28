@@ -224,6 +224,81 @@ public class QueryTests
         Assert.Equal(30, hits[0].Line);
     }
 
+    [Fact]
+    public void Impact_AttributesAReferenceToTheMemberItActuallySitsIn_NotAMemberSharingItsLine()
+    {
+        // One line, three definitions and one reference:
+        //
+        //     class C { void A(){ Helper.Do(); } void B(){} }
+        //     0         10       20  |    30        40   |
+        //                            27 (the call)       44
+        //
+        // C spans characters 0..47, A spans 10..34, B spans 35..45, and the call to
+        // Helper.Do sits at character 27, inside A. Testing containment by line alone
+        // makes all three enclose it, and since only the innermost is returned now,
+        // the single answer is B: a named, confident, wrong caller. Naming the wrong
+        // method is worse than naming three, because there is nothing in the output
+        // that invites a second look.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/OneLiner.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.C',     1, 0,  0, 0, 47),
+                    (1, 'App.C.A()', 1, 0, 10, 0, 34),
+                    (1, 'App.C.B()', 1, 0, 35, 0, 45),
+                    (1, 'App.Helper.Do()', 0, 0, 27, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var hits = ImpactQuery.Run(db, "Helper.Do");
+
+        Assert.Single(hits);
+        Assert.Equal("App.C.A()", hits[0].Symbol);
+    }
+
+    [Fact]
+    public void Impact_DoesNotAttributeAReferenceToADefinitionThatHasAlreadyClosed()
+    {
+        // The other bound, on one line again:
+        //
+        //     class C { void A(){} int x = Helper.Do(); }
+        //     0         10         21     |             42
+        //                                 36 (the call)
+        //
+        // A closes at character 20, well before the call at 36, so the only
+        // definition that really contains the call is C. A line-granular upper bound
+        // keeps A a candidate, and A opens later than C, so the innermost rule then
+        // picks the method that had already ended.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/OneLiner.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.C',     1, 0,  0, 0, 43),
+                    (1, 'App.C.A()', 1, 0, 10, 0, 20),
+                    (1, 'App.Helper.Do()', 0, 0, 36, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var hits = ImpactQuery.Run(db, "Helper.Do");
+
+        Assert.Single(hits);
+        Assert.Equal("App.C", hits[0].Symbol);
+    }
+
     // ---- Zero hits have to say why ---------------------------------------
     //
     // Constraint 3 again, in its quieter form. "0 result(s)" reads as an
