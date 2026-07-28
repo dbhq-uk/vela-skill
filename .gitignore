@@ -13,6 +13,7 @@ Thumbs.db
 # .NET
 bin/
 obj/
+nupkg/
 *.user
 
 # vela's own output - never commit an index
