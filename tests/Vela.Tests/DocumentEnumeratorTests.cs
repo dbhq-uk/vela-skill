@@ -37,6 +37,7 @@ public class DocumentEnumeratorTests
             d.GeneratedPath.Contains("razor", StringComparison.OrdinalIgnoreCase));
 
         Assert.Equal(fx.RazorComponentCount, componentsGenerated);
+        Assert.True(fx.RazorComponentCount > 0, "fixture must contain .razor components");
     }
 
     [Fact]
