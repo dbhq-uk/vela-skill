@@ -134,6 +134,32 @@ public class QueryTests
         Assert.Contains("App.Models.Perfume.Status", FindQuery.Run(db, "Status("));
         Assert.Empty(FindQuery.Run(db, "\"unbalanced"));
         Assert.Empty(FindQuery.Run(db, "NOT"));
+        Assert.Empty(FindQuery.Run(db, "..."));
+        Assert.Empty(FindQuery.Run(db, "*"));
+
+        // A double quote inside the pattern is escaped into the phrase rather than
+        // closing it, so it is searched for as text and the tokens either side still
+        // have to appear in that order.
+        Assert.Contains("App.Models.Perfume.Status", FindQuery.Run(db, "Perfume\"Status"));
+        Assert.Empty(FindQuery.Run(db, "Status\"Perfume"));
+    }
+
+    [Fact]
+    public void Find_MatchesATrailingPrefix()
+    {
+        // find is the discovery verb: it is what someone reaches for when they know
+        // part of a name. Quoting the pattern as a phrase and stopping there turned
+        // every partial name into no answer at all, which for a discovery verb is
+        // the same failure as an index that does not contain the code.
+        using var db = SeededDb();
+
+        Assert.Contains("App.Models.Perfume.Status", FindQuery.Run(db, "Perfume.Stat"));
+        Assert.Contains("App.Models.Perfume.Status", FindQuery.Run(db, "Stat"));
+        Assert.Contains("App.Models.Perfume.Name", FindQuery.Run(db, "Nam"));
+
+        // A prefix is still a prefix, not a substring and not a fuzzy match
+        // (Constraint 1): "tatus" is inside "Status" and must not match.
+        Assert.Empty(FindQuery.Run(db, "tatus"));
     }
 
     [Fact]
@@ -163,6 +189,145 @@ public class QueryTests
         Assert.Single(hits);
         Assert.Equal("App.Services.PerfumeService.Publish()", hits[0].Symbol);
         Assert.Equal(30, hits[0].Line);
+    }
+
+    [Fact]
+    public void Impact_ReturnsOnlyTheInnermostEnclosingDefinition()
+    {
+        // Real C# nests: a method sits inside a type, which sits inside a namespace,
+        // and the emitter stores an enclosing range for all three. A reference inside
+        // the method therefore falls inside three enclosing ranges, but only one of
+        // them is the caller. Naming the namespace and the type as callers is noise an
+        // agent acts on, and it is the same class of harm as a wrong answer.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Services/PerfumeService.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Services', 1, 0, 0, 80, 1),
+                    (1, 'App.Services.PerfumeService', 1, 2, 0, 70, 1),
+                    (1, 'App.Services.PerfumeService.Publish()', 1, 30, 4, 40, 5),
+                    (1, 'App.Models.Perfume.Status', 0, 32, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var hits = ImpactQuery.Run(db, "Perfume.Status");
+
+        Assert.Single(hits);
+        Assert.Equal("App.Services.PerfumeService.Publish()", hits[0].Symbol);
+        Assert.Equal(30, hits[0].Line);
+    }
+
+    // ---- Zero hits have to say why ---------------------------------------
+    //
+    // Constraint 3 again, in its quieter form. "0 result(s)" reads as an
+    // authoritative "there is nothing here", and an agent handed that concludes the
+    // symbol is unused, or the file empty, and acts on it. A path typed one
+    // directory out, or a symbol that was never indexed, must not be able to
+    // produce the same sentence as a genuine absence.
+
+    [Fact]
+    public void Outline_OnAPathThatIsNotInTheIndex_SaysTheDocumentIsMissingRatherThanTheSymbols()
+    {
+        using var db = SeededDb();
+        const string path = "Pages/Index.cshtml.cs";   // a real file, one directory out
+
+        var hits = OutlineQuery.Run(db, path);
+        Assert.Empty(hits);
+
+        var output = OutputWriter.Render(hits, IndexHealth.Read(db), OutlineQuery.ExplainEmpty(db, path));
+
+        Assert.Contains("No document with the path", output, StringComparison.Ordinal);
+        Assert.Contains(path, output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Outline_OnAnIndexedPathWithNoDefinitions_SaysTheFileIsIndexedAndEmpty()
+    {
+        // The other half of the distinction: this file really is indexed and really
+        // has nothing in it, and the wording must not blame a missing document.
+        using var db = SeededDb();
+        const string path = "App/Pages/Index.cshtml";
+
+        var explanation = OutlineQuery.ExplainEmpty(db, path);
+
+        Assert.DoesNotContain("No document with the path", explanation, StringComparison.Ordinal);
+        Assert.Contains("is in the index", explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Refs_OnASymbolThatIsNotInTheIndex_SaysTheSymbolIsNotIndexed()
+    {
+        using var db = SeededDb();
+        const string pattern = "Perfume.Statuz";
+
+        var hits = RefsQuery.Run(db, pattern);
+        Assert.Empty(hits);
+
+        var output = OutputWriter.Render(hits, IndexHealth.Read(db), RefsQuery.ExplainEmpty(db, pattern));
+
+        Assert.Contains("No symbol matching", output, StringComparison.Ordinal);
+        Assert.Contains(pattern, output, StringComparison.Ordinal);
+        Assert.Contains("not evidence", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Def_OnASymbolWhoseDefinitionIsNotIndexed_DoesNotClaimTheSymbolIsUnknown()
+    {
+        // A symbol that occurs only as a reference: its definition lives in a
+        // referenced package. "No such symbol" would be false, so def has to say
+        // which of the two absences this is.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Program.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'System.String.IsNullOrEmpty(System.String)', 0, 3, 8, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var explanation = DefQuery.ExplainEmpty(db, "String.IsNullOrEmpty");
+
+        Assert.DoesNotContain("No symbol matching", explanation, StringComparison.Ordinal);
+        Assert.Contains("occur in the index", explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task UnknownPathAndUnknownSymbol_ExplainThemselvesAndStillExitZero()
+    {
+        // The exit code semantics are already fixed by other tests (0 healthy, 1 no
+        // index, 3 degraded), so this is about the message reaching the caller, not
+        // about changing the code.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteIndexFile(indexPath, new HealthRecord(DateTime.UtcNow, null, false, null));
+
+        var outline = await InvokeAsync("outline", "Pages/Index.cshtml.cs", "--solution", solution);
+        Assert.Equal(0, outline.ExitCode);
+        Assert.Contains("No document with the path", outline.Output, StringComparison.Ordinal);
+
+        var refs = await InvokeAsync("refs", "Perfume.Statuz", "--solution", solution);
+        Assert.Equal(0, refs.ExitCode);
+        Assert.Contains("No symbol matching", refs.Output, StringComparison.Ordinal);
     }
 
     [Fact]

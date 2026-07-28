@@ -18,4 +18,12 @@ public static class RefsQuery
                OR o.symbol LIKE '%' || $s || '(%' ESCAPE '\'
             ORDER BY d.relative_path, o.start_line
             """, symbolPattern);
+
+    /// <summary>
+    /// Why refs came back empty. refs matches occurrences directly, so no hits means
+    /// no occurrence of that name was indexed at all, and the honest answer names
+    /// the index rather than the code.
+    /// </summary>
+    public static string ExplainEmpty(SqliteConnection db, string symbolPattern)
+        => QueryHelper.NoSuchSymbol(symbolPattern);
 }

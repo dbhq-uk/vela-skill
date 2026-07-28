@@ -11,4 +11,17 @@ public static class OutlineQuery
             WHERE d.relative_path = $s AND o.is_definition = 1
             ORDER BY o.start_line
             """, relativePath);
+
+    /// <summary>
+    /// Why an outline came back empty. A path typed one directory out prints the
+    /// same "0 result(s)" as a file that genuinely defines nothing, and the first
+    /// reading tells the caller the file is empty when vela has simply never seen
+    /// it (Constraint 3).
+    /// </summary>
+    public static string ExplainEmpty(SqliteConnection db, string relativePath)
+        => QueryHelper.DocumentExists(db, relativePath)
+            ? $"'{relativePath}' is in the index and no definitions are recorded in it."
+            : $"No document with the path '{relativePath}' is in the index, so this says nothing about "
+              + "that file's symbols. Paths are matched exactly and are relative to the solution directory. "
+              + "Check the path, and check the index covers this file.";
 }

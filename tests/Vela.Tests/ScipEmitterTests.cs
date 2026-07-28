@@ -180,6 +180,66 @@ public class ScipEmitterTests
             a => a.Contains("outside-project-root") && a.Contains("External.cshtml"));
     }
 
+    [Fact]
+    public async Task EmitAsync_EmitsEachOccurrenceOnceInADocument()
+    {
+        // The emitter walks every descendant node, and several nodes can resolve to
+        // the same symbol at the same position: an invocation and the member access
+        // it is made through share a SpanStart and a symbol, so a single call site
+        // was being recorded twice. The damage is downstream: refs prints the same
+        // hit twice and reports a count that is wrong in the tool's most used verb,
+        // and an agent counting call sites doubles them.
+        var root = SyntheticRoot();
+        var file = Path.Combine(root, "App", "Caller.cs");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 1 "{{Escape(file)}}"
+            public static class Helper
+            {
+                public static void Do() { }
+            }
+
+            public class Caller
+            {
+                public void Go()
+                {
+                    Helper.Do();
+                }
+            }
+            #line default
+            """);
+
+        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+
+        var duplicates = index.Documents
+            .SelectMany(d => d.Occurrences.Select(o => new
+            {
+                d.RelativePath,
+                o.Symbol,
+                Role = o.SymbolRoles,
+                Range = string.Join(',', o.Range),
+                Enclosing = string.Join(',', o.EnclosingRange)
+            }))
+            .GroupBy(o => o)
+            .Where(g => g.Count() > 1)
+            .Select(g => $"{g.Key.RelativePath} {g.Key.Symbol} role={g.Key.Role} range={g.Key.Range} x{g.Count()}")
+            .ToList();
+
+        Assert.Empty(duplicates);
+
+        // The facts themselves still have to be there. A dedup that dropped the
+        // occurrence altogether would also satisfy the assertion above, and an empty
+        // answer is the reading that does real damage (Constraint 3). Deduplication
+        // is exact: it collapses one position recorded twice, never two positions.
+        var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
+
+        Assert.NotEmpty(occurrences.Where(o =>
+            o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0));
+
+        Assert.Single(occurrences.Where(o =>
+            o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+    }
+
     private static string SyntheticRoot() =>
         Path.Combine(Path.GetTempPath(), "vela-synth-" + Guid.NewGuid().ToString("N")[..8]);
 

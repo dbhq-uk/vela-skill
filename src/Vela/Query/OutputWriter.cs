@@ -11,8 +11,13 @@ public static class OutputWriter
     ///
     /// Hit positions are stored as Roslyn produced them, which is zero-based, and
     /// are converted here to the one-based line and column every editor shows.
+    ///
+    /// <paramref name="emptyExplanation"/> is printed only when there are no hits,
+    /// and says which absence this is: nothing to report, or nothing indexed to
+    /// report on. Callers pass the explanation their verb computed; null keeps the
+    /// bare count, which is the right output when the caller cannot tell.
     /// </summary>
-    public static string Render(IReadOnlyList<Hit> hits, HealthRecord health)
+    public static string Render(IReadOnlyList<Hit> hits, HealthRecord health, string? emptyExplanation = null)
     {
         var sb = new StringBuilder();
 
@@ -29,6 +34,13 @@ public static class OutputWriter
 
         sb.AppendLine();
         sb.AppendLine($"{hits.Count} result(s)");
+
+        // "0 result(s)" on its own reads as an authoritative "there is nothing
+        // here". It is the sentence an agent acts on, so when it is printed it says
+        // what it is an answer to.
+        if (hits.Count == 0 && !string.IsNullOrWhiteSpace(emptyExplanation))
+            sb.AppendLine(emptyExplanation);
+
         return sb.ToString();
     }
 

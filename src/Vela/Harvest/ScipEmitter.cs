@@ -1,6 +1,8 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
+using OccurrenceKey = (string Symbol, int Line, int Character, bool IsDefinition);
+
 namespace Vela.Harvest;
 
 public static class ScipEmitter
@@ -29,6 +31,15 @@ public static class ScipEmitter
         // A null value memoises a path that cannot be a document at all, so the
         // omission is recorded once rather than on every occurrence.
         var byOriginalPath = new Dictionary<string, Scip.Document?>(StringComparer.OrdinalIgnoreCase);
+
+        // What has already been recorded, per document. The walk below visits every
+        // descendant node, and several nodes can carry the same fact: an invocation
+        // and the member access it is made through begin at the same position and
+        // resolve to the same symbol, so one call site arrives here twice. Emitting
+        // it twice makes refs print a duplicate hit and report a count that is
+        // simply wrong, so the second arrival is dropped at the source rather than
+        // hidden by the query. Keyed by relative path, which is unique per document.
+        var emitted = new Dictionary<string, Dictionary<OccurrenceKey, Scip.Occurrence>>(StringComparer.Ordinal);
 
         foreach (var project in solution.Projects)
         {
@@ -60,25 +71,45 @@ public static class ScipEmitter
                     if (doc is null) continue;
 
                     var isDefinition = declared is not null;
+                    var name = SymbolIdentity.For(symbol);
 
-                    var occurrence = new Scip.Occurrence
-                    {
-                        Symbol = SymbolIdentity.For(symbol),
-                        SymbolRoles = isDefinition ? (int)Scip.SymbolRole.Definition : 0
-                    };
-                    occurrence.Range.AddRange(new[] { location.Line, location.Character, location.Character });
-
+                    int[]? enclosingRange = null;
                     if (isDefinition)
                     {
                         var enclosing = RazorMapper.MapToOriginal(harvested.Tree, node.Span.End);
                         if (Encloses(location, enclosing))
-                            occurrence.EnclosingRange.AddRange(new[]
+                            enclosingRange = new[]
                             {
                                 location.Line, location.Character, enclosing!.Line, enclosing.Character
-                            });
+                            };
                     }
 
+                    if (!emitted.TryGetValue(doc.RelativePath, out var seen))
+                        emitted[doc.RelativePath] = seen = new Dictionary<OccurrenceKey, Scip.Occurrence>();
+
+                    var key = new OccurrenceKey(name, location.Line, location.Character, isDefinition);
+                    if (seen.TryGetValue(key, out var already))
+                    {
+                        // The same symbol, at the same position, in the same role: one
+                        // fact reached through a second syntax node. Nothing new is
+                        // recorded, but an enclosing range only the later node could
+                        // map is still an addition rather than a repeat, and dropping
+                        // it would quietly shrink what impact can attribute.
+                        if (already.EnclosingRange.Count == 0 && enclosingRange is not null)
+                            already.EnclosingRange.AddRange(enclosingRange);
+                        continue;
+                    }
+
+                    var occurrence = new Scip.Occurrence
+                    {
+                        Symbol = name,
+                        SymbolRoles = isDefinition ? (int)Scip.SymbolRole.Definition : 0
+                    };
+                    occurrence.Range.AddRange(new[] { location.Line, location.Character, location.Character });
+                    if (enclosingRange is not null) occurrence.EnclosingRange.AddRange(enclosingRange);
+
                     doc.Occurrences.Add(occurrence);
+                    seen[key] = occurrence;
                 }
             }
         }

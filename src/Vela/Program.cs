@@ -43,29 +43,31 @@ public static class Program
         root.Add(BuildFindCommand(solutionOption));
         root.Add(BuildHitCommand("def", "Where a symbol is defined",
             "symbol", "Symbol name, or a suffix of one, for example Perfume.Status.",
-            solutionOption, DefQuery.Run));
+            solutionOption, DefQuery.Run, DefQuery.ExplainEmpty));
         root.Add(BuildHitCommand("refs", "Every usage of a symbol",
             "symbol", "Symbol name, or a suffix of one, for example Perfume.Status.",
-            solutionOption, RefsQuery.Run));
+            solutionOption, RefsQuery.Run, RefsQuery.ExplainEmpty));
         root.Add(BuildHitCommand("outline", "Symbols defined in a file",
             "file", "Path of the file, relative to the solution directory.",
-            solutionOption, OutlineQuery.Run));
+            solutionOption, OutlineQuery.Run, OutlineQuery.ExplainEmpty));
         root.Add(BuildHitCommand("impact", "Callers and blast radius",
             "symbol", "Symbol name, or a suffix of one, for example Perfume.Status.",
-            solutionOption, ImpactQuery.Run));
+            solutionOption, ImpactQuery.Run, ImpactQuery.ExplainEmpty));
 
         return root;
     }
 
     /// <summary>
     /// One of the four verbs that answer with a list of hits. They differ only in
-    /// which query they run and in what their single argument means.
+    /// which query they run, in what their single argument means, and in what an
+    /// empty answer from them can honestly be said to mean.
     /// </summary>
     private static Command BuildHitCommand(
         string name, string description,
         string argumentName, string argumentDescription,
         Option<string> solutionOption,
-        Func<SqliteConnection, string, IReadOnlyList<Hit>> run)
+        Func<SqliteConnection, string, IReadOnlyList<Hit>> run,
+        Func<SqliteConnection, string, string> explainEmpty)
     {
         var argument = new Argument<string>(argumentName) { Description = argumentDescription };
         var command = new Command(name, description) { argument, solutionOption };
@@ -83,7 +85,14 @@ public static class Program
             // the index cannot be vouched for. Swallowing that would report a clean
             // answer from an index nobody has checked.
             var health = IndexHealth.Read(db);
-            output.Write(OutputWriter.Render(run(db, parseResult.GetRequiredValue(argument)), health));
+            var value = parseResult.GetRequiredValue(argument);
+            var hits = run(db, value);
+
+            // The reason is worked out only when there is nothing to report, so the
+            // normal answer costs no extra query.
+            var explanation = hits.Count == 0 ? explainEmpty(db, value) : null;
+
+            output.Write(OutputWriter.Render(hits, health, explanation));
             return health.Degraded ? IndexHealth.ExitDegraded : 0;
         });
 
