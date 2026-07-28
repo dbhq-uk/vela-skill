@@ -1,0 +1,25 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+      - run: dotnet test -v normal
+      # The tests scaffold real projects with `dotnet new webapp` / `dotnet new
+      # blazor` and restore them, so this job needs network access to NuGet on
+      # a cold cache. That is expected: fixture scaffolding is test setup, not
+      # the tool under test.
+      - name: Assert Razor/Blazor generated-document coverage (the regression that would otherwise be silent)
+        run: dotnet test --filter DocumentEnumeratorTests -v normal
