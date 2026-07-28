@@ -63,6 +63,16 @@ public sealed class FixtureSolution : IDisposable
             throw new InvalidOperationException($"{exe} {args} failed: {stderrBuilder}{stdoutBuilder}");
     }
 
+    /// <summary>An empty solution file with no projects added, in a temp directory.</summary>
+    public static FixtureSolution CreateEmptySolution()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "vela-fx-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(root);
+        Run("dotnet", "new sln -n Empty --format sln", root);
+
+        return new FixtureSolution(root, Path.Combine(root, "Empty.sln"));
+    }
+
     public void Dispose()
     {
         try { Directory.Delete(Root, recursive: true); } catch { /* temp dir, best effort */ }

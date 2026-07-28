@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Linq;
 using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.MSBuild;
@@ -36,6 +37,14 @@ public static class WorkspaceLoader
             // failure must still be visible in the result, not swallowed.
             failures.Enqueue(ex.Message);
             solution = workspace.CurrentSolution;
+        }
+
+        if (failures.IsEmpty && !solution.Projects.Any())
+        {
+            // Constraint 3: a solution that loads cleanly but contains zero projects looks
+            // identical to "no references exist for the symbols in it". Record it as a
+            // failure so no caller mistakes an empty index for a clean empty result.
+            failures.Enqueue($"Solution '{solutionPath}' loaded but contained no projects.");
         }
 
         return new LoadResult(solution, failures.ToArray());
