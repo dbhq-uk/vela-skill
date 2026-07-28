@@ -1,0 +1,21 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local agent tooling state
+.serena/
+
+# .NET
+bin/
+obj/
+*.user
+
+# vela's own output - never commit an index
+*.scip
+*.vela.db
+.vela/
