@@ -1,3 +1,15 @@
+// VENDORED FILE, do not edit except to re-vendor.
+//
+//   Upstream: https://raw.githubusercontent.com/scip-code/scip/main/scip.proto
+//   Vendored: 2026-07-28
+//
+// One deviation from upstream: `message Descriptor` is renamed to
+// `SymbolDescriptor`, because the C# protobuf generator emits a `Descriptor`
+// property on every generated class and a message may not share its enclosing
+// type's name. See the note at that message. Field numbers and wire types are
+// untouched, so indexes emitted from this copy stay byte-compatible with
+// upstream SCIP.
+
 // An index contains one or more pieces of information about a given piece of
 // source code or software artifact. Complementary information can be merged
 // together from multiple sources to provide a unified code intelligence
