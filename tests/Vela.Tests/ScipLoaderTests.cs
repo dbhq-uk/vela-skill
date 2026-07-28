@@ -4,6 +4,10 @@ using Vela.Indexing;
 using Vela.Tests.Fixtures;
 using Xunit;
 
+// Two tests in this class point XDG_CACHE_HOME at a fixture directory, and Task 8's
+// CLI tests do the same. An environment variable is process-wide, so those classes
+// share a collection with parallelisation disabled and can never overlap.
+[Collection(EnvironmentSensitive.Name)]
 public class ScipLoaderTests
 {
     [Fact]
@@ -52,12 +56,12 @@ public class ScipLoaderTests
         // Fixtures are created before the environment mutation so only the direct,
         // in-process calls to IndexPaths.ForSolution - a pure function with no I/O -
         // run inside the try block. That keeps the window in which XDG_CACHE_HOME is
-        // overridden as small as possible. No other test in this assembly reads or
-        // sets XDG_CACHE_HOME or calls IndexPaths (grep-checked), so even though
-        // xUnit can run other test classes concurrently with this one, there is
-        // nothing else in the suite that observes this environment variable, and the
-        // previous value is restored in a finally block so a failure here cannot
-        // leak state into any test that runs afterwards.
+        // overridden as small as possible. The other tests in this assembly that
+        // read or set XDG_CACHE_HOME (Task 8's CLI tests) sit in the same
+        // non-parallel collection as this class, so none of them can run while this
+        // override is in place, and the previous value is restored in a finally
+        // block so a failure here cannot leak state into any test that runs
+        // afterwards.
         using var fxA = FixtureSolution.CreateEmptySolution();
         using var fxB = FixtureSolution.CreateEmptySolution();
 
