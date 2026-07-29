@@ -513,20 +513,15 @@ public static class ScipEmitter
     /// Where an index is rooted, and which directories hold code that is nobody's
     /// first-party source.
     ///
-    /// project_root is the git repository root when the solution sits in a working
-    /// tree, and the solution's own directory when it does not. The repository is the
-    /// unit a developer works in: a `repo/src/App.sln` layout is ordinary, and rooting
-    /// the index at `repo/src` stranded everything above it, so a shared view or a
-    /// linked file one directory up could not be a document at all and was reported as
-    /// missing on every query.
+    /// project_root comes from <see cref="Vela.Indexing.ProjectRoot"/>, which is also
+    /// what Staleness watches, so an index cannot cover a file that nothing checks the
+    /// freshness of.
     /// </summary>
     private sealed record Roots(string ProjectRoot, IReadOnlyList<string> ExternalRoots)
     {
-        public static Roots Resolve(string solutionDirectory)
-        {
-            var directory = Path.GetFullPath(solutionDirectory);
-            return new Roots(FindRepositoryRoot(directory) ?? directory, ExternalRootDirectories());
-        }
+        public static Roots Resolve(string solutionDirectory) => new(
+            Vela.Indexing.ProjectRoot.ForSolutionDirectory(solutionDirectory),
+            ExternalRootDirectories());
 
         /// <summary>
         /// Whether a file vela could not place under project_root belongs to somebody
@@ -613,28 +608,6 @@ public static class ScipEmitter
                 : version.FullName;
         }
 
-        /// <summary>
-        /// The root of the git working tree a directory sits in, or null when it sits
-        /// in none.
-        ///
-        /// A walk up the directory chain looking for a `.git` entry, rather than a call
-        /// to git: the walk is deterministic (Constraint 1), needs nothing installed,
-        /// and cannot be affected by a git configuration vela did not set. A `.git`
-        /// DIRECTORY is an ordinary clone; a `.git` FILE holds a `gitdir:` pointer and
-        /// means a linked worktree or a submodule, both of which are working trees
-        /// whose root this is. Only the first, innermost one counts, so a submodule is
-        /// rooted at itself rather than at the repository containing it.
-        /// </summary>
-        private static string? FindRepositoryRoot(string directory)
-        {
-            for (var current = new DirectoryInfo(directory); current is not null; current = current.Parent)
-            {
-                var git = Path.Combine(current.FullName, ".git");
-                if (Directory.Exists(git) || File.Exists(git)) return current.FullName;
-            }
-
-            return null;
-        }
     }
 
     private static string LanguageOf(string path) => Path.GetExtension(path).ToLowerInvariant() switch

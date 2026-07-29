@@ -11,9 +11,17 @@ namespace Vela.Indexing;
 ///
 /// This is the cheap, honest mitigation and nothing more. It is not incremental
 /// reindex, and it does not try to work out whether the specific symbol you asked about
-/// was affected: it compares timestamps, and if anything under the solution directory is
-/// newer than the index, it says so and lets the existing banner and exit code do the
-/// rest. No file is opened and nothing is hashed, so the cost is a directory walk.
+/// was affected: it compares timestamps, and if anything under the root the index was
+/// built against is newer than the index, it says so and lets the existing banner and
+/// exit code do the rest. No file is opened and nothing is hashed, so the cost is a
+/// directory walk.
+///
+/// That root is <see cref="ProjectRoot"/>, the same one ScipEmitter rooted the index at,
+/// and it is passed in rather than worked out here so there is one definition of it. It
+/// used to be the solution directory, which stopped matching the index the moment the
+/// index widened to the repository root: in a `repo/src/App.sln` layout every file under
+/// `repo/tests/` was in the index and none of it was watched, so editing a test left
+/// every verb answering exit 0 at line numbers that had moved.
 /// </summary>
 public static class Staleness
 {
@@ -43,10 +51,15 @@ public static class Staleness
     /// The health record, degraded if the tree is newer than the index. Any existing
     /// degradation is kept: staleness is an additional reason, never a replacement.
     /// </summary>
-    public static HealthRecord Check(HealthRecord health, string solutionPath, string? indexPath = null)
+    /// <param name="projectRoot">
+    /// The root the index was built against, from <see cref="ProjectRoot"/>. Every
+    /// document in the index lives under it, and every file under it can become one, so
+    /// this is the walk that watches exactly what the index covers and no more.
+    /// </param>
+    public static HealthRecord Check(HealthRecord health, string projectRoot, string? indexPath = null)
     {
-        var solutionDirectory = Path.GetDirectoryName(Path.GetFullPath(solutionPath));
-        if (string.IsNullOrEmpty(solutionDirectory) || !Directory.Exists(solutionDirectory))
+        var root = string.IsNullOrEmpty(projectRoot) ? null : Path.GetFullPath(projectRoot);
+        if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
             return health;
 
         var indexDirectory = string.IsNullOrEmpty(indexPath)
@@ -54,11 +67,13 @@ public static class Staleness
             : Path.GetDirectoryName(Path.GetFullPath(indexPath));
 
         var (changedCount, newestPath, newestTime) =
-            NewestSourceChangeAfter(solutionDirectory, health.BuiltAtUtc, indexDirectory);
+            NewestSourceChangeAfter(root, health.BuiltAtUtc, indexDirectory);
 
         if (changedCount == 0) return health;
 
-        var relative = Path.GetRelativePath(solutionDirectory, newestPath!).Replace('\\', '/');
+        // Relative to the same root every path in an answer is relative to, so the file
+        // named here can be handed straight back to outline.
+        var relative = Path.GetRelativePath(root, newestPath!).Replace('\\', '/');
 
         var detail =
             $"stale index: {changedCount} source file(s) changed after the index was built at "

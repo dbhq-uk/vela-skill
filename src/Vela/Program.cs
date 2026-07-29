@@ -361,16 +361,21 @@ public static class Program
     /// merely out of date reaches the caller through exactly the same banner and exit
     /// code as one that failed to build.
     ///
-    /// The walk is best effort by design. If the solution directory cannot be read at
-    /// all, the record is returned unchanged rather than thrown from: failing a query
-    /// because the freshness check could not run would be a worse outcome than the
-    /// answer it was checking.
+    /// The walk starts at the root the index was built against, resolved by the same
+    /// ProjectRoot the emitter used, so the files that are watched are exactly the files
+    /// that are indexed. Walking the solution directory instead left everything above it
+    /// indexed and unwatched.
+    ///
+    /// The walk is best effort by design. If the root cannot be read at all, the record
+    /// is returned unchanged rather than thrown from: failing a query because the
+    /// freshness check could not run would be a worse outcome than the answer it was
+    /// checking.
     /// </summary>
     private static HealthRecord CheckStaleness(HealthRecord health, string solution)
     {
         try
         {
-            return Staleness.Check(health, solution, IndexPaths.ForSolution(solution));
+            return Staleness.Check(health, ProjectRoot.ForSolution(solution), IndexPaths.ForSolution(solution));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {

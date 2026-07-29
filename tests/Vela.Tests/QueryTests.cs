@@ -1175,6 +1175,57 @@ public class QueryTests
     }
 
     [Fact]
+    public async Task AnEditAboveTheSolutionDirectoryButInsideTheRepository_ReportsDegraded()
+    {
+        // The index covers the repository root, so a `repo/src/App.sln` layout indexes
+        // `repo/tests/` too. Staleness walked the SOLUTION directory, which is
+        // `repo/src`, so editing a test file left every verb answering exit 0 with no
+        // banner, at line numbers that had moved. The exposure did not exist before the
+        // root widened, because those files could not previously be in the index at all.
+        // The watch has to cover exactly what the index covers, or Constraint 3 is
+        // breached by the half of the repository nobody is watching.
+        using var repo = new TempDirectory();
+        Directory.CreateDirectory(Path.Combine(repo.Path, ".git"));
+
+        var solutionDirectory = Path.Combine(repo.Path, "src");
+        Directory.CreateDirectory(solutionDirectory);
+        var solution = Path.Combine(solutionDirectory, "App.sln");
+        File.WriteAllText(solution, "");
+
+        var test = Path.Combine(repo.Path, "tests", "AppTests", "PerfumeTests.cs");
+        Directory.CreateDirectory(Path.GetDirectoryName(test)!);
+        File.WriteAllText(test, "public class PerfumeTests { }");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+
+        var builtAt = DateTime.UtcNow;
+        WriteIndexFile(indexPath, new HealthRecord(builtAt, null, false, null));
+
+        // Nothing has changed since the build, so nothing is claimed. This also pins
+        // that widening the walk did not make every query stale by default.
+        var fresh = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+        Assert.Equal(0, fresh.ExitCode);
+        Assert.DoesNotContain("INCOMPLETE", fresh.Output, StringComparison.Ordinal);
+
+        File.SetLastWriteTimeUtc(test, builtAt.AddMinutes(5));
+
+        var stale = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+        Assert.Equal(IndexHealth.ExitDegraded, stale.ExitCode);
+        Assert.Contains("INCOMPLETE", stale.Output, StringComparison.Ordinal);
+        Assert.Contains("stale", stale.Output, StringComparison.OrdinalIgnoreCase);
+
+        // Named relative to the root the index was built against, which is the same
+        // root every path in an answer is relative to. A '../tests/...' here would be a
+        // path the reader cannot hand back to outline.
+        Assert.Contains("tests/AppTests/PerfumeTests.cs", stale.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("../tests", stale.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task MissingIndex_ExitsNonZeroWithoutKillingTheProcess()
     {
         // The failure path here must return an exit code, never call
