@@ -477,6 +477,17 @@ public class QueryTests
 
     private const string CountOfGuids = "System.Collections.Generic.List<System.Guid>.Count";
 
+    // The real pair, from the ScentVerdict index: two genuinely distinct non-generic
+    // overloads of one method whose signatures differ only inside a type argument list,
+    // so no pattern selects between them and the tally merges them into one row.
+    private const string SetActionReturningInt =
+        "System.CommandLine.Command.SetAction(System.Func<System.CommandLine.ParseResult, "
+        + "System.Threading.CancellationToken, System.Threading.Tasks.Task<System.Int32>>)";
+
+    private const string SetActionReturningTask =
+        "System.CommandLine.Command.SetAction(System.Func<System.CommandLine.ParseResult, "
+        + "System.Threading.CancellationToken, System.Threading.Tasks.Task>)";
+
     private const string LessThan = "App.Models.Money.operator <(App.Models.Money, App.Models.Note)";
 
     private const string GreaterThan = "App.Models.Money.operator >(App.Models.Money, App.Models.Note)";
@@ -889,6 +900,47 @@ public class QueryTests
         Assert.Equal("App.Auditing.AuditRunner.RunWithAuditAsync(System.String)", row.Symbol);
         Assert.Equal(33, row.Count);
         Assert.Equal(2, row.Constructions);
+    }
+
+    [Fact]
+    public void RenderOccurrences_OnOneRowThatMergedSeveralStoredNames_SaysSo()
+    {
+        // The real pair from the ScentVerdict index. Two genuinely distinct overloads
+        // that merge because they differ only inside a type argument list, and no
+        // pattern selects between them. Before this, `refs SetAction` answered 274
+        // results and printed nothing at all, which is the silence the block exists to
+        // prevent.
+        var tally = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally(SetActionReturningInt, 200),
+            new SymbolTally(SetActionReturningTask, 74)
+        });
+
+        var row = Assert.Single(tally);
+        Assert.Equal(2, row.Constructions);
+
+        var block = Ambiguity.RenderOccurrences("SetAction", tally);
+
+        Assert.Contains("2 stored names", block);
+        Assert.Contains("type arguments", block);
+        // It must not ask the reader to narrow, because no pattern can.
+        Assert.DoesNotContain("give more of its name", block);
+    }
+
+    [Fact]
+    public void RenderOccurrences_OnOneRowFromOneStoredName_StaysQuiet()
+    {
+        // The no-crying-wolf half. One symbol, one stored name, nothing to disclose.
+        var tally = Ambiguity.Of(new[]
+        {
+            new Hit("App/Models/Perfume.cs", 10, 4, "App.Models.Perfume.Status", true),
+            new Hit("App/Pages/Index.cshtml", 7, 12, "App.Models.Perfume.Status", false)
+        });
+
+        var row = Assert.Single(tally);
+        Assert.Equal(1, row.Constructions);
+
+        Assert.Equal(string.Empty, Ambiguity.RenderOccurrences("Perfume.Status", tally));
     }
 
     [Fact]

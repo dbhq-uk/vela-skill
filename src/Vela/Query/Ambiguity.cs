@@ -182,11 +182,42 @@ public static class Ambiguity
             : $"{tally.Count} distinct symbols";
     }
 
+    /// <summary>
+    /// The one thing a single-row tally still has to disclose.
+    ///
+    /// The merge key is <see cref="QueryHelper.WithoutTypeArguments"/>, so two stored
+    /// names differing only inside a type argument list share a row. Usually that row is
+    /// one generic constructed several times and there is nothing to say. But on the
+    /// real solution `refs SetAction` answers 274 results across two genuinely distinct
+    /// overloads of Command.SetAction, one taking Func&lt;..., Task&lt;int&gt;&gt; and
+    /// one Func&lt;..., Task&gt;, and merging them left the answer saying nothing at all.
+    ///
+    /// Silence there is the failure this whole block exists to prevent, so a single row
+    /// still reports how many stored names it stands for. It is one sentence and it asks
+    /// for nothing, because no pattern selects between them: that is why they merged.
+    /// It stays quiet in the ordinary case, where the row is exactly one stored name.
+    /// </summary>
+    private static string MergedNames(IReadOnlyList<SymbolTally> tally)
+    {
+        if (tally.Count != 1 || tally[0].Constructions < 2) return string.Empty;
+
+        var sb = new StringBuilder();
+        sb.AppendLine();
+        sb.AppendLine(
+            $"These results are all of {tally[0].Symbol}, but they cover "
+          + $"{tally[0].Constructions} stored names that differ only inside their type arguments. "
+          + "That is either one generic used several ways or overloads no pattern can tell apart, "
+          + "so vela reports them as one symbol.");
+        return sb.ToString();
+    }
+
     private static string Render(IReadOnlyList<SymbolTally> tally, string lead)
     {
-        // One symbol is not ambiguous. This is the no-crying-wolf rule, and it matters
-        // as much as the notice itself.
-        if (tally.Count < 2) return string.Empty;
+        // One symbol is not ambiguous, and a notice on every answer is a notice nobody
+        // reads. This is the no-crying-wolf rule, and it matters as much as the notice
+        // itself. The one exception is a row that merged several stored names, which
+        // would otherwise disclose nothing at all.
+        if (tally.Count < 2) return MergedNames(tally);
 
         var sb = new StringBuilder();
         sb.AppendLine();
