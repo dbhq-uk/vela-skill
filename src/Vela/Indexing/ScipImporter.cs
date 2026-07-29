@@ -18,6 +18,11 @@ namespace Vela.Indexing;
 /// the tree vela is indexing, and a document whose path is already taken. Both degrade
 /// the index and both name the path, because a count with nothing to check it against is
 /// the thing external_document was added to fix.
+///
+/// This list becomes the health record's detail, which is the banner above every answer
+/// and is summarised past ten entries, so it is lossy by design. The outside-the-tree
+/// paths are therefore ALSO written to external_document, where they can be read back in
+/// full - see <see cref="ExternalDocuments"/>.
 /// </param>
 /// <param name="UnnamedOccurrences">
 /// Occurrences the source index gave no symbol at all. They are stored, so the totals
@@ -215,6 +220,7 @@ public static class ScipImporter
         private readonly SqliteCommand insertDoc;
         private readonly SqliteCommand insertOcc;
         private readonly SqliteCommand insertFts;
+        private readonly SqliteCommand insertExternal;
         private readonly HashSet<string> seenSymbols = new(StringComparer.Ordinal);
         private readonly HashSet<string> takenPaths = new(StringComparer.Ordinal);
         private readonly List<string> problems = new();
@@ -260,6 +266,13 @@ public static class ScipImporter
             insertFts.Transaction = tx;
             insertFts.CommandText = "INSERT INTO symbol_fts(symbol) VALUES ($s)";
             insertFts.Parameters.Add("$s", SqliteType.Text);
+
+            insertExternal = db.CreateCommand();
+            insertExternal.Transaction = tx;
+            insertExternal.CommandText =
+                "INSERT INTO external_document(path) SELECT $p "
+                + "WHERE NOT EXISTS (SELECT 1 FROM external_document WHERE path = $p)";
+            insertExternal.Parameters.Add("$p", SqliteType.Text);
 
             // Every path already in the database, so a collision with the C# index this
             // is being added beside is caught here rather than as a raw SqliteException
@@ -322,8 +335,17 @@ public static class ScipImporter
                 // Constraint 3: not dropped in silence. The file is outside the tree
                 // this index covers, so it cannot have a relative_path at all -
                 // scip.proto forbids '..' in one - and its code is genuinely absent.
-                problems.Add(OutsideProjectRootPrefix
-                             + Path.Combine(foreignRoot, document.RelativePath).Replace('\\', '/'));
+                //
+                // Recorded twice, because the two records answer different questions and
+                // only one of them survives. The problem list becomes the health record's
+                // detail, which is the banner above every answer and is summarised past
+                // ten entries, so the eleventh path was "(+N more)" and then nothing at
+                // all. external_document is the table vela already has for the files an
+                // index deliberately does not hold, named rather than counted, and it is
+                // what `vela index --stats` prints.
+                var outside = Path.Combine(foreignRoot, document.RelativePath).Replace('\\', '/');
+                problems.Add(OutsideProjectRootPrefix + outside);
+                RecordExternal(outside);
                 return;
             }
 
@@ -410,6 +432,21 @@ public static class ScipImporter
             }
         }
 
+        /// <summary>
+        /// Notes a file this import could not place, in the same transaction as
+        /// everything else, so a rollback takes the note with it.
+        ///
+        /// The insert is idempotent, which matters because an import can be run again.
+        /// The health contribution is replaced by source; a list that grew a second copy
+        /// of every path on every re-import would be the same unbounded-growth defect in
+        /// a new place.
+        /// </summary>
+        private void RecordExternal(string path)
+        {
+            insertExternal.Parameters["$p"].Value = path;
+            insertExternal.ExecuteNonQuery();
+        }
+
         public ImportReport Commit()
         {
             tx.Commit();
@@ -424,6 +461,7 @@ public static class ScipImporter
             insertDoc.Dispose();
             insertOcc.Dispose();
             insertFts.Dispose();
+            insertExternal.Dispose();
             tx.Dispose();
         }
 

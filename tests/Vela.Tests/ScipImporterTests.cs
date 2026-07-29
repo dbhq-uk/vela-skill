@@ -483,6 +483,44 @@ public class ScipImporterTests
         Assert.True(report.Degraded);
     }
 
+    [Fact]
+    public void Import_RecordsEveryPathItCannotRebaseWhereItCanBeReadBackAndNotOnlyInTheBanner()
+    {
+        // These paths used to land only in ImportReport.Problems, which becomes the
+        // health record's detail, which Program.Summarise truncates at ten entries: past
+        // the tenth they became "(+N more)" and no longer existed anywhere. The brief
+        // said record, and a truncated string is not a record. vela already has a table
+        // for exactly this fact - the files an index deliberately does not hold, named
+        // rather than counted - and `vela index --stats` already prints it.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/elsewhere/").AbsoluteUri }
+        };
+
+        // Twelve, so the truncation that lost them is in play.
+        for (var i = 0; i < 12; i++)
+            index.Documents.Add(new Scip.Document { RelativePath = $"Shared/Thing{i}.go", Language = "go" });
+
+        using var db = Fresh();
+        var report = ScipImporter.Import(db, index, "/repo");
+
+        // Still a gap in the index, still degraded, still named in the report: this adds
+        // a record, it does not soften the verdict.
+        Assert.True(report.Degraded);
+        Assert.Equal(12, report.Problems.Count);
+        Assert.Equal(0, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM document")));
+
+        var external = ExternalDocuments.Read(db);
+        Assert.Equal(12, external.Count);
+        Assert.Contains("/elsewhere/Shared/Thing11.go", external);
+
+        // And the same .scip imported again does not record them twice. The health
+        // contribution is replaced by source; this list would otherwise grow without
+        // bound in exactly the way that record did.
+        ScipImporter.Import(db, index, "/repo");
+        Assert.Equal(12, ExternalDocuments.Read(db).Count);
+    }
+
     // ================================================================================
     // What an import is, as opposed to a load
     // ================================================================================

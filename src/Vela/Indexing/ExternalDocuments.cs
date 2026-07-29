@@ -3,9 +3,15 @@ using Microsoft.Data.Sqlite;
 namespace Vela.Indexing;
 
 /// <summary>
-/// The files an index deliberately does not hold: source contributed from the NuGet
-/// package cache or from the .NET installation, which cannot sit under project_root and
-/// is nobody's first-party code.
+/// The files an index does not hold, named rather than counted: source contributed from
+/// the NuGet package cache or from the .NET installation, which cannot sit under
+/// project_root and is nobody's first-party code, and any document of an imported .scip
+/// whose file lies outside the tree vela is indexing.
+///
+/// Whether an absence here is a GAP is recorded elsewhere. The package cache is not one;
+/// an imported document outside the tree is, and it degrades the index through
+/// import_health as well as being named here. <see cref="ScipImporter"/> writes those
+/// rows itself, inside the import's own transaction, so a rollback takes them with it.
 ///
 /// Stored in the index rather than left in the emitted SCIP index's tool arguments,
 /// which are never persisted and never written to disk. `vela index` printed a count and

@@ -58,7 +58,7 @@ public static class IndexStatistics
         if (stats.ExternalDocuments.Count > 0)
         {
             sb.AppendLine($"external documents   : {stats.ExternalDocuments.Count}   "
-                        + "(from a NuGet package or the .NET SDK, not indexed)");
+                        + "(not indexed: from a NuGet package, the .NET SDK, or outside this tree)");
             foreach (var path in stats.ExternalDocuments) sb.AppendLine("  " + path);
         }
 

@@ -137,12 +137,23 @@ public static class Schema
 
             CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(symbol);
 
-            -- The files this index deliberately does not hold: source contributed from
-            -- the NuGet package cache or from the .NET installation, which cannot sit
-            -- under project_root and is nobody's first-party code. Not a gap, so not in
-            -- index_health, but recorded rather than counted and discarded: `vela index`
-            -- printed a number and threw the paths away, leaving nothing to check if the
-            -- classification was ever wrong about a file.
+            -- The files this index does not hold, named rather than counted. Two kinds
+            -- reach it, and whether their absence is a GAP is recorded elsewhere:
+            --
+            --   `vela index`: source contributed from the NuGet package cache or from
+            --   the .NET installation, which cannot sit under project_root and is
+            --   nobody's first-party code. Not a gap, so deliberately not in
+            --   index_health.
+            --
+            --   `vela import`: a document of an imported .scip whose file lies outside
+            --   the tree vela is indexing. That IS a gap, and it degrades the index
+            --   through import_health as well as being named here.
+            --
+            -- Recorded rather than counted and discarded, in both cases for the same
+            -- reason: `vela index` printed a number and threw the paths away, and the
+            -- import put them only in the health detail, which is summarised past ten
+            -- entries. Both left nothing to check if the classification was ever wrong
+            -- about a file, and a truncated string is not a record.
             CREATE TABLE IF NOT EXISTS external_document (
                 path TEXT NOT NULL
             );
