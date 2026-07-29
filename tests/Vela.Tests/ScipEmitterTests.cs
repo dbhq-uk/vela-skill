@@ -371,6 +371,79 @@ public class ScipEmitterTests
         Assert.Equal("PerfumeService.Publish(Perfume)", hit.Symbol);
     }
 
+    [Fact]
+    public async Task EmitAsync_GivesLocalsAndParametersInDifferentMethodsDifferentIdentities()
+    {
+        // SymbolIdentity.For used one display format for everything, and that format
+        // has nothing to qualify a local with: an ILocalSymbol rendered as the bare
+        // name `count`, and an IParameterSymbol as `System.Int32 count`. Two methods
+        // each declaring `int count` therefore collapsed into ONE symbol, so
+        // `refs count` returned every local of that name in the solution as though
+        // they were one variable, and the count - the number an agent uses to size a
+        // change - was the sum of unrelated things.
+        //
+        // The identity format for types and members is a deliberate, documented
+        // decision that other behaviour depends on, so it is untouched. Only the kinds
+        // that have no containing-type qualification of their own gain one.
+        var root = SyntheticRoot();
+        var file = Path.Combine(root, "App", "Counter.cs");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 1 "{{Escape(file)}}"
+            public class Counter
+            {
+                public int First()
+                {
+                    int count = 1;
+                    return count;
+                }
+
+                public int Second()
+                {
+                    int count = 2;
+                    return count;
+                }
+
+                public int Third(int count) => count;
+            }
+            #line default
+            """);
+
+        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
+
+        var locals = occurrences
+            .Where(o => (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0
+                        && o.Symbol.EndsWith("count", StringComparison.Ordinal))
+            .Select(o => o.Symbol)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToList();
+
+        // Two locals and one parameter, all called count, all distinct.
+        Assert.Equal(3, locals.Count);
+        Assert.Contains("Counter.First().count", locals);
+        Assert.Contains("Counter.Second().count", locals);
+        Assert.Contains("Counter.Third(System.Int32).count", locals);
+
+        // Types and members keep exactly the identity format they had.
+        var symbols = occurrences.Select(o => o.Symbol).ToHashSet(StringComparer.Ordinal);
+        Assert.Contains("Counter", symbols);
+        Assert.Contains("Counter.First()", symbols);
+        Assert.Contains("Counter.Third(System.Int32)", symbols);
+
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, index);
+
+        // The consequence that matters: asking about one method's local no longer
+        // answers with another method's.
+        var first = RefsQuery.Run(db, "First().count");
+        Assert.NotEmpty(first);
+        Assert.All(first, h => Assert.Equal("Counter.First().count", h.Symbol));
+    }
+
     private static string SyntheticRoot() =>
         Path.Combine(Path.GetTempPath(), "vela-synth-" + Guid.NewGuid().ToString("N")[..8]);
 

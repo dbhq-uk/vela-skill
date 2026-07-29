@@ -334,5 +334,44 @@ public static class SymbolIdentity
         memberOptions: SymbolDisplayMemberOptions.IncludeContainingType | SymbolDisplayMemberOptions.IncludeParameters,
         parameterOptions: SymbolDisplayParameterOptions.IncludeType);
 
-    public static string For(ISymbol symbol) => symbol.ToDisplayString(Format);
+    /// <summary>
+    /// The identity of a symbol, as stored in the index and as typed by a user.
+    ///
+    /// The format above is a deliberate, documented decision for types and members and
+    /// is not changed here: a namespace, type, method, property, event or field renders
+    /// exactly as it always did, and the queries, the tests and the output all depend
+    /// on that.
+    ///
+    /// It has nothing to say about the kinds that are scoped to a body, though.
+    /// ToDisplayString on an ILocalSymbol yields the bare name `status`, and on an
+    /// IParameterSymbol `System.Int32 count`, neither of which mentions where the thing
+    /// is declared. Two methods each declaring `int count` therefore collapsed into one
+    /// symbol, and `refs count` answered with every local of that name in the solution
+    /// as though they were a single variable - a count that is not merely imprecise but
+    /// describes something that does not exist.
+    ///
+    /// So those kinds, and only those kinds, are qualified by the symbol that contains
+    /// them, which for a local or a parameter is the method and for a type parameter is
+    /// the type or method it belongs to. The result reads the way the rest of the
+    /// format does: Counter.First().count.
+    /// </summary>
+    public static string For(ISymbol symbol) => symbol.Kind switch
+    {
+        SymbolKind.Local or SymbolKind.Parameter or SymbolKind.RangeVariable or SymbolKind.Label
+            => QualifiedByContainer(symbol),
+        _ => symbol.ToDisplayString(Format)
+    };
+
+    private static string QualifiedByContainer(ISymbol symbol)
+    {
+        var container = symbol.ContainingSymbol;
+
+        // A local in a top level statement, or in any other context Roslyn gives no
+        // containing symbol for, keeps its bare name. That is the identity it already
+        // had, so nothing is made worse; there is simply nothing to qualify it with.
+        if (container is null) return symbol.Name;
+
+        var prefix = container.ToDisplayString(Format);
+        return string.IsNullOrEmpty(prefix) ? symbol.Name : prefix + "." + symbol.Name;
+    }
 }
