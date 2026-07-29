@@ -473,6 +473,10 @@ public class QueryTests
     private const string DictionaryOfLists =
         "System.Collections.Generic.Dictionary<System.String, System.Collections.Generic.List<System.Int32>>";
 
+    private const string CountOfStrings = "System.Collections.Generic.List<System.String>.Count";
+
+    private const string CountOfGuids = "System.Collections.Generic.List<System.Guid>.Count";
+
     private const string LessThan = "App.Models.Money.operator <(App.Models.Money, App.Models.Note)";
 
     private const string GreaterThan = "App.Models.Money.operator >(App.Models.Money, App.Models.Note)";
@@ -707,74 +711,152 @@ public class QueryTests
     // ---- The ambiguity tally does not mistake constructions for symbols --------
     //
     // Recall for a generic symbol comes from matching a bare name through its type
-    // argument list (above), and the ambiguity block tallies its answer by the exact
+    // argument list (above), and the ambiguity block tallied its answer by the exact
     // stored name. Put those two together and every construction of one generic type
     // becomes its own row: on the real solution `refs ILogger` reported "271 distinct
     // symbols" for 271 constructions of the one type ILogger<T>, with a "(+261 further
     // symbol(s))" tail and a narrowing suggestion no trailing run of segments could
     // satisfy, because there was no second symbol to narrow away from.
     //
-    // So the tally is grouped a second time, by the stored name with only the
-    // declaring segment's own type argument list removed and any parameter list left
-    // exactly as it is. That merges ILogger<A> with ILogger<B>, and merges the two
-    // instantiations of one generic method, while Publish(Perfume) and Publish(Note)
-    // - genuine overloads sharing a name - stay apart, because neither carries a type
-    // argument list of its own to remove.
+    // Removing only the DECLARING segment's type arguments fixed ILogger and left the
+    // same failure everywhere else. A member of a constructed generic keeps its
+    // arguments in an EARLIER segment, so on the real index `refs Count` still reported
+    // "2573 result(s) above span 556 distinct symbols", 332 of which were
+    // List<System.String>.Count and 224 List<System.Guid>.Count, and it still printed
+    // the narrowing sentence with no example, because no candidate could resolve. 390
+    // such keys are in that index.
+    //
+    // So the tally is grouped by QueryHelper.WithoutTypeArguments: the same reading of
+    // a name that QueryHelper.Matches uses, so the tally can distinguish exactly what
+    // the matcher can distinguish and a suggestion it prints is one that resolves.
+    // Publish(Perfume) and Publish(Note) - genuine overloads sharing a name - stay
+    // apart, because the parameter list survives and theirs differ.
 
     [Fact]
-    public void WithoutDeclaringTypeArguments_StripsOnlyTheOwnTypeArgumentsOfAGenericTypeOrMethod()
+    public void Ordered_GroupsByTheSameReadingOfANameThatTheMatcherUses()
     {
-        Assert.Equal("App.Logging.ILogger", QueryHelper.WithoutDeclaringTypeArguments(LoggerOfService));
-        Assert.Equal("App.Logging.ILogger", QueryHelper.WithoutDeclaringTypeArguments(LoggerOfList));
+        // The grouping key, asserted directly. Every row of a tally is one of these,
+        // and HowToNarrowIt then feeds them back through QueryHelper.Matches, so if
+        // the two ever read a name differently the block could name a pattern that
+        // does not resolve - which is exactly the bug this replaced.
+        Assert.Equal("App.Logging.ILogger", QueryHelper.WithoutTypeArguments(LoggerOfService));
+        Assert.Equal("App.Logging.ILogger", QueryHelper.WithoutTypeArguments(LoggerOfList));
 
         // A tuple type argument puts a comma and a matched pair of parentheses inside
-        // the angle brackets; the parameter list after them is untouched either way.
+        // the angle brackets; the parameter list after them survives either way.
         Assert.Equal(
             "App.Auditing.AuditRunner.RunWithAuditAsync(System.String)",
-            QueryHelper.WithoutDeclaringTypeArguments(RunWithAudit));
+            QueryHelper.WithoutTypeArguments(RunWithAudit));
         Assert.Equal(
             "App.Auditing.AuditRunner.RunWithAuditAsync(System.String)",
-            QueryHelper.WithoutDeclaringTypeArguments(RunWithAuditTuple));
+            QueryHelper.WithoutTypeArguments(RunWithAuditTuple));
     }
 
     [Fact]
-    public void WithoutDeclaringTypeArguments_LeavesTheParameterListVerbatim_EvenAGenericOne()
+    public void Ordered_MergesMembersOfConstructedGenericsIntoOneRow()
     {
-        // The parameter list's own generic argument is not the declaring segment's, so
-        // it stays exactly as stored - the whole point being that merging constructions
-        // of a type or method must never merge genuinely different signatures.
-        const string method =
+        // The case the narrow rule missed, in the shape it has on the real index:
+        // List<T>.Count is one member of one type, and 556 rows of `refs Count` were
+        // constructions of a handful of these.
+        var merged = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally(CountOfStrings, 332),
+            new SymbolTally(CountOfGuids, 224)
+        });
+
+        var row = Assert.Single(merged);
+        Assert.Equal("System.Collections.Generic.List.Count", row.Symbol);
+        Assert.Equal(556, row.Count);
+        Assert.Equal(2, row.Constructions);
+    }
+
+    [Fact]
+    public void Ordered_MergesOverloadsThatDifferOnlyInsideATypeArgumentList()
+    {
+        // The price of grouping by what the matcher reads, stated rather than hidden.
+        // Find(List<Perfume>) and Find(List<Note>) are two overloads, and they merge,
+        // because the tally can only tell apart what a pattern can select between and
+        // no pattern selects one of these. The construction count keeps the number, so
+        // nothing is silently lost; an overload whose parameter list differs outside a
+        // type argument stays its own row, which is the ordinary case.
+        const string findPerfumes =
             "App.Services.PerfumeRepository.Find(System.Collections.Generic.List<App.Models.Perfume>)";
-        Assert.Equal(method, QueryHelper.WithoutDeclaringTypeArguments(method));
+        const string findNotes =
+            "App.Services.PerfumeRepository.Find(System.Collections.Generic.List<App.Models.Note>)";
+        const string findOne = "App.Services.PerfumeRepository.Find(App.Models.Note)";
+
+        var merged = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally(findPerfumes, 4),
+            new SymbolTally(findNotes, 3),
+            new SymbolTally(findOne, 1)
+        });
+
+        Assert.Equal(2, merged.Count);
+        Assert.Contains(merged, t =>
+            t.Symbol == "App.Services.PerfumeRepository.Find(System.Collections.Generic.List)"
+            && t.Count == 7 && t.Constructions == 2);
+        Assert.Contains(merged, t => t.Symbol == findOne && t.Count == 1 && t.Constructions == 1);
     }
 
     [Fact]
-    public void WithoutDeclaringTypeArguments_KeepsGenuineOverloadsDistinct()
-    {
-        const string publishPerfume = "App.Services.PerfumeService.Publish(App.Models.Perfume)";
-        const string publishNote = "App.Services.PerfumeService.Publish(App.Models.Note)";
-
-        Assert.Equal(publishPerfume, QueryHelper.WithoutDeclaringTypeArguments(publishPerfume));
-        Assert.Equal(publishNote, QueryHelper.WithoutDeclaringTypeArguments(publishNote));
-    }
-
-    [Fact]
-    public void WithoutDeclaringTypeArguments_LeavesAnUnbalancedOperatorNameAlone()
+    public void Ordered_LeavesAnUnbalancedOperatorNameAlone()
     {
         // 'operator <' and 'operator >' contain an angle bracket that opens or closes
         // nothing. Reading it as a type argument list would swallow the parameter list
-        // that follows, exactly as it would for WithoutTypeArguments.
-        Assert.Equal(LessThan, QueryHelper.WithoutDeclaringTypeArguments(LessThan));
-        Assert.Equal(GreaterThan, QueryHelper.WithoutDeclaringTypeArguments(GreaterThan));
+        // that follows, so the name is grouped exactly as stored and the two operators
+        // stay two rows.
+        var merged = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally(LessThan, 2),
+            new SymbolTally(GreaterThan, 1)
+        });
+
+        Assert.Equal(2, merged.Count);
+        Assert.Contains(merged, t => t.Symbol == LessThan && t.Count == 2);
+        Assert.Contains(merged, t => t.Symbol == GreaterThan && t.Count == 1);
     }
 
     [Fact]
-    public void WithoutDeclaringTypeArguments_LeavesAGenericEnclosingTypesArgumentsAlone()
+    public void Ordered_MergesConstructionsOfAGenericEnclosingType()
     {
-        // Handler<T> is not the declaring segment here - Invoke is, and Invoke has no
-        // type arguments of its own to remove. Only the rightmost segment's own
-        // construction is ever merged away.
-        Assert.Equal(HandlerInvoke, QueryHelper.WithoutDeclaringTypeArguments(HandlerInvoke));
+        // Handler<T>.Invoke carries its construction in an earlier segment than the
+        // one that declares Invoke. The narrow rule left these apart, which is the
+        // half of the fix that was missing: `refs Invoke` then reported one row per
+        // construction of Handler<T>, and no pattern could narrow between them because
+        // the matcher reads every one of them as App.Events.Handler.Invoke.
+        var merged = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally(HandlerInvoke, 5),
+            new SymbolTally("App.Events.Handler<System.Int32>.Invoke", 2)
+        });
+
+        var row = Assert.Single(merged);
+        Assert.Equal("App.Events.Handler.Invoke", row.Symbol);
+        Assert.Equal(7, row.Count);
+        Assert.Equal(2, row.Constructions);
+    }
+
+    [Fact]
+    public void RenderOccurrences_NarrowingSuggestionResolves_ForMembersOfConstructedGenerics()
+    {
+        // The whole value of the block is a pattern that can be typed back in. Grouped
+        // by the exact stored name, `refs Count` on the real index printed the
+        // narrowing sentence with no example at all, because every candidate matched
+        // both List<System.String>.Count and List<System.Guid>.Count and none resolved
+        // to one symbol. Grouped by what the matcher reads, the shortest run that
+        // resolves exists by construction whenever the rows differ at all.
+        var tally = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally(CountOfStrings, 332),
+            new SymbolTally(CountOfGuids, 224),
+            new SymbolTally("App.Models.Basket.Count", 10)
+        });
+
+        var block = Ambiguity.RenderOccurrences("Count", tally);
+
+        Assert.Contains("2 distinct symbols across 3 construction(s)", block, StringComparison.Ordinal);
+        Assert.Contains("'List.Count' matches System.Collections.Generic.List.Count", block, StringComparison.Ordinal);
     }
 
     [Fact]

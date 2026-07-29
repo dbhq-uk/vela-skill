@@ -10,9 +10,10 @@ namespace Vela.Query;
 /// <see cref="Constructions"/> is how many raw, exact stored names <see cref="Ordered"/>
 /// merged to produce this row. It defaults to 1, which is what every tally is before
 /// merging: one exact stored name is one construction of itself. A generic type or
-/// method instantiated several times merges into a row whose Constructions is more than
-/// one, and that is the number the ambiguity block reports separately from the count of
-/// distinct symbols, so that 271 constructions of one type are never read as 271 things.
+/// method instantiated several times, or a member reached through several constructions
+/// of the type declaring it, merges into a row whose Constructions is more than one, and
+/// that is the number the ambiguity block reports separately from the count of distinct
+/// symbols, so that 271 constructions of one type are never read as 271 things.
 /// </summary>
 public record SymbolTally(string Symbol, int Count, int Constructions = 1);
 
@@ -69,18 +70,36 @@ public static class Ambiguity
                     .Select(group => new SymbolTally(group.Key, group.Count())));
 
     /// <summary>
-    /// The tallies merged by <see cref="QueryHelper.WithoutDeclaringTypeArguments"/>,
-    /// with most hits first and ties broken by symbol name ordinally.
+    /// The tallies merged by <see cref="QueryHelper.WithoutTypeArguments"/>, with most
+    /// hits first and ties broken by symbol name ordinally.
     ///
     /// The merge exists because a bare name matches a symbol through its type argument
     /// list (<see cref="QueryHelper.Matches"/>), so a raw tally grouped by the exact
     /// stored name has one row per construction of a generic type or method rather than
     /// one row per symbol: on the real solution `refs ILogger` tallied 271 rows for 271
-    /// constructions of the one type ILogger&lt;T&gt;. Merging by the declaring
-    /// segment's own type arguments removed - and nothing else touched, so a parameter
-    /// list still tells two overloads apart - collapses those constructions back into
-    /// the symbols they actually are, and <see cref="SymbolTally.Constructions"/> keeps
-    /// the raw count so the block can still say how many there were.
+    /// constructions of the one type ILogger&lt;T&gt;.
+    ///
+    /// The key is <see cref="QueryHelper.WithoutTypeArguments"/> and not something
+    /// narrower, because that is the reading of a name <see cref="QueryHelper.Matches"/>
+    /// itself uses. Two symbols that share a key are two symbols no pattern can select
+    /// between, so a tally that kept them apart would count things a reader cannot ask
+    /// about separately and would offer a narrowing suggestion that resolves to nothing.
+    /// Removing only the declaring segment's own type arguments was tried and was not
+    /// enough: a member of a constructed generic carries the arguments in an EARLIER
+    /// segment, so `refs Count` on the real index reported "2573 result(s) above span
+    /// 556 distinct symbols" - 332 of them List&lt;System.String&gt;.Count and 224
+    /// List&lt;System.Guid&gt;.Count - and printed the narrowing sentence with no
+    /// example, because no candidate resolved. 390 such keys are in that index.
+    ///
+    /// <see cref="SymbolTally.Constructions"/> keeps the raw count so the block can
+    /// still say how many stored names were merged.
+    ///
+    /// The cost is stated rather than hidden: two overloads that differ only inside a
+    /// type argument list, Find(List&lt;Perfume&gt;) and Find(List&lt;Note&gt;), merge
+    /// into one row. They are also two symbols no pattern distinguishes, which is the
+    /// same rule, and their construction count survives. Overloads that differ anywhere
+    /// else - Publish(Perfume) and Publish(Note) - stay apart, because the parameter
+    /// list itself is kept.
     ///
     /// Both keys used for the final ordering are needed for it to be total, and it is
     /// applied here rather than in SQL for the same reason every other ordering in vela
@@ -90,7 +109,7 @@ public static class Ambiguity
     /// depend on the current locale.
     /// </summary>
     public static IReadOnlyList<SymbolTally> Ordered(IEnumerable<SymbolTally> tallies) =>
-        tallies.GroupBy(tally => QueryHelper.WithoutDeclaringTypeArguments(tally.Symbol), StringComparer.Ordinal)
+        tallies.GroupBy(tally => QueryHelper.WithoutTypeArguments(tally.Symbol), StringComparer.Ordinal)
                .Select(group => new SymbolTally(
                    group.Key,
                    group.Sum(tally => tally.Count),
