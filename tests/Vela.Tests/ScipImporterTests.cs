@@ -22,19 +22,47 @@ public class ScipImporterTests
     // module descriptors carry the file extension, which is what makes them the
     // interesting case, and no test author would have invented `'vue'` as an identifier.
     [InlineData("scip-typescript npm scentverdict-mobile 0.0.1 src/composables/`useApi.ts`/formatErrorMessage().",
-                "src.composables.useApi.ts.formatErrorMessage")]
+                "src.composables.useApi.formatErrorMessage")]
     [InlineData("scip-typescript npm scentverdict-mobile 0.0.1 src/composables/`useApi.ts`/formatErrorMessage().(error)",
-                "src.composables.useApi.ts.formatErrorMessage.error")]
+                "src.composables.useApi.formatErrorMessage.error")]
     [InlineData("scip-typescript npm scentverdict-mobile 0.0.1 src/composables/`useApi.ts`/useAsyncData().[T]",
-                "src.composables.useApi.ts.useAsyncData.T")]
+                "src.composables.useApi.useAsyncData.T")]
     [InlineData("scip-typescript npm @vue/reactivity 3.5.32 dist/`reactivity.d.ts`/Ref#",
-                "dist.reactivity.d.ts.Ref")]
+                "dist.reactivity.Ref")]
     [InlineData("scip-typescript npm typescript 5.9.3 lib/`lib.es5.d.ts`/Error#message.",
-                "lib.lib.es5.d.ts.Error.message")]
+                "lib.lib_es5.Error.message")]
     [InlineData("scip-typescript npm vue-router 5.0.4 dist/`index-BzEKChPW.d.ts`/`'vue'`/",
-                "dist.index-BzEKChPW.d.ts.'vue'")]
+                "dist.index-BzEKChPW.'vue'")]
     [InlineData("scip-typescript npm scentverdict-mobile 0.0.1 src/composables/`useApi.ts`/",
-                "src.composables.useApi.ts")]
+                "src.composables.useApi")]
+    [InlineData("scip-typescript npm vue 3.5.32 dist/`vue.d.mts`/defineComponent().",
+                "dist.vue.defineComponent")]
+
+    // A module descriptor's extension goes, and nothing else about a descriptor name
+    // does. Every extension in this list is one an indexer in the ecosystem really
+    // writes into a namespace descriptor.
+    [InlineData("scip-x . . . `a.ts`/`b.tsx`/`c.js`/`d.jsx`/`e.mjs`/`f.cjs`/", "a.b.c.d.e.f")]
+    [InlineData("scip-x . . . `a.py`/`b.go`/`c.rb`/`d.java`/`e.kt`/`f.scala`/", "a.b.c.d.e.f")]
+    [InlineData("scip-x . . . `a.rs`/`b.php`/`c.c`/`d.cc`/`e.cpp`/`f.h`/`g.hpp`/", "a.b.c.d.e.f.g")]
+
+    // Only a namespace descriptor names a module, so only a namespace descriptor loses
+    // an extension. A type, a term and a method are named after code, and a name that
+    // happens to end in one of those extensions is that name.
+    [InlineData("scip-x . . . `mod.ts`/`Wrapper.ts`#", "mod.Wrapper_ts")]
+    [InlineData("scip-x . . . `mod.ts`/`value.js`.", "mod.value_js")]
+    [InlineData("scip-x . . . `mod.ts`/`run.py`().", "mod.run_py")]
+
+    // An extension is only an extension when a name is left after it goes, and a
+    // namespace whose name is an extension without the dot is just that name.
+    [InlineData("scip-x . . . `.ts`/A#", "_ts.A")]
+    [InlineData("scip-x . . . ts/A#", "ts.A")]
+
+    // A dot the extension rule does not account for still cannot open a segment. Both
+    // of these come straight out of a real index: a Vue single-file component, whose
+    // extension no rule here strips, and TypeScript's own multi-part library names.
+    [InlineData("scip-x . . . src/`Card.vue`/props.", "src.Card_vue.props")]
+    [InlineData("scip-typescript npm typescript 5.9.3 lib/`lib.es2015.symbol.wellknown.d.ts`/Symbol#",
+                "lib.lib_es2015_symbol_wellknown.Symbol")]
 
     // vela's own grammar, which is scip-dotnet's. The generic arity is the one place a
     // descriptor name is not the name a person reads.

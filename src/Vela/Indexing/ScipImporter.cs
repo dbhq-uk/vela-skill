@@ -460,31 +460,8 @@ public static class ScipImporter
     /// document, and an index where nothing has a language cannot be told apart from one
     /// where the harvest collapsed.
     /// </summary>
-    private static string LanguageOf(Scip.Document document, string path)
-    {
-        if (document.Language.Length > 0) return document.Language;
-
-        return Path.GetExtension(path).ToLowerInvariant() switch
-        {
-            ".cs" => "csharp",
-            ".vb" => "vb",
-            ".cshtml" or ".razor" => "razor",
-            ".ts" or ".tsx" or ".mts" or ".cts" => "typescript",
-            ".js" or ".jsx" or ".mjs" or ".cjs" => "javascript",
-            ".py" or ".pyi" => "python",
-            ".go" => "go",
-            ".rs" => "rust",
-            ".java" => "java",
-            ".kt" or ".kts" => "kotlin",
-            ".scala" => "scala",
-            ".rb" => "ruby",
-            ".php" => "php",
-            ".dart" => "dart",
-            ".c" or ".h" => "c",
-            ".cpp" or ".cc" or ".cxx" or ".hpp" or ".hh" => "cpp",
-            _ => "unknown"
-        };
-    }
+    private static string LanguageOf(Scip.Document document, string path) =>
+        document.Language.Length > 0 ? document.Language : SourceFile.LanguageOf(path);
 
     /// <summary>
     /// Where an occurrence starts.
@@ -629,7 +606,8 @@ public static class ScipImporter
 /// has to be derived from the moniker, and the derivation is:
 ///
 ///   <b>Drop the scheme and the package. Take each descriptor's name, with its escaping
-///   removed and its suffix, disambiguator and brackets discarded. Join them with dots.</b>
+///   removed and its suffix, disambiguator and brackets discarded. Join them with dots,
+///   and let no descriptor contribute more than one segment.</b>
 ///
 /// The grammar is the one in the comment above `message Symbol` in scip.proto:
 ///
@@ -649,6 +627,19 @@ public static class ScipImporter
 /// `. .` unless --allow-global-symbol-definitions is passed: a name built from it would
 /// differ between two indexes of the same code.
 ///
+/// <b>Why one descriptor may never become two segments.</b> scip.proto says the
+/// descriptors "together form a fully qualified name", so a descriptor is one name, and
+/// vela matches a whole dotted segment at a time, so a dot inside one is a lie in both
+/// directions. Measured on this very index before it was fixed: scip-typescript names
+/// the module `useApi.ts`, the naive join stored src.composables.useApi.ts, and so
+/// `refs useApi` answered nothing at all while `refs ts` answered fifteen occurrences
+/// spread across every TypeScript module in the index. The name a developer types
+/// answered nothing; the name nobody means answered everything. Two rules keep it from
+/// happening: <see cref="SourceFile.WithoutExtension"/> takes the file extension off a
+/// module's name, and <see cref="OneSegment"/> makes sure any dot still left cannot open
+/// a segment. Both are documented where they are, and the invariant they exist for is
+/// asserted over every symbol of a real captured index rather than over examples.
+///
 /// Three consequences worth knowing before relying on it.
 ///
 /// <b>A method loses its signature.</b> `Publish(+1).` becomes `Publish`, so two
@@ -657,12 +648,11 @@ public static class ScipImporter
 /// the query anyone actually types; what is lost is the ambiguity block's ability to
 /// separate them.
 ///
-/// <b>A module descriptor may carry a file extension.</b> scip-typescript names the
-/// module `useApi.ts`, so the derived name is src.composables.useApi.ts.useAsyncData and
-/// the qualified form a reader types is `useApi.ts.useAsyncData`, not
-/// `useApi.useAsyncData`. Nothing is stripped, because a name is what the index says it
-/// is and guessing which dotted pieces are an extension is the kind of heuristic
-/// Constraint 1 exists to keep out. The bare `refs useAsyncData` is unaffected.
+/// <b>A module loses its file extension, and only a module.</b> `useApi.ts/` is a
+/// namespace descriptor naming a file, so the name is useApi and the qualified form a
+/// reader types is `useApi.useAsyncData`. A type, term or method descriptor keeps every
+/// character of its name, extension-shaped or not: a class really called Wrapper.ts is
+/// named after code rather than after a file, and shortening it would be inventing.
 ///
 /// <b>A .NET generic loses its arity, deliberately.</b> vela and scip-dotnet both spell a
 /// type descriptor with the CLI metadata name, so ILogger&lt;T&gt; is ``ILogger`1``. A
@@ -702,7 +692,7 @@ public static class MonikerName
             if (!ReadDescriptor(moniker, ref at, out var descriptor)) return moniker;
 
             if (descriptors > 0) name.Append('.');
-            name.Append(descriptor);
+            name.Append(OneSegment(descriptor));
             descriptors++;
         }
 
@@ -768,8 +758,16 @@ public static class MonikerName
 
         switch (moniker[at])
         {
-            // namespace, meta and macro. A term's '.' is the same shape.
-            case '/' or '.' or ':' or '!':
+            // namespace ::= name '/'. This is the descriptor an indexer uses for a
+            // module, and a module's name is a file name in every language that has no
+            // separate namespace of its own, so the file extension comes off here.
+            case '/':
+                at++;
+                descriptor = SourceFile.WithoutExtension(descriptor);
+                return true;
+
+            // meta and macro. A term's '.' is the same shape.
+            case '.' or ':' or '!':
                 at++;
                 return true;
 
@@ -845,6 +843,39 @@ public static class MonikerName
     }
 
     /// <summary>
+    /// One descriptor name, as one segment: every dot left in it replaced by an
+    /// underscore.
+    ///
+    /// This is the second half of "a descriptor is one segment", and it is what makes
+    /// the first half - <see cref="SourceFile.WithoutExtension"/> - safe to keep narrow.
+    /// A dot can be inside a descriptor name for reasons no list of extensions covers:
+    /// lib.es5.d.ts is a module named lib.es5 once its extension is off, Card.vue is a
+    /// component whose extension is not a language vela knows, and a backtick-escaped
+    /// identifier may contain any UTF-8 at all. Every one of those must contribute one
+    /// segment, because vela matches a whole dotted segment at a time and a name that
+    /// splits is wrong in both directions at once: the segment a reader would type is no
+    /// longer there to be matched, and a segment nobody means - ts - becomes a catch-all
+    /// that answers for every module in the index.
+    ///
+    /// <b>Replaced rather than escaped.</b> An escape would have to be a character
+    /// vela's names have never carried, so the reader would have to know it and type it
+    /// through a shell that has its own opinion about backslashes, for a name they never
+    /// asked to be complicated. An underscore is a character every name in the index
+    /// already carries: it is an identifier character to <see cref="Query.QueryHelper"/>,
+    /// so lib_es5 behaves exactly like any other segment under the matching rule, the
+    /// substring prescan and the full-text index alike, and it is typeable and safe
+    /// wherever it lands, including as the first character of a name where '-' would be
+    /// read as a command-line option.
+    ///
+    /// <b>What it costs.</b> A descriptor really named lib_es5 and one named lib.es5
+    /// would arrive at one display name, and `refs` on it would answer for both. Nothing
+    /// is lost from the index: occurrence.scip_symbol holds the moniker exactly as the
+    /// index wrote it, so which is which is still there to be read, and an export still
+    /// puts back what came in.
+    /// </summary>
+    internal static string OneSegment(string name) => name.Replace('.', '_');
+
+    /// <summary>
     /// scip.proto: identifier-character ::= '_' | '+' | '-' | '$' | ASCII letter or
     /// digit. ASCII exactly as written, which is the same reading
     /// <see cref="Harvest.ScipMoniker"/> escapes by, so a name one of them escapes is a
@@ -869,5 +900,67 @@ public static class MonikerName
             if (!char.IsAsciiDigit(name[i])) return name;
 
         return name[..tick];
+    }
+}
+
+/// <summary>
+/// The source files vela recognises by name: which extensions there are, and what
+/// language each one means.
+///
+/// One table, because the two questions asked of it are one question. A document whose
+/// index declared no language is given one from its extension, and a module descriptor
+/// that names a file has that extension taken off its name; a set of extensions
+/// recognised by the first and not the second would mean vela calling something a
+/// TypeScript file and, three lines later, treating .ts as part of a module's name.
+///
+/// The longest match wins, which is what makes the declaration extensions work:
+/// reactivity.d.ts is a module named reactivity, not one named reactivity.d, and a real
+/// index of a TypeScript project is mostly .d.ts. Matching is case-insensitive, because
+/// Index.CSHTML is a Razor view on the file systems that allow it.
+/// </summary>
+internal static class SourceFile
+{
+    private static readonly (string Extension, string Language)[] Kinds =
+    [
+        (".cs", "csharp"), (".vb", "vb"), (".cshtml", "razor"), (".razor", "razor"),
+        (".d.ts", "typescript"), (".d.mts", "typescript"), (".d.cts", "typescript"),
+        (".ts", "typescript"), (".tsx", "typescript"), (".mts", "typescript"), (".cts", "typescript"),
+        (".js", "javascript"), (".jsx", "javascript"), (".mjs", "javascript"), (".cjs", "javascript"),
+        (".py", "python"), (".pyi", "python"), (".go", "go"), (".rs", "rust"),
+        (".java", "java"), (".kt", "kotlin"), (".kts", "kotlin"), (".scala", "scala"),
+        (".rb", "ruby"), (".php", "php"), (".dart", "dart"),
+        (".c", "c"), (".h", "c"),
+        (".cpp", "cpp"), (".cc", "cpp"), (".cxx", "cpp"), (".hpp", "cpp"), (".hh", "cpp")
+    ];
+
+    /// <summary>The language a path's extension implies, or "unknown".</summary>
+    public static string LanguageOf(string path) => LongestMatch(path, minimumStem: 0)?.Language ?? "unknown";
+
+    /// <summary>
+    /// A file's name without its extension, or the name unchanged when it does not end
+    /// in one vela recognises.
+    ///
+    /// A stem of at least one character is required, so a name that is nothing but an
+    /// extension - a TypeScript project really can hold a module called .ts - keeps it
+    /// rather than becoming empty and contributing no segment at all.
+    /// </summary>
+    public static string WithoutExtension(string name)
+    {
+        var kind = LongestMatch(name, minimumStem: 1);
+        return kind is null ? name : name[..^kind.Value.Extension.Length];
+    }
+
+    private static (string Extension, string Language)? LongestMatch(string name, int minimumStem)
+    {
+        (string Extension, string Language)? best = null;
+
+        foreach (var kind in Kinds)
+        {
+            if (name.Length - kind.Extension.Length < minimumStem) continue;
+            if (!name.EndsWith(kind.Extension, StringComparison.OrdinalIgnoreCase)) continue;
+            if (best is null || kind.Extension.Length > best.Value.Extension.Length) best = kind;
+        }
+
+        return best;
     }
 }

@@ -1,4 +1,6 @@
 using System.CommandLine;
+using System.Text;
+using System.Text.RegularExpressions;
 using Google.Protobuf;
 using Microsoft.Data.Sqlite;
 using Vela.Harvest;
@@ -148,19 +150,157 @@ public class ScipImportEndToEndTests
         var hits = RefsQuery.Run(db, "phaseToOnset", includeGenerated: false);
         Assert.NotEmpty(hits);
         Assert.All(hits, h => Assert.Equal("src/ScentVerdict.Mobile/src/utils/drydown.ts", h.RelativePath));
-        Assert.Contains(hits, h => h.Symbol == "src.utils.drydown.ts.phaseToOnset");
+        Assert.Contains(hits, h => h.Symbol == "src.utils.drydown.phaseToOnset");
         Assert.Contains(hits, h => h.IsDefinition);
 
         // A type from the same file, reached the same way, and its property.
         Assert.NotEmpty(RefsQuery.Run(db, "Onset", includeGenerated: false));
         Assert.NotEmpty(RefsQuery.Run(db, "Onset.top", includeGenerated: false));
 
-        // The qualified form still works, and the module descriptor keeps the extension
-        // scip-typescript put in it.
-        Assert.NotEmpty(RefsQuery.Run(db, "drydown.ts.phaseToOnset", includeGenerated: false));
+        // The qualified form still works, by the module's own name.
+        Assert.NotEmpty(RefsQuery.Run(db, "drydown.phaseToOnset", includeGenerated: false));
+
+        // The module itself is askable by the name a person would type for it, and the
+        // extension is not askable at all. Before the extension was stripped these were
+        // the wrong way round: `refs useApi` answered nothing and `refs ts` answered
+        // every TypeScript module in the index.
+        Assert.NotEmpty(RefsQuery.Run(db, "drydown", includeGenerated: false));
+        Assert.NotEmpty(RefsQuery.Run(db, "useApi", includeGenerated: false));
+        Assert.Empty(RefsQuery.Run(db, "ts", includeGenerated: false));
 
         // A name from another file must not be dragged in by the one above.
         Assert.Empty(RefsQuery.Run(db, "phaseToOnsetX", includeGenerated: false));
+    }
+
+    /// <summary>
+    /// The invariant the whole derivation rests on, asserted over every symbol of the
+    /// real captured index rather than over examples: <b>one descriptor is one dotted
+    /// segment</b>. A descriptor name that contributed two segments would put a name in
+    /// the index that no reader means, and vela matches a whole segment at a time, so
+    /// such a segment is both a catch-all that answers questions nobody asked and a
+    /// reason the name a reader does type answers nothing.
+    ///
+    /// The descriptor count is taken independently, by a second reading of the grammar
+    /// in scip.proto that cannot be fooled by a dot inside a name because it replaces
+    /// every escaped identifier with one placeholder character before it counts. See
+    /// <see cref="DescriptorCount"/>.
+    /// </summary>
+    [Fact]
+    public void DisplayName_GivesEveryDescriptorOfEveryRealSymbolExactlyOneSegment()
+    {
+        var index = Scip.Index.Parser.ParseFrom(File.ReadAllBytes(RealTypeScriptIndex));
+
+        var monikers = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var document in index.Documents)
+        {
+            foreach (var occurrence in document.Occurrences) monikers.Add(occurrence.Symbol);
+            foreach (var information in document.Symbols)
+            {
+                monikers.Add(information.Symbol);
+                monikers.Add(information.EnclosingSymbol);
+            }
+        }
+
+        var checkedSymbols = 0;
+        var wrong = new List<string>();
+
+        foreach (var moniker in monikers)
+        {
+            // A local names nothing on its own and has no descriptors; ScipImporter
+            // gives it a name from the document it lives in.
+            if (moniker.Length == 0 || moniker.StartsWith("local ", StringComparison.Ordinal)) continue;
+
+            var name = MonikerName.For(moniker);
+
+            // Every moniker in this index parses, so none of them is standing in for
+            // itself, which would make the comparison below vacuously true.
+            Assert.NotEqual(moniker, name);
+
+            var descriptors = DescriptorCount(moniker);
+            var segments = name.Split('.').Length;
+            if (segments != descriptors)
+                wrong.Add($"{moniker} -> {name} ({segments} segments, {descriptors} descriptors)");
+
+            checkedSymbols++;
+        }
+
+        Assert.Empty(wrong);
+
+        // Not a vacuous pass: the index really does carry this many distinct monikers.
+        Assert.Equal(159, checkedSymbols);
+    }
+
+    /// <summary>
+    /// How many descriptors a moniker has, read independently of
+    /// <see cref="MonikerName"/> so that the two agreeing means something.
+    ///
+    /// Every escaped identifier is replaced by one placeholder character first - a
+    /// doubled backtick inside one is a literal backtick, per scip.proto - so no dot,
+    /// bracket or suffix character hiding inside a name can be miscounted as
+    /// punctuation. What is left is matched, one descriptor at a time and anchored at
+    /// the front, against the descriptor alternatives of the grammar: '[name]', '(name)',
+    /// and a name followed by either one suffix character or a method's '(disambiguator).'.
+    /// </summary>
+    private static int DescriptorCount(string moniker)
+    {
+        var at = 0;
+
+        // scheme, manager, package name, version. A doubled space is a literal space.
+        for (var part = 0; part < 4; part++)
+        {
+            while (at < moniker.Length)
+            {
+                if (moniker[at] == ' ' && at + 1 < moniker.Length && moniker[at + 1] == ' ') at += 2;
+                else if (moniker[at] == ' ') { at++; break; }
+                else at++;
+            }
+        }
+
+        var tail = WithoutEscapedNames(moniker[at..]);
+        var count = 0;
+
+        while (tail.Length > 0)
+        {
+            var match = Descriptor.Match(tail);
+            Assert.True(match.Success, $"'{tail}' of '{moniker}' is not a descriptor");
+            tail = tail[match.Length..];
+            count++;
+        }
+
+        Assert.True(count > 0, $"'{moniker}' has no descriptors");
+        return count;
+    }
+
+    private static readonly Regex Descriptor = new(
+        @"^(?:\[[^\]]*\]|\([^)]*\)|[^/#.:!\[\]()]+(?:[/#.:!]|\([^)]*\)\.))");
+
+    /// <summary>Every backtick-escaped identifier replaced by a single placeholder that
+    /// is an ordinary identifier character, so what is left is only punctuation and
+    /// plain names.</summary>
+    private static string WithoutEscapedNames(string tail)
+    {
+        var plain = new StringBuilder();
+
+        for (var at = 0; at < tail.Length;)
+        {
+            if (tail[at] != '`')
+            {
+                plain.Append(tail[at++]);
+                continue;
+            }
+
+            at++;
+            plain.Append('X');
+
+            while (at < tail.Length)
+            {
+                if (tail[at] == '`' && at + 1 < tail.Length && tail[at + 1] == '`') at += 2;
+                else if (tail[at] == '`') { at++; break; }
+                else at++;
+            }
+        }
+
+        return plain.ToString();
     }
 
     [Fact]
