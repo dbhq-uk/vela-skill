@@ -97,11 +97,44 @@ The index is a snapshot. Every query compares its build time against the files u
 
 `vela index` may also print a plain line saying that some documents were not indexed, for example `1 document(s) contributed by a NuGet package or the .NET SDK were not indexed`. That is information, not a warning: those files live in the package cache or the .NET installation, none of your code is missing, and the exit code stays 0. `vela index --stats` lists them by path. A file that vela cannot attribute to a package or the SDK is a different matter and is reported as a gap, with the banner and exit 3.
 
+## Configuration
+
+**You do not need a config file.** With no `vela.json`, vela does exactly what it has always done: indexes the C# and Razor the solution compiles, and says nothing about anything else.
+
+A `vela.json` at the solution root, or anywhere between it and the repository root, is how a polyglot repository declares what it wants indexed and what is not source code at all. It is JSON because that is the convention `global.json` and `dotnet-tools.json` established for .NET, and it is a jobs **array** rather than a flat language list because "which language" and "which indexer produced it" are separate facts, and one repository can need two jobs for one language at different roots.
+
+```json
+{
+  "version": 1,
+  "solution": "ScentVerdict.sln",
+  "jobs": [
+    { "language": "csharp", "indexer": "vela", "root": "." },
+    { "language": "razor", "indexer": "vela", "root": "." },
+    { "language": "typescript", "indexer": "scip-typescript", "root": "src/ScentVerdict.Mobile" },
+    { "language": "javascript", "indexer": "scip-typescript", "root": "src/ScentVerdict.Web",
+      "include": ["wwwroot/js/**/*.js"] }
+  ],
+  "exclude": ["**/venv/**", "**/site-packages/**", "src/ScentVerdict.Web/wwwroot/app/**"]
+}
+```
+
+That is the real configuration for the solution vela is measured on, and it is in the repository at [`docs/examples/scentverdict-vela.json`](docs/examples/scentverdict-vela.json).
+
+**Why the excludes are the feature.** On that repository, a naive count by extension reports 5,775 Python files. 5,695 of them are vendored `venv` and `site-packages`. The honest first-party picture is 1,866 C#, 307 Razor, 151 JavaScript, 80 Python, 30 TypeScript, 40 SQL and 3 Java - and one directory of that repository, `src/ScentVerdict.Web/wwwroot/app/`, is gitignored build output of the mobile app holding 64 of its 81 JavaScript files. Indexing that would index the same code twice, once as readable source and once as minified bundles nobody can open, and a directory that appears and disappears between builds would make the index non-deterministic. So vela ships opinionated default excludes - build output, vendored dependencies, minified files - and the config is how a repository overrides them. `vela index` prints what the exclude list kept out and which languages no job covers, so the numbers can be checked rather than trusted.
+
+**A job vela cannot run degrades the index until it is imported.** vela does not run other indexers; a job whose `indexer` is not `vela` declares where its `.scip` is expected to come from (`index` names the file, defaulting to `index.scip` under the job's `root`). Since `vela index` rebuilds the database from nothing, every such job starts out unsatisfied, so `vela index` names it, exits 3, and every answer carries the `!!` banner until that exact file is imported with `vela import`. A config file must never become a quiet way to lose a language. The same holds if the indexer is not installed, if the job's root does not exist, or if the indexer runs and fails: nothing clears a job but a clean import of the file it named.
+
+**Globs follow gitignore**, because that is the dialect a developer already knows: a pattern with no slash matches a file name at any depth, a pattern with a slash is anchored to the root, `**/` means any depth, `*` and `?` never cross a `/`, a trailing `/` means a directory and everything under it, `!` takes an earlier pattern back, the last matching pattern decides, and matching is case-sensitive. Including the rule people trip over: **a negation cannot re-include a file whose parent directory is excluded.** A config's `exclude` list is *appended* to the defaults, so a repository states only what is different about it, and `"!**/dist/"` is how it takes a default back. Writing a directory as `**/node_modules/` rather than `**/node_modules/**` lets the walk skip the subtree unread; both exclude the same files.
+
+The excludes govern what vela *says* about a repository, never what the compiler saw. What Roslyn compiles is what gets indexed, so a generated file under `obj` that the compiler was handed is in the index whatever this file says - which is the only reading under which adding a config cannot silently shrink an existing index.
+
+`version`, `solution`, `jobs`, `exclude` and `$schema` are the only properties, and an unknown one is refused by name rather than ignored: `excludes` for `exclude` would quietly index the vendored tree, and `jobbs` for `jobs` would quietly lose a language.
+
 ## Scope
 
 Roslyn covers **C# and Visual Basic**, plus anything a source generator emits into those compilations - which is how Razor Pages, MVC views and Blazor components arrive. Those all arrive as generated C# whatever the host project's language. F# has its own compiler and is out of scope.
 
-vela emits [SCIP](https://github.com/scip-code/scip). Reading indexes produced by other languages' indexers - `scip-typescript`, `scip-python` and friends - is the reason for that choice, but it is a design intent rather than a shipped feature: there is no `.scip` import path yet, and today the index is built from Roslyn only.
+vela emits and reads [SCIP](https://github.com/scip-code/scip), so an index another language's indexer produced - `scip-typescript`, `scip-python` and friends - can be merged into the same database with `vela import` and queried by the same verbs. vela does not run those indexers: `vela.json` declares which ones a repository expects, and `vela index` reports any whose output has not been imported yet.
 
 ## Documentation
 

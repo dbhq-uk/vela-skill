@@ -41,6 +41,8 @@ The solution must build. If a project fails to load, or compiles with errors, ve
 
 Add `--stats` to see what was indexed, including how many Razor views were covered and the path of every document that was left out.
 
+If the repository has a `vela.json`, `vela index` says so and lists the jobs it declares. A job whose indexer is not `vela` is a language vela cannot produce itself: it names where that indexer's `.scip` is expected, and until you run the indexer and `vela import` that file, the index is missing that language, every answer carries the banner and the exit code is 3. That is a real gap, not noise - the language really is absent - so either import it or say plainly that the answer covers only the .NET half. `vela index` will also print which languages no job covers at all; that line is information and never raises the exit code, because vela was never going to index them.
+
 The index is a cache, and it carries the schema version of the vela that wrote it. If you upgrade vela and the shape of the index has changed, every verb refuses to answer and tells you to re-index rather than querying a database it cannot read. Re-index; there is nothing else to do.
 
 ### 2. Establish shape before pulling content

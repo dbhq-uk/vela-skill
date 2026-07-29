@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "solution": "ScentVerdict.sln",
+  "jobs": [
+    { "language": "csharp", "indexer": "vela", "root": "." },
+    { "language": "razor", "indexer": "vela", "root": "." },
+    { "language": "typescript", "indexer": "scip-typescript", "root": "src/ScentVerdict.Mobile" },
+    { "language": "javascript", "indexer": "scip-typescript", "root": "src/ScentVerdict.Web",
+      "include": ["wwwroot/js/**/*.js"] }
+  ],
+  "exclude": [
+    "**/venv/**",
+    "**/site-packages/**",
+    "**/node_modules/**",
+    "**/obj/**",
+    "**/bin/**",
+    "**/dist/**",
+    "src/ScentVerdict.Web/wwwroot/app/**",
+    "**/wwwroot/lib/**",
+    "**/*.min.js"
+  ]
+}
