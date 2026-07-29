@@ -556,6 +556,136 @@ public class ScipImporterTests
         Assert.True(report.Degraded);
     }
 
+    // ================================================================================
+    // Importing the same .scip again: --replace
+    // ================================================================================
+
+    [Fact]
+    public void Import_WithReplace_ReplacesTheDocumentsTheIncomingIndexCarriesAndReportsHowMany()
+    {
+        // Without this the verb is single-shot: every document of a second import
+        // collides on the UNIQUE relative_path, nothing is written and the index is
+        // degraded, which is honest and useless. Re-running the indexer after the code
+        // changed is the only workflow anybody has.
+        using var db = Fresh();
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), "/repo");
+
+        var report = ScipImporter.Import(
+            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two()."), "/repo", replace: true);
+
+        Assert.False(report.Degraded, string.Join("; ", report.Problems));
+        Assert.Equal(1, report.ReplacedDocuments);
+        Assert.Equal(1, report.ReplacedOccurrences);
+        Assert.Equal(1, report.ReplacementOccurrences);
+
+        // One document, holding what the new .scip said and not what the old one did.
+        Assert.Equal(1, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM document")));
+        Assert.Equal(new[] { "src.a.two" }, Strings(db, "SELECT symbol FROM occurrence"));
+
+        // And the full-text row for the name that went away went with it, exactly once,
+        // leaving the new name there exactly once. An orphaned FTS row answers `vela
+        // find` with a name no occurrence in the index carries.
+        Assert.Equal(new[] { "src.a.two" }, Strings(db, "SELECT symbol FROM symbol_fts ORDER BY symbol"));
+    }
+
+    [Fact]
+    public void Import_WithReplace_KeepsAnFtsNameAnotherDocumentStillUsesAndNeverWritesOneTwice()
+    {
+        // The orphan sweep has to be exact in both directions. A name the replaced
+        // document shared with a document nobody touched must survive, and it must not
+        // gain a second row either, or `vela find` starts printing it twice and every
+        // re-import prints it once more.
+        var shared = "scip-typescript npm p 1.0 src/`x.ts`/shared().";
+
+        using var db = Fresh();
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", shared), "/repo");
+        ScipImporter.Import(db, SingleDocumentIndex("b.ts", shared), "/repo");
+
+        Assert.Equal(new[] { "src.x.shared" }, Strings(db, "SELECT symbol FROM symbol_fts"));
+
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", shared), "/repo", replace: true);
+
+        Assert.Equal(2, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM occurrence")));
+        Assert.Equal(new[] { "src.x.shared" }, Strings(db, "SELECT symbol FROM symbol_fts"));
+    }
+
+    [Fact]
+    public void Import_WithReplace_SaysWhenWhatItWroteIsSmallerThanWhatItReplaced()
+    {
+        // An index that shrinks is a fact worth reporting, not an error: it is what
+        // re-running the indexer over code that lost a symbol looks like. It is also
+        // what a broken indexer run looks like, and the two are indistinguishable from
+        // here, so the numbers are printed and neither is assumed.
+        var big = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+        };
+        var wide = new Scip.Document { RelativePath = "a.ts", Language = "typescript" };
+        foreach (var name in new[] { "one", "two", "three" })
+        {
+            wide.Occurrences.Add(new Scip.Occurrence
+            {
+                Symbol = $"scip-typescript npm p 1.0 src/`a.ts`/{name}().",
+                SymbolRoles = (int)Scip.SymbolRole.Definition,
+                Range = { 0, 0, 3 }
+            });
+        }
+        big.Documents.Add(wide);
+
+        using var db = Fresh();
+        ScipImporter.Import(db, big, "/repo");
+
+        var report = ScipImporter.Import(
+            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), "/repo", replace: true);
+
+        Assert.Equal(1, report.ReplacedDocuments);
+        Assert.Equal(3, report.ReplacedOccurrences);
+        Assert.Equal(1, report.ReplacementOccurrences);
+
+        // Nothing is left behind that the replacement no longer accounts for.
+        Assert.Equal(1, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM occurrence")));
+        Assert.Equal(new[] { "src.a.one" }, Strings(db, "SELECT symbol FROM symbol_fts ORDER BY symbol"));
+    }
+
+    [Fact]
+    public void Import_WithReplace_StillReportsTwoDocumentsOfOneIndexClaimingOnePath()
+    {
+        // --replace must not become a way to lose rows in silence. scip.proto calls
+        // relative_path a "Unique path to the text document", so one .scip naming one
+        // file twice is a broken .scip: the file cannot be both, and replacing the first
+        // with the second would keep whichever came last and say nothing.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+        };
+        index.Documents.Add(SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one().").Documents[0]);
+        index.Documents.Add(SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two().").Documents[0]);
+
+        using var db = Fresh();
+        var report = ScipImporter.Import(db, index, "/repo", replace: true);
+
+        Assert.Equal(1, report.Documents);
+        Assert.Equal(0, report.ReplacedDocuments);
+        Assert.True(report.Degraded);
+        Assert.Contains(report.Problems, p => p.Contains("a.ts", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Import_WithoutReplace_StillRefusesToOverwriteADocumentAlreadyInTheIndex()
+    {
+        // The default has not moved. A silent overwrite of a document somebody else's
+        // index also claims is exactly the failure ImportReport.Problems exists to make
+        // visible, so replacing is something the caller asks for by name.
+        using var db = Fresh();
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), "/repo");
+        var report = ScipImporter.Import(
+            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two()."), "/repo");
+
+        Assert.Equal(0, report.ReplacedDocuments);
+        Assert.True(report.Degraded);
+        Assert.Equal(new[] { "src.a.one" }, Strings(db, "SELECT symbol FROM occurrence"));
+    }
+
     [Fact]
     public void ImportFile_LeavesTheIndexUntouchedWhenTheFileCannotBeParsed()
     {

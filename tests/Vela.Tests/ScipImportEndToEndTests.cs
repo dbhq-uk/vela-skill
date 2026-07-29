@@ -422,7 +422,7 @@ public class ScipImportEndToEndTests
         // The indexer was run in the wrong place, so its document cannot be placed under
         // vela's root at all and the import is honestly degraded.
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex("/elsewhere", "Shared/Thing.ts").ToByteArray());
+        File.WriteAllBytes(scip, ForeignIndex("/elsewhere", "Shared/Thing.ts", "greet").ToByteArray());
 
         var failed = await InvokeAsync("import", scip, "--solution", fx.SolutionPath);
         Assert.Equal(IndexHealth.ExitDegraded, failed.ExitCode);
@@ -434,7 +434,7 @@ public class ScipImportEndToEndTests
         // The indexer is re-run from the right root and the same file imported again.
         File.WriteAllBytes(
             scip,
-            ForeignIndex(fx.Root, "App/wwwroot/js/site.ts").ToByteArray());
+            ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
 
         var repaired = await InvokeAsync("import", scip, "--solution", fx.SolutionPath);
         Assert.Equal(0, repaired.ExitCode);
@@ -447,8 +447,63 @@ public class ScipImportEndToEndTests
         Assert.Contains(".cshtml", clean.Output, StringComparison.Ordinal);
     }
 
-    /// <summary>One document, one occurrence, rooted where the caller says.</summary>
-    private static Scip.Index ForeignIndex(string root, string relativePath)
+    /// <summary>
+    /// `vela import` could not be run twice. Every document collided on the UNIQUE
+    /// relative_path, so the second run wrote nothing and degraded the index: honest, and
+    /// no use to the only workflow anybody has, which is re-running the indexer after the
+    /// code changed. --replace is that workflow, through the CLI, on one index.
+    /// </summary>
+    [Fact]
+    public async Task Import_ThroughTheCli_CanBeRunAgainWithReplace()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var scip = Path.Combine(fx.Root, "mobile.scip");
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet", "farewell").ToByteArray());
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+
+        // Without --replace the second import is refused, in the same words as before,
+        // and the index is left holding the first import.
+        var again = await InvokeAsync("import", scip, "--solution", fx.SolutionPath);
+        Assert.Equal(IndexHealth.ExitDegraded, again.ExitCode);
+        Assert.Contains("duplicate-document", again.Output, StringComparison.Ordinal);
+
+        // The indexer is re-run over code that has since lost `farewell`, and the same
+        // file is imported again over the top of itself.
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        var replaced = await InvokeAsync("import", "--replace", scip, "--solution", fx.SolutionPath);
+
+        Assert.Equal(0, replaced.ExitCode);
+        Assert.Contains("Replaced 1 document", replaced.Output, StringComparison.Ordinal);
+
+        // The shrink is stated rather than smoothed over: two occurrences went, one came.
+        Assert.Contains("fewer", replaced.Output, StringComparison.Ordinal);
+
+        // One hit, not two. A replace that left the old rows beside the new ones would
+        // double every count in every answer, which is the failure --replace exists to
+        // avoid making possible.
+        var greet = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
+        Assert.Equal(0, greet.ExitCode);
+        Assert.Contains("1 result(s)", greet.Output, StringComparison.Ordinal);
+
+        // The symbol the new .scip no longer defines is gone from the index and from the
+        // full-text names, so `find` does not offer a name nothing carries.
+        var gone = await InvokeAsync("find", "farewell", "--solution", fx.SolutionPath);
+        Assert.Contains("0 symbol(s)", gone.Output, StringComparison.Ordinal);
+
+        // And the refused import's degradation was cleared by the successful replace of
+        // the same source, so no answer carries a banner about it.
+        Assert.DoesNotContain("INCOMPLETE", greet.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// One document rooted where the caller says, defining one function per name given,
+    /// standing in for what an indexer for some other language writes.
+    /// </summary>
+    private static Scip.Index ForeignIndex(string root, string relativePath, params string[] names)
     {
         var index = new Scip.Index
         {
@@ -460,12 +515,16 @@ public class ScipImportEndToEndTests
         };
 
         var doc = new Scip.Document { RelativePath = relativePath, Language = "typescript" };
-        doc.Occurrences.Add(new Scip.Occurrence
+        for (var i = 0; i < names.Length; i++)
         {
-            Symbol = "scip-typescript npm app 1.0.0 `site.ts`/greet().",
-            SymbolRoles = (int)Scip.SymbolRole.Definition,
-            SingleLineRange = new Scip.SingleLineRange { Line = 3, StartCharacter = 9, EndCharacter = 14 }
-        });
+            doc.Occurrences.Add(new Scip.Occurrence
+            {
+                Symbol = $"scip-typescript npm app 1.0.0 `site.ts`/{names[i]}().",
+                SymbolRoles = (int)Scip.SymbolRole.Definition,
+                SingleLineRange = new Scip.SingleLineRange { Line = 3 + i, StartCharacter = 9, EndCharacter = 14 }
+            });
+        }
+
         index.Documents.Add(doc);
         return index;
     }

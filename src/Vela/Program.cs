@@ -338,6 +338,13 @@ public static class Program
     /// imported languages away with everything else - which is right, because the C#
     /// index it was merged into no longer exists either.
     ///
+    /// --replace is the one thing here that removes rows: it re-imports a .scip over a
+    /// previous import of the same file, deleting the documents that file carries and
+    /// writing them again. It is asked for by name, it touches only the paths the .scip
+    /// itself names, and it says how many documents and occurrences went and how many
+    /// came, because a replace that shrinks the index is a fact and a replace nobody
+    /// expected is a defect.
+    ///
     /// Constraint 3 runs through the whole verb. A file that will not parse leaves the
     /// index exactly as it was and says so; a document that cannot be placed under
     /// vela's root is named and degrades the index; and every way the import came out
@@ -351,9 +358,22 @@ public static class Program
                         + "for example scip-typescript, scip-python or scip-go."
         };
 
+        // Without this the verb is single-shot. Every document of a second import
+        // collides on the UNIQUE relative_path, so nothing is written and the index is
+        // degraded: honest, and no use to the only workflow anybody has, which is
+        // re-running the indexer after the code changed. There was no way to un-import
+        // short of `vela index`, which rebuilds the whole C# half.
+        var replaceOption = new Option<bool>("--replace")
+        {
+            Description = "Import over a previous import of the same .scip: delete the documents this "
+                        + "index carries, with their occurrences, and write them again. Only the paths "
+                        + "this .scip itself names are touched, whoever contributed them, and how many "
+                        + "were replaced is reported."
+        };
+
         var command = new Command("import", "Add a .scip index from another language's indexer")
         {
-            argument, solutionOption
+            argument, solutionOption, replaceOption
         };
 
         command.SetAction(parseResult =>
@@ -407,7 +427,8 @@ public static class Program
             ImportReport report;
             try
             {
-                report = ScipImporter.ImportFile(db, scipPath, ProjectRoot.ForSolution(solution));
+                report = ScipImporter.ImportFile(
+                    db, scipPath, ProjectRoot.ForSolution(solution), parseResult.GetValue(replaceOption));
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
             {
@@ -422,6 +443,36 @@ public static class Program
             var tool = string.IsNullOrEmpty(report.Tool) ? "an unnamed indexer" : report.Tool;
             output.WriteLine($"Imported {report.Documents} document(s) and {report.Occurrences} "
                            + $"occurrence(s) from {scipPath}, produced by {tool}, into {path}");
+
+            // The one thing an import can do that removes rows, so it is said first and
+            // in numbers. A caller who did not expect to be replacing anything needs to
+            // see that they were, and a caller who did needs to see how much went.
+            if (report.ReplacedDocuments > 0)
+            {
+                output.WriteLine($"Replaced {report.ReplacedDocuments} document(s) already in the index: "
+                               + $"{report.ReplacedOccurrences} occurrence(s) removed and "
+                               + $"{report.ReplacementOccurrences} written in their place.");
+
+                // An index that shrinks is a fact worth reporting rather than an error.
+                // It is what re-running the indexer over code that lost a symbol looks
+                // like, and it is also what a broken indexer run looks like; the two
+                // cannot be told apart from here, so the fact is stated and neither is
+                // assumed.
+                if (report.ReplacementOccurrences < report.ReplacedOccurrences)
+                {
+                    output.WriteLine("Those document(s) now hold fewer occurrences than they did. If the "
+                                   + "code really lost that much, this is right; if the indexer run was "
+                                   + "cut short, the index now matches the shorter run.");
+                }
+
+                // What --replace does NOT do. A document a previous import of this file
+                // held and this one no longer names is still in the index, because
+                // nothing in the database records which import contributed which
+                // document, so deleting it would mean deleting on a guess.
+                output.WriteLine("Only the paths this .scip names were touched. A document a previous "
+                               + "import of it held and this one does not name is still in the index, "
+                               + "unchanged: run vela index to rebuild from nothing.");
+            }
 
             // Said plainly and once, in the same voice `vela index` uses for the
             // documents a NuGet package contributed: worth knowing, not a reason to call

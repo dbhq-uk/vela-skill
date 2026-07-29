@@ -53,6 +53,21 @@ namespace Vela.Indexing;
 /// Monikers that do not fit the grammar in scip.proto, so no dotted display name could
 /// be derived and the moniker itself stands in as the name.
 /// </param>
+/// <param name="ReplacedDocuments">
+/// Documents this import deleted and wrote again, which only --replace does. Reported
+/// because it is the one thing an import does that removes rows: a caller who did not
+/// expect to be replacing anything needs to see that they were.
+/// </param>
+/// <param name="ReplacedOccurrences">
+/// How many occurrences those documents held before they were replaced.
+/// </param>
+/// <param name="ReplacementOccurrences">
+/// How many occurrences were written in their place. Fewer than
+/// <see cref="ReplacedOccurrences"/> means the index SHRANK, which is a fact worth
+/// reporting rather than an error: it is what re-running the indexer over code that lost
+/// a symbol looks like, and it is also what a broken indexer run looks like. The two are
+/// indistinguishable from here, so both numbers are printed and neither is assumed.
+/// </param>
 public sealed record ImportReport(
     string Tool,
     int Documents,
@@ -61,6 +76,9 @@ public sealed record ImportReport(
     int UnconvertedDocuments,
     int UnspecifiedEncodingDocuments,
     int UnparsedMonikers,
+    int ReplacedDocuments,
+    int ReplacedOccurrences,
+    int ReplacementOccurrences,
     IReadOnlyList<string> Problems)
 {
     public bool Degraded => Problems.Count > 0;
@@ -122,25 +140,36 @@ public static class ScipImporter
     /// nothing at all is written: a .scip that cannot be parsed, or cannot be placed,
     /// leaves the index exactly as it was rather than half-imported.
     /// </exception>
-    public static ImportReport ImportFile(SqliteConnection db, string scipPath, string projectRoot)
+    /// <param name="replace">
+    /// Import over a previous import of the same file: a document whose path this index
+    /// already holds is deleted, with its occurrences and any full-text name left with
+    /// nothing carrying it, and written again from this .scip. Only the paths this .scip
+    /// itself names are touched. False refuses such a document and reports it, which is
+    /// the default because a silent overwrite of a document somebody else's index also
+    /// claims is the failure <see cref="ImportReport.Problems"/> exists to make visible.
+    /// </param>
+    public static ImportReport ImportFile(
+        SqliteConnection db, string scipPath, string projectRoot, bool replace = false)
     {
         using var stream = File.OpenRead(scipPath);
-        return ImportStream(db, stream, projectRoot);
+        return ImportStream(db, stream, projectRoot, replace);
     }
 
     /// <summary>Imports an index already in memory. The streaming path is the one a
     /// file goes through; this is for an index that was built rather than read.</summary>
-    public static ImportReport Import(SqliteConnection db, Scip.Index index, string projectRoot)
+    public static ImportReport Import(
+        SqliteConnection db, Scip.Index index, string projectRoot, bool replace = false)
     {
-        using var writer = new Writer(db, projectRoot);
+        using var writer = new Writer(db, projectRoot, replace);
         writer.Begin(index.Metadata);
         foreach (var document in index.Documents) writer.Add(document);
         return writer.Commit();
     }
 
-    private static ImportReport ImportStream(SqliteConnection db, Stream stream, string projectRoot)
+    private static ImportReport ImportStream(
+        SqliteConnection db, Stream stream, string projectRoot, bool replace)
     {
-        using var writer = new Writer(db, projectRoot);
+        using var writer = new Writer(db, projectRoot, replace);
 
         try
         {
@@ -221,8 +250,11 @@ public static class ScipImporter
         private readonly SqliteCommand insertOcc;
         private readonly SqliteCommand insertFts;
         private readonly SqliteCommand insertExternal;
+        private readonly bool replace;
         private readonly HashSet<string> seenSymbols = new(StringComparer.Ordinal);
         private readonly HashSet<string> takenPaths = new(StringComparer.Ordinal);
+        private readonly HashSet<string> writtenPaths = new(StringComparer.Ordinal);
+        private readonly HashSet<string> replacedNames = new(StringComparer.Ordinal);
         private readonly List<string> problems = new();
 
         private string foreignRoot = "";
@@ -233,12 +265,16 @@ public static class ScipImporter
         private int unconverted;
         private int unspecifiedEncoding;
         private int unparsed;
+        private int replacedDocuments;
+        private int replacedOccurrences;
+        private int replacementOccurrences;
         private bool committed;
 
-        public Writer(SqliteConnection db, string projectRoot)
+        public Writer(SqliteConnection db, string projectRoot, bool replace)
         {
             this.db = db;
             this.projectRoot = Path.GetFullPath(projectRoot);
+            this.replace = replace;
             tx = db.BeginTransaction();
 
             insertDoc = db.CreateCommand();
@@ -277,11 +313,32 @@ public static class ScipImporter
             // Every path already in the database, so a collision with the C# index this
             // is being added beside is caught here rather than as a raw SqliteException
             // from the relative_path UNIQUE constraint half way through.
-            using var existing = db.CreateCommand();
-            existing.Transaction = tx;
-            existing.CommandText = "SELECT relative_path FROM document";
-            using var reader = existing.ExecuteReader();
-            while (reader.Read()) takenPaths.Add(reader.GetString(0));
+            using (var existing = db.CreateCommand())
+            {
+                existing.Transaction = tx;
+                existing.CommandText = "SELECT relative_path FROM document";
+                using var reader = existing.ExecuteReader();
+                while (reader.Read()) takenPaths.Add(reader.GetString(0));
+            }
+
+            // And every name already in the full-text index, so this import never adds a
+            // second row for a name the index already carries. symbol_fts has no unique
+            // constraint and nothing deduplicates it, so an import that shared a name
+            // with the C# half - Status, Name, Id, any of them - put a second copy in and
+            // `vela find` printed it twice. With --replace it was worse than cosmetic: a
+            // name still in use is not orphaned, so the sweep keeps its row and each
+            // re-import added another beside it, without bound.
+            //
+            // One scan of the names, in exchange for that. Cheap next to the occurrences
+            // an import writes, and it is the same set the writer would otherwise have to
+            // ask about one name at a time, which on an fts5 table is a scan per question.
+            using (var names = db.CreateCommand())
+            {
+                names.Transaction = tx;
+                names.CommandText = "SELECT symbol FROM symbol_fts";
+                using var reader = names.ExecuteReader();
+                while (reader.Read()) seenSymbols.Add(reader.GetString(0));
+            }
         }
 
         /// <summary>
@@ -349,11 +406,31 @@ public static class ScipImporter
                 return;
             }
 
-            if (!takenPaths.Add(path))
+            // Two documents of ONE .scip claiming one file. scip.proto calls
+            // relative_path a "Unique path to the text document", so this is a broken
+            // index rather than a re-import: the file cannot be both, replacing the first
+            // with the second would keep whichever came last and say nothing, and
+            // --replace must not become a way to lose rows in silence.
+            if (writtenPaths.Contains(path))
             {
                 problems.Add(DuplicateDocumentPrefix + path);
                 return;
             }
+
+            var replacing = false;
+            if (!takenPaths.Add(path))
+            {
+                if (!replace)
+                {
+                    problems.Add(DuplicateDocumentPrefix + path);
+                    return;
+                }
+
+                ReplaceDocument(path);
+                replacing = true;
+            }
+
+            writtenPaths.Add(path);
 
             var lines = LinesOf(document, path);
             if (NeedsConversion(document.PositionEncoding) && lines is null) unconverted++;
@@ -371,6 +448,7 @@ public static class ScipImporter
             insertDoc.Parameters["$e"].Value = (int)document.PositionEncoding;
             var documentId = Convert.ToInt64(insertDoc.ExecuteScalar());
             documents++;
+            var occurrencesBefore = occurrences;
 
             // Only a local needs it, and building it costs a pass over the document's
             // symbols, so it is built once and only when there is a local to name.
@@ -430,6 +508,114 @@ public static class ScipImporter
                     insertFts.ExecuteNonQuery();
                 }
             }
+
+            if (replacing) replacementOccurrences += occurrences - occurrencesBefore;
+        }
+
+        /// <summary>
+        /// Deletes the document already at this path, with its occurrences, so this
+        /// .scip's version of the same file can be written in its place. In the same
+        /// transaction as everything else, so a .scip that fails half way through leaves
+        /// the document it was replacing exactly as it was.
+        ///
+        /// The display names of the occurrences it held are remembered rather than acted
+        /// on. Whether a name still belongs in the full-text index cannot be known until
+        /// the whole import has been written: it may come back in the replacement, or be
+        /// carried by another document entirely. See <see cref="SweepOrphanedNames"/>.
+        /// </summary>
+        private void ReplaceDocument(string path)
+        {
+            long documentId;
+            using (var find = db.CreateCommand())
+            {
+                find.Transaction = tx;
+                find.CommandText = "SELECT id FROM document WHERE relative_path = $p";
+                find.Parameters.AddWithValue("$p", path);
+                documentId = Convert.ToInt64(find.ExecuteScalar());
+            }
+
+            using (var names = db.CreateCommand())
+            {
+                names.Transaction = tx;
+                names.CommandText =
+                    "SELECT DISTINCT symbol FROM occurrence WHERE document_id = $d AND symbol <> ''";
+                names.Parameters.AddWithValue("$d", documentId);
+                using var reader = names.ExecuteReader();
+                while (reader.Read()) replacedNames.Add(reader.GetString(0));
+            }
+
+            using (var deleteOccurrences = db.CreateCommand())
+            {
+                deleteOccurrences.Transaction = tx;
+                deleteOccurrences.CommandText = "DELETE FROM occurrence WHERE document_id = $d";
+                deleteOccurrences.Parameters.AddWithValue("$d", documentId);
+                replacedOccurrences += deleteOccurrences.ExecuteNonQuery();
+            }
+
+            using (var deleteDocument = db.CreateCommand())
+            {
+                deleteDocument.Transaction = tx;
+                deleteDocument.CommandText = "DELETE FROM document WHERE id = $d";
+                deleteDocument.Parameters.AddWithValue("$d", documentId);
+                deleteDocument.ExecuteNonQuery();
+            }
+
+            replacedDocuments++;
+        }
+
+        /// <summary>
+        /// Removes the full-text rows for names that the replacement left nothing
+        /// carrying. An orphan there answers `vela find` with a name no occurrence in the
+        /// index has, which is the discovery verb inventing a symbol.
+        ///
+        /// Asked as one question rather than one per name: the candidates go into a temp
+        /// table, and the delete is a single pass over symbol_fts with an indexed lookup
+        /// per candidate. `DELETE FROM symbol_fts WHERE symbol = ?` cannot use an index -
+        /// fts5 indexes tokens, not column values - so a name at a time would be a scan of
+        /// the whole table per name, and a real import replaces hundreds of them.
+        /// </summary>
+        private void SweepOrphanedNames()
+        {
+            if (replacedNames.Count == 0) return;
+
+            using (var create = db.CreateCommand())
+            {
+                create.Transaction = tx;
+                create.CommandText = "CREATE TEMP TABLE replaced_name(symbol TEXT PRIMARY KEY)";
+                create.ExecuteNonQuery();
+            }
+
+            using (var insert = db.CreateCommand())
+            {
+                insert.Transaction = tx;
+                insert.CommandText = "INSERT OR IGNORE INTO replaced_name(symbol) VALUES ($s)";
+                insert.Parameters.Add("$s", SqliteType.Text);
+
+                foreach (var name in replacedNames)
+                {
+                    insert.Parameters["$s"].Value = name;
+                    insert.ExecuteNonQuery();
+                }
+            }
+
+            using (var sweep = db.CreateCommand())
+            {
+                sweep.Transaction = tx;
+                sweep.CommandText = """
+                    DELETE FROM symbol_fts WHERE symbol IN (
+                        SELECT symbol FROM replaced_name
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM occurrence o WHERE o.symbol = replaced_name.symbol))
+                    """;
+                sweep.ExecuteNonQuery();
+            }
+
+            using (var drop = db.CreateCommand())
+            {
+                drop.Transaction = tx;
+                drop.CommandText = "DROP TABLE replaced_name";
+                drop.ExecuteNonQuery();
+            }
         }
 
         /// <summary>
@@ -449,10 +635,12 @@ public static class ScipImporter
 
         public ImportReport Commit()
         {
+            SweepOrphanedNames();
             tx.Commit();
             committed = true;
             return new ImportReport(
-                tool, documents, occurrences, unnamed, unconverted, unspecifiedEncoding, unparsed, problems);
+                tool, documents, occurrences, unnamed, unconverted, unspecifiedEncoding, unparsed,
+                replacedDocuments, replacedOccurrences, replacementOccurrences, problems);
         }
 
         public void Dispose()
