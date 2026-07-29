@@ -27,7 +27,7 @@ public static class ScipEmitter
     public static async Task<EmitResult> EmitAsync(
         Solution solution, IReadOnlyList<string> failures, CancellationToken ct)
     {
-        var projectRoot = Path.GetDirectoryName(solution.FilePath)!;
+        var roots = Roots.Resolve(Path.GetDirectoryName(solution.FilePath)!);
 
         var index = new Scip.Index
         {
@@ -35,7 +35,7 @@ public static class ScipEmitter
             {
                 Version = Scip.ProtocolVersion.UnspecifiedProtocolVersion,
                 ToolInfo = new Scip.ToolInfo { Name = "vela", Version = ThisAssemblyVersion() },
-                ProjectRoot = new Uri(projectRoot).AbsoluteUri,
+                ProjectRoot = new Uri(roots.ProjectRoot).AbsoluteUri,
                 // Metadata.text_document_encoding describes the bytes of the source
                 // files on disk, not the position offsets. .NET source, and everything
                 // the Razor generator emits, is UTF-8.
@@ -94,7 +94,7 @@ public static class ScipEmitter
                 // (_ValidationScriptsPartial.cshtml is pure markup) must still appear,
                 // as an empty document: an empty document is honest, a missing one
                 // says the view does not exist.
-                SeedSourceDocuments(harvested.Tree, root, byOriginalPath, index, projectRoot);
+                SeedSourceDocuments(harvested.Tree, root, byOriginalPath, index, roots);
 
                 foreach (var node in root.DescendantNodes())
                 {
@@ -116,7 +116,7 @@ public static class ScipEmitter
                     var location = RazorMapper.MapToOriginal(harvested.Tree, anchorPosition);
                     if (location is null) continue;
 
-                    var doc = GetOrAddDocument(byOriginalPath, index, location.FilePath, projectRoot);
+                    var doc = GetOrAddDocument(byOriginalPath, index, location.FilePath, roots);
                     if (doc is null) continue;
 
                     // Generated, and it stayed generated: the position mapped to the
@@ -392,21 +392,21 @@ public static class ScipEmitter
     /// </summary>
     private static void SeedSourceDocuments(
         SyntaxTree tree, SyntaxNode root, Dictionary<string, Scip.Document?> map,
-        Scip.Index index, string projectRoot)
+        Scip.Index index, Roots roots)
     {
         foreach (var trivia in root.GetLeadingTrivia())
         {
             if (trivia.GetStructure() is not PragmaChecksumDirectiveTriviaSyntax checksum) continue;
             var file = checksum.File.ValueText;
             if (!string.IsNullOrEmpty(file))
-                GetOrAddDocument(map, index, file, projectRoot);
+                GetOrAddDocument(map, index, file, roots);
         }
 
         foreach (var mapping in tree.GetLineMappings())
         {
             var path = mapping.MappedSpan.Path;
             if (string.IsNullOrEmpty(path)) continue;
-            GetOrAddDocument(map, index, path, projectRoot);
+            GetOrAddDocument(map, index, path, roots);
         }
     }
 
@@ -436,17 +436,24 @@ public static class ScipEmitter
     /// SCIP document at all. Null is memoised so the omission is recorded once.
     /// </summary>
     private static Scip.Document? GetOrAddDocument(
-        Dictionary<string, Scip.Document?> map, Scip.Index index, string path, string projectRoot)
+        Dictionary<string, Scip.Document?> map, Scip.Index index, string path, Roots roots)
     {
         if (map.TryGetValue(path, out var existing)) return existing;
 
-        var relative = RelativeWithinRoot(projectRoot, path);
+        var relative = RelativeWithinRoot(roots.ProjectRoot, path);
         if (relative is null)
         {
-            // Constraint 3: an incomplete index must never look like a complete one,
-            // so the file we could not represent is named in the index it is missing
-            // from, alongside the load failures.
-            index.Metadata.ToolInfo.Arguments.Add("outside-project-root: " + path);
+            // Either way the file is named in the index it is absent from, because a
+            // reader asking why it is not there is owed the answer. What differs is
+            // whether its absence means anything is missing.
+            //
+            // Constraint 3 is about an incomplete index looking like a complete one, so
+            // a gap in the repository is recorded through the channel that degrades the
+            // health record and raises the exit code. Somebody else's file is not a gap
+            // in this repository: reporting it as one made a stock .NET solution exit 3
+            // on every query forever, which is how a banner stops being read.
+            index.Metadata.ToolInfo.Arguments.Add(
+                (roots.IsExternal(path) ? ExternalDocumentPrefix : OutsideProjectRootPrefix) + path);
             map[path] = null;
             return null;
         }
@@ -466,18 +473,20 @@ public static class ScipEmitter
     }
 
     /// <summary>
-    /// The SCIP path for a file, or null when the file lies outside the project root.
+    /// The SCIP path for a file relative to a root, or null when the file lies outside
+    /// that root. Null is therefore also the answer to "is this path outside this
+    /// directory", which is what classifying an omission needs.
     ///
     /// scip.proto requires relative_path to use '/' on every platform, and requires
     /// every document to live under Metadata.project_root, so '..' is not available
-    /// as an escape hatch. A file genuinely outside the root (a Razor Class Library
-    /// restored from the NuGet cache is the realistic case) therefore cannot be a
-    /// document of this index, and the caller records the omission rather than
-    /// emitting a path the spec forbids.
+    /// as an escape hatch. A file genuinely outside the root (source contributed from
+    /// the NuGet package cache is the realistic case) therefore cannot be a document
+    /// of this index, and the caller records the omission rather than emitting a path
+    /// the spec forbids.
     /// </summary>
-    private static string? RelativeWithinRoot(string projectRoot, string path)
+    private static string? RelativeWithinRoot(string root, string path)
     {
-        var relative = Path.GetRelativePath(projectRoot, path);
+        var relative = Path.GetRelativePath(root, path);
 
         // On Windows a different volume yields the original absolute path back.
         if (Path.IsPathRooted(relative)) return null;
@@ -486,6 +495,100 @@ public static class ScipEmitter
         if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal)) return null;
 
         return relative;
+    }
+
+    /// <summary>
+    /// A path that is outside the repository, and so is informational.
+    /// </summary>
+    private const string ExternalDocumentPrefix = "external-document: ";
+
+    /// <summary>
+    /// A path that is inside the repository, or that vela cannot show is outside it,
+    /// and outside project_root. A real coverage gap, and degrades the index.
+    /// </summary>
+    private const string OutsideProjectRootPrefix = "outside-project-root: ";
+
+    /// <summary>
+    /// Where an index is rooted, and what vela can measure "outside" against.
+    ///
+    /// project_root is the git repository root when the solution sits in a working
+    /// tree, and the solution's own directory when it does not. The repository is the
+    /// unit a developer works in: a `repo/src/App.sln` layout is ordinary, and rooting
+    /// the index at `repo/src` stranded everything above it, so a shared view or a
+    /// linked file one directory up could not be a document at all and was reported as
+    /// missing on every query.
+    /// </summary>
+    private sealed record Roots(string ProjectRoot, string? RepositoryRoot, string? PackageCache)
+    {
+        public static Roots Resolve(string solutionDirectory)
+        {
+            var directory = Path.GetFullPath(solutionDirectory);
+            var repository = FindRepositoryRoot(directory);
+            return new Roots(repository ?? directory, repository, PackageCacheDirectory());
+        }
+
+        /// <summary>
+        /// Whether a file vela could not place under project_root belongs to somebody
+        /// else rather than being a gap in the repository being indexed.
+        ///
+        /// Two things say so. The path is in the NuGet package cache, which NuGet owns
+        /// and nobody edits: the case that provoked all this is Microsoft.NET.Test.Sdk,
+        /// which contributes a generated entry point from the cache to every test
+        /// project. Or the solution is in a repository and the path is outside it,
+        /// which covers the package cache again and everything else besides.
+        ///
+        /// When there is no repository there is no boundary to be outside of, so
+        /// nothing but the package cache can be shown to be external and every other
+        /// path stays a loud gap. That is the conservative direction: a file one
+        /// directory up from a solution that is not in a repository may well be the
+        /// user's own code, and quietly demoting it would hide exactly what Constraint
+        /// 3 exists to surface.
+        /// </summary>
+        public bool IsExternal(string path)
+        {
+            if (PackageCache is not null && RelativeWithinRoot(PackageCache, path) is not null)
+                return true;
+
+            return RepositoryRoot is not null && RelativeWithinRoot(RepositoryRoot, path) is null;
+        }
+
+        /// <summary>
+        /// The root of the git working tree a directory sits in, or null when it sits
+        /// in none.
+        ///
+        /// A walk up the directory chain looking for a `.git` entry, rather than a call
+        /// to git: the walk is deterministic (Constraint 1), needs nothing installed,
+        /// and cannot be affected by a git configuration vela did not set. A `.git`
+        /// DIRECTORY is an ordinary clone; a `.git` FILE holds a `gitdir:` pointer and
+        /// means a linked worktree or a submodule, both of which are working trees
+        /// whose root this is. Only the first, innermost one counts, so a submodule is
+        /// rooted at itself rather than at the repository containing it.
+        /// </summary>
+        private static string? FindRepositoryRoot(string directory)
+        {
+            for (var current = new DirectoryInfo(directory); current is not null; current = current.Parent)
+            {
+                var git = Path.Combine(current.FullName, ".git");
+                if (Directory.Exists(git) || File.Exists(git)) return current.FullName;
+            }
+
+            return null;
+        }
+
+        /// <summary>
+        /// The NuGet package cache, resolved the way NuGet itself resolves it:
+        /// NUGET_PACKAGES when it is set, and ~/.nuget/packages otherwise. Null only
+        /// when there is no user profile to fall back to, in which case nothing is
+        /// recognised as cached and every out-of-root path stays loud.
+        /// </summary>
+        private static string? PackageCacheDirectory()
+        {
+            var configured = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
+            if (!string.IsNullOrWhiteSpace(configured)) return Path.GetFullPath(configured);
+
+            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return string.IsNullOrEmpty(profile) ? null : Path.Combine(profile, ".nuget", "packages");
+        }
     }
 
     private static string LanguageOf(string path) => Path.GetExtension(path).ToLowerInvariant() switch

@@ -27,6 +27,7 @@ public static class OutlineQuery
         => QueryHelper.DocumentExists(db, relativePath)
             ? $"'{relativePath}' is in the index and no definitions are recorded in it."
             : $"No document with the path '{relativePath}' is in the index, so this says nothing about "
-              + "that file's symbols. Paths are matched exactly and are relative to the solution directory. "
+              + "that file's symbols. Paths are matched exactly and are relative to the repository root, "
+              + "or to the solution directory when the solution is not in a repository. "
               + "Check the path, and check the index covers this file.";
 }

@@ -24,6 +24,11 @@ public static class Program
     /// Every prefix ScipEmitter uses to record, into the emitted index, a reason that
     /// index is missing code. One list, so a new kind of problem reaches the health
     /// record by being recorded rather than by also being remembered here.
+    ///
+    /// Membership is the test of one question: does this mean code from the repository
+    /// being indexed is absent? Not every note the emitter leaves does, and the ones
+    /// that do not must stay out, or the banner fires when nothing is wrong and stops
+    /// being read.
     /// </summary>
     private static readonly string[] ProblemPrefixes =
     {
@@ -37,6 +42,13 @@ public static class Program
     private const string OutsideProjectRootPrefix = "outside-project-root:";
     private const string CompileErrorPrefix = "compile-error:";
     private const string NoCompilationPrefix = "no-compilation:";
+
+    /// <summary>
+    /// Deliberately absent from <see cref="ProblemPrefixes"/>. A document outside the
+    /// repository is a file this index was never going to hold, so it is reported and
+    /// counted but never treated as a gap in the code being indexed.
+    /// </summary>
+    private const string ExternalDocumentPrefix = "external-document:";
 
     private const string NoSolutionMessage =
         "No single .sln found in the current directory. Pass --solution <path to the .sln>.";
@@ -67,7 +79,8 @@ public static class Program
             "symbol", symbolHelp,
             solutionOption, RefsQuery.Run, RefsQuery.ExplainEmpty, RefsQuery.CountInGeneratedCode));
         root.Add(BuildHitCommand("outline", "Symbols defined in a file",
-            "file", "Path of the file, relative to the solution directory.",
+            "file", "Path of the file, relative to the repository root (the solution directory "
+                  + "when the solution is not in a repository).",
             solutionOption, (db, value, _) => OutlineQuery.Run(db, value), OutlineQuery.ExplainEmpty));
         root.Add(BuildHitCommand("impact", "Callers and blast radius",
             "symbol", symbolHelp,
@@ -240,6 +253,19 @@ public static class Program
 
                 output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
 
+                // Said plainly, and once. These files are not in the index and the
+                // number is worth knowing, but they were never this index's to hold, so
+                // saying it through the "!!" banner below would raise the exit code and
+                // teach the reader to ignore the banner (Constraint 3 cuts both ways).
+                var external = CountExternalDocuments(index);
+                if (external > 0)
+                {
+                    output.WriteLine($"{external} document(s) from outside this repository were not "
+                                   + "indexed, such as source the .NET SDK contributes from the NuGet "
+                                   + "package cache. None of this repository's code is missing because "
+                                   + "of them.");
+                }
+
                 if (parseResult.GetValue(statsOption))
                     output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
             }
@@ -269,6 +295,12 @@ public static class Program
     /// so reading only the loader's failures would stamp "healthy" on an index that is
     /// missing whole files, whole projects, or every reference that depended on a type
     /// the compiler could not resolve.
+    ///
+    /// A document outside the repository altogether is the one thing the emitter
+    /// records that is not one of them, and it is deliberately not read here. Nothing
+    /// of the user's is missing when the .NET SDK contributes a file from the NuGet
+    /// package cache, and calling that index incomplete made every query on a stock
+    /// solution exit 3 forever.
     /// </summary>
     public static HealthRecord BuildHealthRecord(Scip.Index index, IReadOnlyList<string> failures)
     {
@@ -297,6 +329,23 @@ public static class Program
         return problems.Count == 0
             ? new HealthRecord(DateTime.UtcNow, null, Degraded: false, Detail: null)
             : new HealthRecord(DateTime.UtcNow, null, Degraded: true, Detail: Summarise(problems));
+    }
+
+    /// <summary>
+    /// How many documents were left out of an index because they belong to somebody
+    /// else: source contributed from the NuGet package cache, or anything else outside
+    /// the repository being indexed.
+    ///
+    /// This is reported rather than warned about. The count is worth printing, because
+    /// a number that is unexpectedly large is worth someone looking at, but it is not a
+    /// reason to call the index incomplete and it must never raise the exit code.
+    /// </summary>
+    public static int CountExternalDocuments(Scip.Index index)
+    {
+        var arguments = index.Metadata?.ToolInfo?.Arguments;
+        if (arguments is null) return 0;
+
+        return arguments.Count(a => a.StartsWith(ExternalDocumentPrefix, StringComparison.Ordinal));
     }
 
     private static string Summarise(IReadOnlyList<string> problems)

@@ -29,6 +29,14 @@ public class ScipEmitterTests
         // green test. The views must actually carry occurrences.
         Assert.True(razor.Sum(d => d.Occurrences.Count) > 0,
             "Razor documents exist but carry no occurrences, which is the whole point of the tool");
+
+        // project_root is the repository root when there is one, and the solution
+        // directory when there is not. This fixture is a temp directory under no
+        // repository, so every path stays relative to the solution directory: the
+        // fallback is what keeps a relative_path meaning what it meant before, and a
+        // root that silently widened to the temp directory would prefix every path
+        // with a random fixture name.
+        Assert.All(razor, d => Assert.StartsWith("App/", d.RelativePath, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -212,6 +220,145 @@ public class ScipEmitterTests
         // Constraint 3: the omission has to be visible in the index it happened in.
         Assert.Contains(index.Metadata.ToolInfo.Arguments,
             a => a.Contains("outside-project-root") && a.Contains("External.cshtml"));
+    }
+
+    [Fact]
+    public async Task EmitAsync_RecordsAFileOutsideTheRepositoryAsExternalRatherThanAsAGapInIt()
+    {
+        // The defect, from a real 375,608 line solution. Microsoft.NET.Test.Sdk
+        // contributes a generated entry point that lives in the NuGet package cache,
+        // so SCIP cannot hold it (every document must sit under project_root) and vela
+        // correctly declined to emit it. Recording that as degradation made every query
+        // exit 3, permanently, on a stock .NET solution with nothing unusual about its
+        // layout. Nothing of the user's code was missing. A banner that fires when
+        // nothing is wrong teaches an agent to ignore the one signal Constraint 3
+        // depends on, so the two cases are now separate channels.
+        using var repository = new TempDirectory();
+        Directory.CreateDirectory(Path.Combine(repository.Path, ".git"));
+
+        using var elsewhere = new TempDirectory();
+        var external = Path.Combine(elsewhere.Path, "microsoft.net.test.sdk", "18.4.0", "build", "Entry.cs");
+
+        var solution = SyntheticSolution(repository.Path, $$"""
+            #line 1 "{{Escape(external)}}"
+            public class Entry { }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+
+        // Still recorded, and still named: the file is genuinely not in the index, and
+        // a reader asking why is owed the answer.
+        Assert.Contains(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("external-document:", StringComparison.Ordinal) && a.Contains("Entry.cs"));
+
+        // But not through the channel that means "code of yours is missing".
+        Assert.DoesNotContain(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("outside-project-root:", StringComparison.Ordinal));
+
+        var health = Program.BuildHealthRecord(index, Array.Empty<string>());
+        Assert.False(health.Degraded, health.Detail);
+        Assert.Null(health.Detail);
+
+        // Counted, so `vela index` can still say what it left out without a banner.
+        Assert.Equal(1, Program.CountExternalDocuments(index));
+    }
+
+    [Fact]
+    public async Task EmitAsync_KeepsAFileItCannotProveIsSomebodyElsesAsALoudGap()
+    {
+        // The other half of the split, and the half that must never soften. A solution
+        // that is not in a repository gives vela nothing to measure "outside" against,
+        // so a file it cannot place under project_root may well be the user's own code
+        // sitting one directory up. Recording that as informational would hide a real
+        // coverage gap, which is exactly the failure Constraint 3 exists to prevent.
+        var root = SyntheticRoot();
+        var outside = Path.Combine(SyntheticRoot(), "Lib", "External.cshtml");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 4 "{{Escape(outside)}}"
+            public class Outsider { }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+
+        Assert.Contains(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("outside-project-root:", StringComparison.Ordinal) && a.Contains("External.cshtml"));
+        Assert.DoesNotContain(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("external-document:", StringComparison.Ordinal));
+
+        var health = Program.BuildHealthRecord(index, Array.Empty<string>());
+        Assert.True(health.Degraded);
+        Assert.Contains("External.cshtml", health.Detail);
+        Assert.Equal(0, Program.CountExternalDocuments(index));
+    }
+
+    [Fact]
+    public async Task EmitAsync_RootsTheIndexAtTheRepositoryRootSoASolutionInASubdirectoryStillCoversIt()
+    {
+        // repo/src/App.sln is an ordinary layout, and project_root at the solution
+        // directory stranded everything above src/: a shared view, a linked file or a
+        // project outside src/ could not be a document at all, so it was reported as a
+        // gap rather than indexed. The repository is the unit a developer thinks in and
+        // the unit a change is made in, so that is what the index is rooted at.
+        using var repository = new TempDirectory();
+        Directory.CreateDirectory(Path.Combine(repository.Path, ".git"));
+
+        var solutionDirectory = Path.Combine(repository.Path, "src");
+        Directory.CreateDirectory(solutionDirectory);
+
+        var shared = Path.Combine(repository.Path, "lib", "Shared", "Widget.cshtml");
+
+        var solution = SyntheticSolution(solutionDirectory, $$"""
+            #line 4 "{{Escape(shared)}}"
+            public class Widget { }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+
+        Assert.Equal(new Uri(repository.Path).AbsoluteUri, index.Metadata.ProjectRoot);
+
+        var document = Assert.Single(index.Documents,
+            d => d.RelativePath.EndsWith("Widget.cshtml", StringComparison.Ordinal));
+        Assert.Equal("lib/Shared/Widget.cshtml", document.RelativePath);
+
+        // Indexed rather than reported: there is nothing left to be degraded about.
+        Assert.DoesNotContain(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("outside-project-root:", StringComparison.Ordinal)
+                 || a.StartsWith("external-document:", StringComparison.Ordinal));
+        Assert.False(Program.BuildHealthRecord(index, Array.Empty<string>()).Degraded);
+    }
+
+    [Fact]
+    public async Task EmitAsync_TreatsAGitFileAsARepositoryRootBecauseThatIsWhatAWorktreeHas()
+    {
+        // A linked worktree, and a submodule, carry a .git FILE holding a `gitdir:`
+        // pointer rather than a .git directory. Stopping the walk only on a directory
+        // would root a worktree's index somewhere above the worktree, or nowhere at
+        // all, and vela's own development is done in worktrees.
+        using var repository = new TempDirectory();
+        File.WriteAllText(Path.Combine(repository.Path, ".git"), "gitdir: /elsewhere/.git/worktrees/w\n");
+
+        var solutionDirectory = Path.Combine(repository.Path, "src");
+        Directory.CreateDirectory(solutionDirectory);
+
+        var shared = Path.Combine(repository.Path, "lib", "Shared", "Widget.cshtml");
+
+        var solution = SyntheticSolution(solutionDirectory, $$"""
+            #line 4 "{{Escape(shared)}}"
+            public class Widget { }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+
+        Assert.Equal(new Uri(repository.Path).AbsoluteUri, index.Metadata.ProjectRoot);
+
+        var document = Assert.Single(index.Documents,
+            d => d.RelativePath.EndsWith("Widget.cshtml", StringComparison.Ordinal));
+        Assert.Equal("lib/Shared/Widget.cshtml", document.RelativePath);
     }
 
     [Fact]
@@ -678,16 +825,38 @@ public class ScipEmitterTests
         return workspace.AddSolution(solution);
     }
 
-    private static string SyntheticRoot() =>
+    /// <summary>
+    /// A directory that exists on disk, and is removed afterwards. Most of these tests
+    /// never touch the filesystem, but resolving the repository root is a walk up real
+    /// directories looking for a real .git, so the tests for it need a real tree.
+    /// </summary>
+    internal sealed class TempDirectory : IDisposable
+    {
+        public string Path { get; }
+
+        public TempDirectory()
+        {
+            Path = System.IO.Path.Combine(
+                System.IO.Path.GetTempPath(), "vela-root-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(Path);
+        }
+
+        public void Dispose()
+        {
+            try { Directory.Delete(Path, recursive: true); } catch { /* temp dir, best effort */ }
+        }
+    }
+
+    internal static string SyntheticRoot() =>
         Path.Combine(Path.GetTempPath(), "vela-synth-" + Guid.NewGuid().ToString("N")[..8]);
 
-    private static string Escape(string path) => path.Replace("\\", "\\\\");
+    internal static string Escape(string path) => path.Replace("\\", "\\\\");
 
     /// <summary>
     /// An in-memory solution holding one generated-looking C# file. Nothing is written
     /// to disk: the emitter only ever reads paths, never their contents.
     /// </summary>
-    private static Solution SyntheticSolution(string root, string source)
+    internal static Solution SyntheticSolution(string root, string source)
     {
         var workspace = new AdhocWorkspace();
         var projectId = ProjectId.CreateNewId();
@@ -721,5 +890,91 @@ public class ScipEmitterTests
             projects: new[] { project });
 
         return workspace.AddSolution(solution);
+    }
+}
+
+/// <summary>
+/// The package cache half of the classification, which is the only thing that can tell
+/// a solution outside any repository that a file belongs to somebody else. These tests
+/// set NUGET_PACKAGES, which is process-wide, so they share the non-parallel collection
+/// with every other test that mutates the environment.
+/// </summary>
+[Collection(EnvironmentSensitive.Name)]
+public class ScipEmitterPackageCacheTests
+{
+    [Fact]
+    public async Task EmitAsync_TreatsThePackageCacheAsExternalEvenWithNoRepositoryToCompareAgainst()
+    {
+        // Without a repository there is no boundary to be outside of, so every other
+        // file one directory up stays a loud gap. The package cache is the exception
+        // vela can name: NuGet owns it, nothing in it is the user's code, and a
+        // restored package that contributes source (Microsoft.NET.Test.Sdk does) would
+        // otherwise degrade every query from a perfectly complete index.
+        using var cache = new ScipEmitterTests.TempDirectory();
+        using var _ = new PackageCache(cache.Path);
+
+        var root = ScipEmitterTests.SyntheticRoot();
+        var external = Path.Combine(
+            cache.Path, "microsoft.net.test.sdk", "18.4.0", "build", "net8.0",
+            "Microsoft.NET.Test.Sdk.Program.cs");
+
+        var solution = ScipEmitterTests.SyntheticSolution(root, $$"""
+            #line 1 "{{ScipEmitterTests.Escape(external)}}"
+            public class AutoGeneratedProgram { }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+
+        Assert.Contains(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("external-document:", StringComparison.Ordinal)
+                 && a.Contains("Microsoft.NET.Test.Sdk.Program.cs"));
+        Assert.DoesNotContain(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("outside-project-root:", StringComparison.Ordinal));
+        Assert.False(Program.BuildHealthRecord(index, Array.Empty<string>()).Degraded);
+    }
+
+    [Fact]
+    public async Task EmitAsync_FallsBackToTheDefaultPackageCacheWhenNugetPackagesIsUnset()
+    {
+        // NUGET_PACKAGES is usually unset, and NuGet's own default is
+        // ~/.nuget/packages. Reading only the variable would leave the ordinary
+        // machine, which is the one the defect was found on, unfixed.
+        using var _ = new PackageCache(null);
+
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.False(string.IsNullOrEmpty(profile), "this test needs a user profile directory to exist");
+
+        var root = ScipEmitterTests.SyntheticRoot();
+        var external = Path.Combine(
+            profile, ".nuget", "packages", "microsoft.net.test.sdk", "18.4.0", "build", "net8.0",
+            "Microsoft.NET.Test.Sdk.Program.cs");
+
+        var solution = ScipEmitterTests.SyntheticSolution(root, $$"""
+            #line 1 "{{ScipEmitterTests.Escape(external)}}"
+            public class AutoGeneratedProgram { }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+
+        Assert.Contains(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("external-document:", StringComparison.Ordinal)
+                 && a.Contains("Microsoft.NET.Test.Sdk.Program.cs"));
+        Assert.False(Program.BuildHealthRecord(index, Array.Empty<string>()).Degraded);
+    }
+
+    /// <summary>Points NUGET_PACKAGES somewhere disposable, and puts it back.</summary>
+    private sealed class PackageCache : IDisposable
+    {
+        private readonly string? _previous;
+
+        public PackageCache(string? path)
+        {
+            _previous = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
+            Environment.SetEnvironmentVariable("NUGET_PACKAGES", path);
+        }
+
+        public void Dispose() => Environment.SetEnvironmentVariable("NUGET_PACKAGES", _previous);
     }
 }
