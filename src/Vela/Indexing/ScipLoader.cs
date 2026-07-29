@@ -5,7 +5,17 @@ namespace Vela.Indexing;
 public static class ScipLoader
 {
     /// <summary>
-    /// Loads a freshly emitted SCIP index into the database. This is a one-shot bulk
+    /// Loads what the emitter just produced, with both of a symbol's names and the two
+    /// facts SCIP has nowhere to put, straight off the <see cref="Harvest.EmitResult"/>
+    /// so no caller has to remember to pass them.
+    ///
+    /// The empty-schema precondition of the overload below applies here unchanged.
+    /// </summary>
+    public static void Load(SqliteConnection db, Vela.Harvest.EmitResult emitted) =>
+        Load(db, emitted.Index, emitted.GeneratedDocuments, emitted.DisplayNames);
+
+    /// <summary>
+    /// Loads a SCIP index into the database. This is a one-shot bulk
     /// load and requires an empty schema: a database that has just had
     /// <see cref="Schema.Create"/> called on it, or an equivalently empty one.
     /// <see cref="Schema.Create"/> uses "CREATE TABLE IF NOT EXISTS" and never
@@ -27,13 +37,6 @@ public static class ScipLoader
     /// path alone is not evidence of it, so it is carried beside the index and stored
     /// in vela's own schema, where refs and impact read it.
     /// </param>
-    /// <summary>
-    /// Loads what the emitter just produced, with both of a symbol's names: the display
-    /// name the queries use and the SCIP moniker the occurrence carries on the wire.
-    /// </summary>
-    public static void Load(SqliteConnection db, Vela.Harvest.EmitResult emitted) =>
-        Load(db, emitted.Index, emitted.GeneratedDocuments, emitted.DisplayNames);
-
     /// <param name="displayNames">
     /// What vela calls each occurrence's symbol, which cannot be read off the index
     /// because Occurrence.symbol is the SCIP moniker. An occurrence with no entry keeps
