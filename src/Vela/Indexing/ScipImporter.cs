@@ -75,7 +75,8 @@ public sealed record ImportReport(
 /// Metadata.project_root, and vela's paths are relative to <see cref="ProjectRoot"/>. The
 /// two are rarely the same directory: scip-typescript run over a mobile app inside a
 /// repository roots itself at the app. Paths are rebased, and one that cannot be is
-/// recorded rather than dropped.
+/// recorded rather than dropped. An index that declares no project_root at all, or a
+/// relative one, is refused outright: see <see cref="Writer.Begin"/>.
 ///
 /// <b>4. A moniker is not a name.</b> See <see cref="MonikerName"/>, which is the heart
 /// of this.
@@ -94,9 +95,10 @@ public static class ScipImporter
     /// is materialised at a time and released once its rows are written.
     /// </summary>
     /// <exception cref="InvalidDataException">
-    /// The file is not a readable SCIP index, or its metadata does not come first. The
-    /// whole import runs in one transaction, so nothing at all is written: a .scip that
-    /// cannot be parsed leaves the index exactly as it was rather than half-imported.
+    /// The file is not a readable SCIP index, its metadata does not come first, or its
+    /// project_root is not an absolute path. The whole import runs in one transaction, so
+    /// nothing at all is written: a .scip that cannot be parsed, or cannot be placed,
+    /// leaves the index exactly as it was rather than half-imported.
     /// </exception>
     public static ImportReport ImportFile(SqliteConnection db, string scipPath, string projectRoot)
     {
@@ -251,9 +253,46 @@ public static class ScipImporter
             while (reader.Read()) takenPaths.Add(reader.GetString(0));
         }
 
+        /// <summary>
+        /// Reads the metadata, and refuses an index whose project_root is not an
+        /// absolute path.
+        ///
+        /// scip.proto: project_root is a "URI-encoded absolute path to the root
+        /// directory of this index. All documents in this index must appear in a
+        /// subdirectory of this root directory." It is NOT marked required - unlike
+        /// Document.relative_path, which the same file marks "(Required)" - so an index
+        /// can really arrive with it empty or relative, and one that does cannot be
+        /// placed. <see cref="Rebase"/> used to do Path.GetFullPath(Path.Combine(root,
+        /// relativePath)), which for an empty or relative root resolves against the
+        /// PROCESS WORKING DIRECTORY: the same .scip file imported from two different
+        /// directories produced different paths, or a clean import from one and a
+        /// degraded one from the other. vela is deterministic only (Constraint 1), so
+        /// this is a refusal by name rather than a guess. There is nothing to guess
+        /// from: the paths in the file are relative to a directory the file does not
+        /// name.
+        /// </summary>
+        /// <exception cref="InvalidDataException">project_root is empty, relative, or
+        /// not a file URI naming an absolute path on this machine.</exception>
         public void Begin(Scip.Metadata? metadata)
         {
-            foreignRoot = RootOf(metadata?.ProjectRoot);
+            var declared = metadata?.ProjectRoot ?? "";
+            foreignRoot = RootOf(declared);
+
+            if (!Path.IsPathRooted(foreignRoot))
+            {
+                var what = declared.Length == 0
+                    ? "declares no project_root"
+                    : $"declares project_root '{declared}', which is not an absolute path on this machine";
+
+                throw new InvalidDataException(
+                    $"This .scip index {what}. Every relative_path in it is relative to that directory, "
+                    + "so without it vela cannot say where any of this index's documents are. scip.proto "
+                    + "asks for a \"URI-encoded absolute path to the root directory of this index\"; "
+                    + "resolving a relative one against the current directory instead would make the same "
+                    + "file import differently depending on where vela was run from. Nothing was "
+                    + "imported. Re-run the indexer, which normally writes an absolute file: URI here.");
+            }
+
             tool = metadata?.ToolInfo?.Name ?? "";
         }
 
@@ -611,6 +650,10 @@ public static class ScipImporter
     /// The directory an index's paths are relative to. scip.proto calls project_root a
     /// "URI-encoded absolute path", which every indexer writes as a file: URI, but an
     /// index that puts a bare path there is readable and there is no reason to refuse it.
+    ///
+    /// Anything else - empty, relative, or a URI that is not a file - comes back as it
+    /// arrived and is refused by <see cref="Writer.Begin"/>, which is the one place that
+    /// decision is made.
     /// </summary>
     private static string RootOf(string? projectRoot)
     {

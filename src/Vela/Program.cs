@@ -411,7 +411,10 @@ public static class Program
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
             {
-                error.WriteLine("The .scip file could not be read: " + ex.Message);
+                // Not "could not be read": a file that reads perfectly and declares no
+                // project_root is refused too, and telling the user their file is
+                // unreadable would send them looking in the wrong place.
+                error.WriteLine("The .scip index could not be imported: " + ex.Message);
                 error.WriteLine("Nothing was imported, so the index is exactly as it was.");
                 return ExitCannotAnswer;
             }

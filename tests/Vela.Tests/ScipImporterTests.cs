@@ -355,6 +355,59 @@ public class ScipImporterTests
         Assert.Equal("src/Mobile/src/api.ts", Scalar(db, "SELECT relative_path FROM document")?.ToString());
     }
 
+    [Theory]
+    // scip.proto calls project_root a "URI-encoded absolute path to the root directory
+    // of this index" and does NOT mark it required, unlike Document.relative_path which
+    // is "(Required)". So an index can really arrive with it empty or relative, and the
+    // rebase used to do Path.GetFullPath(Path.Combine("", relativePath)), which resolves
+    // against the PROCESS WORKING DIRECTORY. The same .scip file imported from two
+    // different directories then produced different paths, or a clean import from one
+    // directory and a degraded one from the other, which is not a deterministic tool
+    // (Constraint 1). It is refused instead, by name, because there is nothing to guess
+    // from: the paths in the file are relative to a directory the file does not name.
+    [InlineData("")]
+    [InlineData("src/Mobile")]
+    [InlineData("./src")]
+    [InlineData("../sibling")]
+    [InlineData("https://example.com/repo")]
+    public void Import_RefusesAProjectRootThatIsNotAnAbsolutePathRatherThanResolvingItAgainstTheProcessDirectory(
+        string projectRoot)
+    {
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = projectRoot }
+        };
+        index.Documents.Add(new Scip.Document { RelativePath = "src/api.ts", Language = "typescript" });
+
+        using var db = Fresh();
+
+        var ex = Assert.Throws<InvalidDataException>(() => ScipImporter.Import(db, index, "/repo"));
+        Assert.Contains("project_root", ex.Message, StringComparison.Ordinal);
+
+        // Refused, so nothing at all was written: the index is exactly as it was.
+        Assert.Equal(0, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM document")));
+        Assert.Equal(0, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM occurrence")));
+    }
+
+    [Fact]
+    public void Import_AcceptsABareAbsolutePathAsAProjectRootAsWellAsAFileUri()
+    {
+        // Every indexer in the ecosystem writes a file: URI, which is what "URI-encoded"
+        // asks for, but a bare absolute path names the same directory unambiguously and
+        // there is no reason to refuse it. What is refused is only what cannot be
+        // resolved without inventing a directory.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = "/repo/src/Mobile" }
+        };
+        index.Documents.Add(new Scip.Document { RelativePath = "src/api.ts", Language = "typescript" });
+
+        using var db = Fresh();
+        ScipImporter.Import(db, index, "/repo");
+
+        Assert.Equal("src/Mobile/src/api.ts", Scalar(db, "SELECT relative_path FROM document")?.ToString());
+    }
+
     [Fact]
     public void Import_RecordsAPathItCannotRebaseRatherThanDroppingIt()
     {
