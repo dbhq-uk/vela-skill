@@ -423,12 +423,15 @@ public static class ScipImporter
     private const string DuplicateDocumentPrefix = "duplicate-document: ";
 
     /// <summary>
-    /// The display name of a local, namespaced by the document it lives in.
+    /// The display name of a local: the document it lives in, then what it is called.
     ///
-    /// The '#' is what makes two documents' `local 1` two symbols. It is also not a dot,
-    /// so the dotted name after it is still a trailing run of dotted segments of the
-    /// whole string and `refs count` reaches it, which is the entire point of doing this
-    /// in the display name rather than in the moniker.
+    /// The document is what makes two documents' `local 1` two symbols, and it stays in
+    /// the name whatever else is known about the local. An indexer that fills in
+    /// display_name and leaves enclosing_symbol empty would otherwise store a bare
+    /// `count`, which is one name for every count in the repository - hazard 2 again,
+    /// from the other end. It costs nothing to keep: vela matches a trailing run of
+    /// dotted segments, so `refs count` reaches this row no matter how long the prefix in
+    /// front of it is.
     ///
     /// Where the index describes the local, its name is built the way vela names a C#
     /// local: the enclosing symbol, then the short name. scip.proto gives
@@ -437,21 +440,48 @@ public static class ScipImporter
     /// this field to reference the 'parent' or 'owner' of this local symbol" - and vela's
     /// own emitter fills it in. scip-typescript 0.4.0 fills in neither it nor
     /// display_name on any of the 769 locals it emitted for ScentVerdict.Mobile, so the
-    /// fallback is the id itself: unnameable, but distinct and honest about where it is.
+    /// fallback is the id: `local 1` with the space taken out, which is the only
+    /// character of a local moniker that is not an identifier character. That is the
+    /// whole of the fix here. The name used to be the path, a '#' and the moniker -
+    /// src/ScentVerdict.Mobile/src/composables/useApi.ts#local 2 - and a '#' is not a
+    /// dot, so no pattern anyone would type ever selected it: `local 2` failed on the
+    /// '#' before it, and it looked nothing like the rest of the index besides.
     /// </summary>
     private static string LocalName(
         string documentPath, string moniker, Dictionary<string, Scip.SymbolInformation> described)
     {
+        var document = DottedPath(documentPath);
+
         if (!described.TryGetValue(moniker, out var information) || information.DisplayName.Length == 0)
-            return documentPath + "#" + moniker;
+            return document + ".local" + moniker[LocalPrefix.Length..];
 
-        var enclosing = information.EnclosingSymbol.Length > 0
-            ? MonikerName.For(information.EnclosingSymbol)
-            : "";
+        // A moniker that does not parse stands in for itself, spaces and all, and this
+        // is a name rather than a moniker, so it is the display name alone in that case.
+        var enclosingName = MonikerName.For(information.EnclosingSymbol);
+        var enclosing = enclosingName == information.EnclosingSymbol ? "" : enclosingName + ".";
 
-        return enclosing.Length > 0
-            ? documentPath + "#" + enclosing + "." + information.DisplayName
-            : documentPath + "#" + information.DisplayName;
+        return document + "." + enclosing + MonikerName.OneSegment(information.DisplayName);
+    }
+
+    /// <summary>
+    /// A document's path as dotted segments, one segment per path component.
+    ///
+    /// A path is not a dotted name and turning it into one is not a matter of replacing
+    /// the slashes: src/ScentVerdict.Mobile/src/composables/useApi.ts done that way ends
+    /// in a segment called `ts`, which then answers `refs ts` for every local in every
+    /// TypeScript file, and carries a segment called `Mobile` that answers for every
+    /// local in the app. So one component is one segment, by the same two rules a
+    /// descriptor gets: the file extension comes off the last component, and any dot
+    /// still left in any component becomes an underscore.
+    /// </summary>
+    private static string DottedPath(string path)
+    {
+        var parts = path.Split('/');
+        parts[^1] = SourceFile.WithoutExtension(parts[^1]);
+
+        for (var i = 0; i < parts.Length; i++) parts[i] = MonikerName.OneSegment(parts[i]);
+
+        return string.Join('.', parts);
     }
 
     /// <summary>

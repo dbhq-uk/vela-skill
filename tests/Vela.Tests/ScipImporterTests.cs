@@ -251,10 +251,45 @@ public class ScipImporterTests
 
         Assert.Equal(2, Convert.ToInt32(Scalar(db, "SELECT COUNT(DISTINCT symbol) FROM occurrence")));
 
+        // And they are namespaced the way every other imported name is shaped: dotted
+        // segments, each one askable. The document they belong to is what makes them two
+        // names, and 'local 1' - a word, a space and a number - is not a name vela's
+        // matching rule can reach at all.
+        Assert.Equal(
+            new[] { "a.local1", "b.local1" },
+            Strings(db, "SELECT symbol FROM occurrence ORDER BY symbol"));
+
         // The moniker itself is left exactly as the index wrote it. It is theirs, it is
         // what an export has to put back, and the spec already forbids reaching it from
         // outside the document, so it is the display name that carries the namespacing.
         Assert.Equal(1, Convert.ToInt32(Scalar(db, "SELECT COUNT(DISTINCT scip_symbol) FROM occurrence")));
+    }
+
+    [Fact]
+    public void Import_NamesALocalWithoutAnExtensionOrAnythingElseThatCannotBeASegment()
+    {
+        // The document a local is namespaced by is a path, and a path is not dotted the
+        // way a name is: '/' separates its components, its last component carries a file
+        // extension, and a directory can have a dot in its own name. Turned into
+        // segments naively, every local in the tree would end up under a segment called
+        // 'ts' and a segment called 'Mobile', which are catch-alls answering for
+        // hundreds of unrelated symbols. One path component is one segment, by the same
+        // two rules a descriptor gets.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+        };
+
+        var doc = new Scip.Document { RelativePath = "src/ScentVerdict.Mobile/src/useApi.ts" };
+        doc.Occurrences.Add(new Scip.Occurrence { Symbol = "local 2", Range = { 0, 4, 9 } });
+        index.Documents.Add(doc);
+
+        using var db = Fresh();
+        ScipImporter.Import(db, index, "/repo");
+
+        Assert.Equal(
+            "src.ScentVerdict_Mobile.src.useApi.local2",
+            Scalar(db, "SELECT symbol FROM occurrence")?.ToString());
     }
 
     [Fact]
@@ -287,8 +322,14 @@ public class ScipImporterTests
         using var db = Fresh();
         ScipImporter.Import(db, index, "/repo");
 
+        // The document it lives in is still what makes it document-scoped, and it stays
+        // there even though the enclosing symbol repeats most of it: an indexer that
+        // fills in display_name and leaves enclosing_symbol empty would otherwise store
+        // a bare 'count', which is one name for every count in the repository. Matching
+        // is on a trailing run of segments, so the prefix costs nothing: `refs count`,
+        // `refs First.count` and the whole name all reach this row.
         Assert.Equal(
-            "App/Counter.cs#App.Counter.First.count",
+            "App.Counter.App.Counter.First.count",
             Scalar(db, "SELECT symbol FROM occurrence")?.ToString());
     }
 
@@ -544,6 +585,17 @@ public class ScipImporterTests
         using var cmd = db.CreateCommand();
         cmd.CommandText = sql;
         return cmd.ExecuteScalar();
+    }
+
+    private static string[] Strings(SqliteConnection db, string sql)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+
+        var values = new List<string>();
+        while (reader.Read()) values.Add(reader.GetString(0));
+        return values.ToArray();
     }
 
     private static int[] Column(SqliteConnection db, string sql)

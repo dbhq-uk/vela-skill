@@ -145,6 +145,27 @@ public class ScipImportEndToEndTests
         Assert.Equal(2, Count(db,
             "SELECT COUNT(DISTINCT symbol) FROM occurrence WHERE scip_symbol = 'local 1'"));
 
+        // Distinct, and dotted like everything else, so the matching rule reaches them:
+        // stored as a path, a '#' and a space they were unaskable and looked nothing
+        // like the rest of the index.
+        var locals = RefsQuery.Run(db, "local1", includeGenerated: false);
+        Assert.NotEmpty(locals);
+        Assert.All(locals, h => Assert.EndsWith(".local1", h.Symbol, StringComparison.Ordinal));
+        Assert.Equal(
+            new[]
+            {
+                "src.ScentVerdict_Mobile.src.composables.useAffiliateBrowser.local1",
+                "src.ScentVerdict_Mobile.src.composables.useAppReview.local1"
+            },
+            locals.Select(h => h.Symbol).Distinct(StringComparer.Ordinal).OrderBy(s => s, StringComparer.Ordinal));
+
+        // Every name this import stored is a dotted name. A space or a '#' in one is
+        // either a moniker that stood in for a name it could not derive or a shape only
+        // one kind of symbol has, and both are unreachable by a rule that matches whole
+        // dotted segments.
+        Assert.Equal(0, Count(db,
+            "SELECT COUNT(*) FROM occurrence WHERE instr(symbol, ' ') > 0 OR instr(symbol, '#') > 0"));
+
         // The display name derivation, on a symbol nobody wrote for a test: drydown.ts
         // exports phaseToOnset, and `refs` has to reach it by the name a person types.
         var hits = RefsQuery.Run(db, "phaseToOnset", includeGenerated: false);
