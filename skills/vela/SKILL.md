@@ -29,11 +29,15 @@ Use vela when:
 vela index
 ```
 
-Builds the index for the solution in the current directory. Takes tens of seconds on a large solution and is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once anything under the solution directory is newer than it.
+Builds the index for the solution in the current directory. Takes tens of seconds on a large solution and is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once anything under the repository root is newer than it.
+
+The index is rooted at the **repository root** - the working tree the solution sits in, or the solution's own directory when it is in no repository. So a `repo/src/App.sln` layout still covers `repo/tests/`, every path you are given is relative to that root, and that is the form `outline` expects back.
 
 The solution must build. If a project fails to load, or compiles with errors, vela says so - do not proceed as though the index were complete. Compilation errors matter more than they look: every reference that depends on a type the compiler could not resolve is simply absent from the index.
 
-Add `--stats` to see what was indexed, including how many Razor views were covered.
+`vela index` may print a plain line such as `1 document(s) contributed by a NuGet package or the .NET SDK were not indexed`. That is not a warning and has no `!!` banner: those files live in the NuGet package cache or the .NET installation, none of the repository's code is missing, and the exit code stays 0. Do not treat it as a gap. Anything vela cannot attribute to a package or the SDK is treated as a gap instead, and arrives with the banner and exit 3.
+
+Add `--stats` to see what was indexed, including how many Razor views were covered and the path of every document that was left out.
 
 The index is a cache, and it carries the schema version of the vela that wrote it. If you upgrade vela and the shape of the index has changed, every verb refuses to answer and tells you to re-index rather than querying a database it cannot read. Re-index; there is nothing else to do.
 

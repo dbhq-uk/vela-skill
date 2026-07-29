@@ -77,7 +77,11 @@ vela find   Repository
 
 `refs` and `impact` leave out source-generated code by default, because the Razor generator's output is compiled but never written to disk and those paths cannot be opened. They always say how much they left out, and `--include-generated` brings it back. `def` and `outline` always include it, marked `(generated)`.
 
-The index is a snapshot. If anything under the solution directory has changed since it was built, every verb says so and exits 3.
+Paths are relative to the **repository root** - the working tree the solution sits in, or the solution's own directory when it is in no repository. That is what the index is rooted at, so a `repo/src/App.sln` layout still covers `repo/tests/`, and it is what `outline` expects and what every answer prints.
+
+The index is a snapshot. If anything under that same root has changed since it was built, every verb says so and exits 3.
+
+`vela index` may also print a plain line saying that some documents were not indexed, for example `1 document(s) contributed by a NuGet package or the .NET SDK were not indexed`. That is information, not a warning: those files live in the package cache or the .NET installation, none of your code is missing, and the exit code stays 0. `vela index --stats` lists them by path. A file that vela cannot attribute to a package or the SDK is a different matter and is reported as a gap, with the banner and exit 3.
 
 ## Scope
 

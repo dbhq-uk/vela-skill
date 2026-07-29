@@ -183,11 +183,16 @@ neither implements them nor, yet, imports them.
 
 - **Staleness policy.** Settled for now at the cheap end: the index records when it
   was built, and every query compares that against the newest modification time under
-  the solution directory, skipping `bin`, `obj` and `.git`. Anything newer degrades the
-  answer, which means both the banner and exit code 3. It is timestamps only - no file
-  is read and nothing is hashed - so it is coarse: it cannot say whether the symbol you
-  asked about was the one that changed. A git ref and per-file hashes would narrow that,
-  and are worth doing only alongside incremental reindex.
+  the repository root the index was built against, skipping `bin`, `obj` and `.git`.
+  That root is the one place both the emitter and the check read it from, so the files
+  that can be in the index and the files that can make it stale are the same set: they
+  were not, and a `repo/src/App.sln` layout had everything under `repo/tests/` indexed
+  and unwatched. Anything newer degrades the answer, which means both the banner and
+  exit code 3. It is timestamps only - no file is read and nothing is hashed - so it is
+  coarse: it cannot say whether the symbol you asked about was the one that changed. A
+  git ref and per-file hashes would narrow that, and are worth doing only alongside
+  incremental reindex. The walk is also unbounded, which is the next thing to fix: it is
+  correct and it is paid on every verb.
 - **Incremental reindex.** Full index of a 10-project solution takes ~87s with
   `scip-dotnet` as a reference point. Whether per-project incremental work is worth
   the complexity is deferred until the full path is proven.
