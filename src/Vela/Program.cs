@@ -1,5 +1,6 @@
 using System.CommandLine;
 using Microsoft.Data.Sqlite;
+using Vela.Config;
 using Vela.Indexing;
 using Vela.Query;
 
@@ -257,17 +258,48 @@ public static class Program
             var output = parseResult.InvocationConfiguration.Output;
             var error = parseResult.InvocationConfiguration.Error;
 
-            var solution = parseResult.GetValue(solutionOption);
-            if (string.IsNullOrWhiteSpace(solution))
-            {
-                error.WriteLine(NoSolutionMessage);
+            // Read before anything expensive happens. A config vela cannot honour must cost
+            // nothing and change nothing, and the config is allowed to say which solution
+            // this is, so both questions are settled before the workspace is loaded.
+            if (!TryResolveSolution(parseResult.GetValue(solutionOption), error, out var solution, out var config))
                 return ExitCannotAnswer;
+
+            var repositoryRoot = ProjectRoot.ForSolution(solution);
+            var plan = JobPlanner.For(config, repositoryRoot);
+
+            // Every line about the config is inside this guard, and deliberately so: with
+            // no vela.json the output of this verb is what it always was, to the character.
+            if (config.FoundAt is not null)
+            {
+                output.WriteLine($"Using {VelaConfig.FileName} at {config.FoundAt}: {DescribeJobs(config)}");
+                foreach (var note in plan.Notes) output.WriteLine(note);
+
+                if (!plan.RunsVelaIndexer)
+                {
+                    error.WriteLine($"{VelaConfig.FileName} declares no job for vela's own indexer, so there is "
+                                  + "nothing for vela index to build. Add a csharp job, or leave the jobs array "
+                                  + "out to keep the default csharp and razor jobs. Another indexer's output "
+                                  + "reaches this index through vela import.");
+                    return ExitCannotAnswer;
+                }
             }
 
             var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(solution, cancellationToken);
             var emitted = await Vela.Harvest.ScipEmitter.EmitAsync(load.Solution, load.Failures, cancellationToken);
             var index = emitted.Index;
             var health = BuildHealthRecord(index, load.Failures);
+
+            // A job root that is not there can never be settled by an import, so it belongs
+            // in the indexing pass's own verdict, which this run rewrites: fix the config or
+            // the tree, index again, and it clears.
+            if (plan.Problems.Count > 0)
+            {
+                health = health with
+                {
+                    Degraded = true,
+                    Detail = Append(health.Detail, Summarise(plan.Problems))
+                };
+            }
 
             var path = IndexPaths.ForSolution(solution);
 
@@ -286,6 +318,13 @@ public static class Program
                 var external = ExternalDocumentPaths(index);
                 ExternalDocuments.Write(db, external);
                 IndexHealth.Write(db, health);
+
+                // Each job vela cannot run itself, recorded under the .scip it is waiting
+                // for. That key is exactly the one `vela import` clears when it imports a
+                // file cleanly, so importing the file the job named settles the job with no
+                // further machinery and nothing left behind to go stale.
+                foreach (var pending in plan.Pending)
+                    IndexHealth.WriteImport(db, pending.Source, pending.Detail);
 
                 output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
 
@@ -313,9 +352,23 @@ public static class Program
                     output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
             }
 
-            if (health.Degraded)
+            if (config.FoundAt is not null)
             {
-                error.WriteLine("!! The index is INCOMPLETE. " + health.Detail);
+                ReportCensus(output, config, repositoryRoot);
+                ReportPendingJobs(output, plan, repositoryRoot);
+            }
+
+            var detail = plan.Pending.Count == 0
+                ? health.Detail
+                : Append(health.Detail, Summarise(
+                    plan.Pending.Select(p => Relative(repositoryRoot, p.Source) + ": " + p.Detail).ToList()));
+
+            // A configured job that did not run degrades the index exactly as a project that
+            // did not load does. That is the whole point of putting the jobs in a file: a
+            // config must never become a quiet way to lose a language.
+            if (health.Degraded || plan.Pending.Count > 0)
+            {
+                error.WriteLine("!! The index is INCOMPLETE. " + detail);
                 error.WriteLine("   Answers from it may be missing code. Do not treat an empty result as proof.");
                 return IndexHealth.ExitDegraded;
             }
@@ -325,6 +378,138 @@ public static class Program
 
         return command;
     }
+
+    /// <summary>
+    /// Which solution this command is about, and what `vela.json` says about the repository
+    /// it sits in.
+    ///
+    /// The config is looked for from the solution's own directory upwards, bounded by the
+    /// repository root, and it may supply the solution itself: a repository with two .sln
+    /// files could otherwise only be indexed by passing --solution on every command, which
+    /// is exactly the kind of thing a config file exists to settle.
+    ///
+    /// A config that cannot be honoured stops the command here, before anything is read or
+    /// written. Half-honouring it would mean building an index that means something other
+    /// than what was asked for, and saying nothing about the difference.
+    /// </summary>
+    private static bool TryResolveSolution(
+        string? solution, TextWriter error, out string resolvedSolution, out VelaConfig config)
+    {
+        resolvedSolution = "";
+        config = VelaConfig.Default;
+
+        var start = string.IsNullOrWhiteSpace(solution)
+            ? Directory.GetCurrentDirectory()
+            : Path.GetDirectoryName(Path.GetFullPath(solution)) ?? Directory.GetCurrentDirectory();
+
+        try
+        {
+            config = VelaConfig.ForDirectory(start);
+        }
+        catch (VelaConfigException ex)
+        {
+            foreach (var problem in ex.Problems) error.WriteLine(problem);
+            error.WriteLine("Nothing was read or written, so any index already built is exactly as it was.");
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(solution))
+        {
+            resolvedSolution = solution;
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(config.Solution))
+        {
+            error.WriteLine(NoSolutionMessage);
+            return false;
+        }
+
+        if (!File.Exists(config.Solution))
+        {
+            error.WriteLine($"{VelaConfig.FileName} at {config.FoundAt} names a solution that is not there: "
+                          + config.Solution);
+            return false;
+        }
+
+        resolvedSolution = config.Solution;
+        return true;
+    }
+
+    /// <summary>What the configured jobs are, in one line, said the way the file says it:
+    /// a language, and who produces it.</summary>
+    private static string DescribeJobs(VelaConfig config)
+    {
+        var vela = config.Jobs.Where(j => j.IsVela).Select(j => j.Language).ToList();
+
+        var parts = new List<string>();
+        if (vela.Count > 0) parts.Add(string.Join(" and ", vela) + " from vela's own indexer");
+        parts.AddRange(config.Jobs.Where(j => !j.IsVela)
+            .Select(j => $"{j.Language} from {j.Indexer} at '{j.Root}'"));
+
+        return $"{config.Jobs.Count} job(s): {string.Join("; ", parts)}.";
+    }
+
+    /// <summary>
+    /// What the repository is written in that this index does not hold.
+    ///
+    /// It is reported rather than warned about, in the same voice as the documents a NuGet
+    /// package contributed, and it never raises the exit code: vela cannot index SQL and
+    /// never claimed to, so calling that an incomplete index would teach the reader to
+    /// ignore the banner. What it is for is the measurement that justified the whole file -
+    /// seeing "python 80" where a naive count says 5,775 is how anybody checks that the
+    /// exclude list is doing its job.
+    ///
+    /// Only run when a vela.json exists, so a repository that has never heard of the file
+    /// pays nothing for this walk.
+    /// </summary>
+    private static void ReportCensus(TextWriter output, VelaConfig config, string repositoryRoot)
+    {
+        var census = LanguageCensus.Take(repositoryRoot, PathFilter.For(config.Exclude));
+        var uncovered = census.NotCoveredBy(config.Jobs);
+
+        if (uncovered.Count > 0)
+        {
+            var named = string.Join(", ", uncovered
+                .Take(MaxDetailProblems)
+                .Select(l => $"{l.Language} {l.Files} file(s)"));
+
+            if (uncovered.Count > MaxDetailProblems)
+                named += $", (+{uncovered.Count - MaxDetailProblems} more)";
+
+            output.WriteLine($"No job covers {named}, so none of it is in this index. Nothing of yours is "
+                           + "missing that a job asked for; this is what the repository holds beside it.");
+        }
+
+        output.WriteLine($"The exclude list kept this count out of {census.PrunedDirectories} "
+                       + $"director(ies) and rejected {census.ExcludedFiles} further file(s).");
+    }
+
+    /// <summary>
+    /// The jobs this index is waiting on, and the command that would settle each one.
+    ///
+    /// vela does not run other indexers: `scip-io` exists for orchestration and vela consumes
+    /// merged output, so a job whose indexer is not vela declares where its .scip is expected
+    /// to come from. That is what makes it reportable rather than ignorable, which is the
+    /// point - the alternative is a config file that can quietly lose a language.
+    /// </summary>
+    private static void ReportPendingJobs(TextWriter output, IndexPlan plan, string repositoryRoot)
+    {
+        if (plan.Pending.Count == 0) return;
+
+        output.WriteLine($"{plan.Pending.Count} configured job(s) are not in this index. vela does not run "
+                       + "other indexers, so each one's .scip has to be produced and imported; until it is, "
+                       + "this index is missing that language and says so on every answer:");
+
+        foreach (var pending in plan.Pending)
+            output.WriteLine($"  {Relative(repositoryRoot, pending.Source)}: {pending.Detail}");
+    }
+
+    private static string Relative(string root, string path) =>
+        Path.GetRelativePath(root, path).Replace('\\', '/');
+
+    private static string Append(string? existing, string detail) =>
+        string.IsNullOrEmpty(existing) ? detail : existing + "; " + detail;
 
     /// <summary>
     /// `vela import <file.scip>`: read an index another language's indexer produced into
@@ -381,12 +566,11 @@ public static class Program
             var output = parseResult.InvocationConfiguration.Output;
             var error = parseResult.InvocationConfiguration.Error;
 
-            var solution = parseResult.GetValue(solutionOption);
-            if (string.IsNullOrWhiteSpace(solution))
-            {
-                error.WriteLine(NoSolutionMessage);
+            // Through the same resolver `vela index` uses, so a repository whose vela.json
+            // names its solution can import without repeating --solution, and so a config
+            // that cannot be honoured stops both verbs in the same place.
+            if (!TryResolveSolution(parseResult.GetValue(solutionOption), error, out var solution, out _))
                 return ExitCannotAnswer;
-            }
 
             var scipPath = parseResult.GetRequiredValue(argument);
             if (!File.Exists(scipPath))

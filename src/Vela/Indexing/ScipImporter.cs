@@ -1418,7 +1418,7 @@ internal static class SourceFile
         (".vue", "vue"), (".svelte", "svelte"), (".astro", "astro"), (".mdx", "mdx"),
         (".py", "python"), (".pyi", "python"), (".go", "go"), (".rs", "rust"),
         (".java", "java"), (".kt", "kotlin"), (".kts", "kotlin"), (".scala", "scala"),
-        (".rb", "ruby"), (".php", "php"), (".dart", "dart"),
+        (".rb", "ruby"), (".php", "php"), (".dart", "dart"), (".sql", "sql"),
         (".c", "c"), (".h", "c"),
         (".cpp", "cpp"), (".cc", "cpp"), (".cxx", "cpp"), (".hpp", "cpp"), (".hh", "cpp")
     ];
