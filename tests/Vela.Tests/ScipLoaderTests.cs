@@ -218,7 +218,17 @@ public class ScipLoaderTests
         Schema.Create(db);
         ScipLoader.Load(db, emitted);
 
-        Assert.Equal(0, ScalarInt(db, "SELECT COUNT(*) FROM occurrence WHERE scip_symbol = ''"));
+        // scip.proto makes Occurrence.symbol optional, and vela leaves it empty rather
+        // than claiming a `local` for something that is not local to the document. The
+        // loader has to carry that through exactly: as many empty monikers as the
+        // emitter produced, no more and no fewer, so neither a lost moniker nor an
+        // invented one can hide in the column.
+        var absent = emitted.Index.Documents
+            .SelectMany(d => d.Occurrences)
+            .Count(o => o.Symbol.Length == 0);
+
+        Assert.True(absent > 0, "the fixture spells `dynamic` and the global namespace, so this path is exercised");
+        Assert.Equal(absent, ScalarInt(db, "SELECT COUNT(*) FROM occurrence WHERE scip_symbol = ''"));
 
         // A display name is a dotted Roslyn string and a moniker is not, so a column
         // that had quietly been filled with the other one would show here.
@@ -255,6 +265,39 @@ public class ScipLoaderTests
         Assert.NotNull(pair);
         Assert.Equal("scip-csharp cargo Foo 1.0.0 Foo#", pair!.Value.Display);
         Assert.Equal("scip-csharp cargo Foo 1.0.0 Foo#", pair.Value.Scip);
+    }
+
+    [Fact]
+    public void Load_StoresAnOccurrenceThatCarriesNoScipSymbol()
+    {
+        // Occurrence.symbol is optional in scip.proto, and vela now leaves it empty for
+        // an array, a pointer, `dynamic` and the global namespace rather than asserting
+        // a document scope none of them has. The column is NOT NULL DEFAULT '', so the
+        // row is storable, but nothing had ever stored one: this is that path.
+        var index = new Scip.Index();
+        var doc = new Scip.Document { RelativePath = "Foo.cs", Language = "csharp" };
+        doc.Occurrences.Add(new Scip.Occurrence { SymbolRoles = 0 });
+        index.Documents.Add(doc);
+
+        var occurrence = doc.Occurrences[0];
+        var displayNames = new Dictionary<Scip.Occurrence, string>(ReferenceEqualityComparer.Instance)
+        {
+            [occurrence] = "string[]"
+        };
+
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, index, null, displayNames);
+
+        var pair = ReadOne(db, "SELECT symbol, scip_symbol FROM occurrence LIMIT 1");
+        Assert.NotNull(pair);
+
+        // The display name is the only name it has, and it is the one the query layer
+        // reads, so the row is as findable as any other.
+        Assert.Equal("string[]", pair!.Value.Display);
+        Assert.Equal("", pair.Value.Scip);
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM symbol_fts WHERE symbol = 'string[]'"));
     }
 
     private static (string Display, string Scip)? ReadOne(SqliteConnection db, string sql)

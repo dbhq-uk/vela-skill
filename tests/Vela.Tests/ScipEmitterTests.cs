@@ -152,21 +152,42 @@ public class ScipEmitterTests
 
         // Occurrence.symbol is the wire format, so every one of them has to be a
         // sentence in the grammar scip.proto specifies, not a Roslyn display string.
-        foreach (var symbol in occurrences.Select(o => o.Symbol).Distinct(StringComparer.Ordinal))
+        // The field is optional, and an occurrence vela can form no honest moniker for
+        // carries none rather than a false `local` - a string[] and the global namespace
+        // are reachable from every document in the solution, so the local form would be
+        // a claim the spec forbids. That is the one value the grammar has no sentence
+        // for, because it is the absence of one.
+        var named = occurrences.Where(o => o.Symbol.Length > 0).ToList();
+        var unnamed = occurrences.Where(o => o.Symbol.Length == 0).ToList();
+
+        foreach (var symbol in named.Select(o => o.Symbol).Distinct(StringComparer.Ordinal))
             ScipSymbolGrammar.RoundTrip(symbol);
+
+        Assert.NotEmpty(unnamed);
+        Assert.True(named.Count > unnamed.Count * 5, $"{unnamed.Count} of {occurrences.Count} carry no moniker");
+
+        // And they are exactly the two things in this fixture that SCIP cannot name and
+        // that are not document-local either: the global namespace, which vela renders
+        // as the empty display name and which every `global::` in a generated Razor view
+        // resolves to, and `dynamic`, which the Razor generator spells in every view.
+        // Anything else appearing here would be a symbol that lost a name it could have
+        // had.
+        Assert.Equal(
+            new[] { "", "dynamic" },
+            unnamed.Select(emitted.DisplayNameOf).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal));
 
         // And the display name is still there, beside it. It is what the query layer
         // matches on and it cannot be read back off the moniker, so every occurrence
         // has to carry its own: DisplayNameOf falls back to the SCIP symbol when it
         // does not, and no display name is ever a SCIP symbol.
-        Assert.All(occurrences, o => Assert.NotEqual(o.Symbol, emitted.DisplayNameOf(o)));
+        Assert.All(named, o => Assert.NotEqual(o.Symbol, emitted.DisplayNameOf(o)));
 
         // vela renders the global namespace as the empty string, which is what
         // `global::` in generated Razor resolves to, and that is unchanged here. What
         // must not happen is the moniker taking its place.
         Assert.All(
             occurrences.Where(o => emitted.DisplayNameOf(o).Length == 0),
-            o => Assert.StartsWith("local ", o.Symbol, StringComparison.Ordinal));
+            o => Assert.Empty(o.Symbol));
 
         var viewData = occurrences
             .Where(o => emitted.DisplayNameOf(o).EndsWith(".ViewData", StringComparison.Ordinal))

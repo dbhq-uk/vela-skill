@@ -212,6 +212,13 @@ public static class ScipEmitter
                     // not this document's to describe.
                     if (!isDefinition) continue;
 
+                    // A definition vela can form no moniker for is described by nothing:
+                    // SymbolInformation.symbol is the identity the whole message hangs
+                    // off, and an empty one would collapse every such symbol into a
+                    // single entry naming none of them. The occurrence is still there,
+                    // with its display name, which is what vela's own queries read.
+                    if (moniker.Length == 0) continue;
+
                     if (!described.TryGetValue(doc.RelativePath, out var alreadyDescribed))
                         described[doc.RelativePath] = alreadyDescribed = new HashSet<string>(StringComparer.Ordinal);
 

@@ -504,6 +504,88 @@ public class ScipMonikerTests
     }
 
     [Fact]
+    public void For_EmitsNoMonikerRatherThanAFalseLocalForWhatItCannotName()
+    {
+        // scip.proto: "Local symbols MUST only be used for entities which are local to a
+        // Document, and cannot be accessed from outside the Document", and it forecloses
+        // the excuse directly: "the decision to use a local symbol or global symbol
+        // should exclusively be determined whether the local symbol is accessible
+        // outside the document, not by the capability to find the enclosing symbol."
+        //
+        // A string[] is not document-local, and neither is the global namespace or a
+        // global using alias. SCIP has no descriptor that can name any of them, but the
+        // answer to that is silence: Occurrence.symbol is optional, and an absent symbol
+        // is a smaller claim while `local 7` is a false one that an importing consumer
+        // will act on.
+        var (compilation, moniker) = Setup();
+        var csharp = (CSharpCompilation)compilation;
+
+        var array = compilation.CreateArrayTypeSymbol(compilation.GetSpecialType(SpecialType.System_String));
+        var pointer = compilation.CreatePointerTypeSymbol(compilation.GetSpecialType(SpecialType.System_Int32));
+
+        Assert.Equal("", moniker.For(array, Document));
+        Assert.Equal("", moniker.For(pointer, Document));
+        Assert.Equal("", moniker.For(csharp.DynamicType, Document));
+        Assert.Equal("", moniker.For(compilation.GlobalNamespace, Document));
+
+        // A global using alias is spelled once and usable from every document in the
+        // compilation, which is the opposite of what `local` asserts.
+        var aliases = Compile("Aliases", "global using Text = System.String;");
+        var tree = aliases.SyntaxTrees.Single();
+        var directive = tree.GetRoot().DescendantNodes().OfType<UsingDirectiveSyntax>().Single();
+        var alias = aliases.GetSemanticModel(tree).GetDeclaredSymbol(directive)!;
+
+        Assert.Equal("", moniker.For(alias, Document));
+    }
+
+    [Fact]
+    public void For_KeepsTheLocalFormForWhatIsGenuinelyLocalToOneDocument()
+    {
+        // The other direction. A local variable, a label, a local function and anything
+        // declared inside one cannot be named from another document, so for them the
+        // `local` form is true and is what the spec asks for.
+        var body = Compile("Body", """
+            public class Body
+            {
+                public void Go(int seed)
+                {
+                    var total = seed;
+                    Again:
+                    int Helper(int step) => step + total;
+                    if (total < 0) goto Again;
+                }
+            }
+            """);
+
+        var tree = body.SyntaxTrees.Single();
+        var model = body.GetSemanticModel(tree);
+        var moniker = new ScipMoniker();
+
+        ISymbol Declared<T>(Func<T, bool> predicate) where T : SyntaxNode =>
+            model.GetDeclaredSymbol(tree.GetRoot().DescendantNodes().OfType<T>().Single(predicate))!;
+
+        var total = Declared<VariableDeclaratorSyntax>(v => v.Identifier.ValueText == "total");
+        var label = Declared<LabeledStatementSyntax>(_ => true);
+        var helper = Declared<LocalFunctionStatementSyntax>(_ => true);
+        var step = Declared<ParameterSyntax>(p => p.Identifier.ValueText == "step");
+        var seed = Declared<ParameterSyntax>(p => p.Identifier.ValueText == "seed");
+
+        foreach (var local in new[] { total, label, helper, step })
+        {
+            var id = moniker.For(local, Document);
+            Assert.StartsWith("local ", id, StringComparison.Ordinal);
+            ScipSymbolGrammar.RoundTrip(id);
+        }
+
+        // And the contrast that makes the rule a rule: `step` is local only because
+        // Helper is, while `seed` belongs to a method anyone can call and is named in
+        // full.
+        Assert.Equal(
+            "scip-dotnet nuget Body 0.0.0.0 Body#Go().(seed)",
+            moniker.For(seed, Document));
+    }
+
+    [Fact]
     public void For_ProducesSymbolsThatParseAgainstTheGrammarInScipProto()
     {
         var (compilation, moniker) = Setup();

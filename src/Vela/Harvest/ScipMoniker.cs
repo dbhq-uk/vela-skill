@@ -85,7 +85,8 @@ public sealed class ScipMoniker
     private int nextLocalId;
 
     /// <summary>
-    /// The SCIP symbol for a Roslyn symbol as it appears in one document.
+    /// The SCIP symbol for a Roslyn symbol as it appears in one document, or the empty
+    /// string when there is no honest one to give (see <see cref="NoSymbol"/>).
     /// </summary>
     /// <param name="documentPath">
     /// The relative path of the document the occurrence is being recorded in. Used only
@@ -98,14 +99,70 @@ public sealed class ScipMoniker
 
         var chain = Descriptors(canonical);
 
-        // An empty chain is the global namespace, which is the root of every ancestry
-        // and has no name in either grammar: vela's display name for it is the empty
-        // string and SCIP has no descriptor that could spell it. A package prefix with
-        // no descriptor after it is not a symbol at all - it does not parse - so it
-        // takes the one form that can honestly say "nameless, and only here".
-        if (chain is null || chain.Length == 0) return Local(canonical, documentPath);
+        // No chain, or an empty one - the empty one is the global namespace, the root of
+        // every ancestry, which has no name in either grammar. Which of the two answers
+        // that leaves is not a question about what vela can spell: it is a question
+        // about the symbol, and scip.proto is explicit that it is the only question.
+        if (chain is null || chain.Length == 0)
+            return IsDocumentLocal(canonical) ? Local(canonical, documentPath) : NoSymbol;
 
         return PackageOf(canonical) + chain;
+    }
+
+    /// <summary>
+    /// What an occurrence carries when no global moniker can be formed for it and the
+    /// symbol is not local to the document either: nothing.
+    ///
+    /// scip.proto: "Local symbols MUST only be used for entities which are local to a
+    /// Document, and cannot be accessed from outside the Document", and, of the choice
+    /// between the two forms: "the decision to use a local symbol or global symbol
+    /// should exclusively be determined whether the local symbol is accessible outside
+    /// the document, not by the capability to find the enclosing symbol."
+    ///
+    /// So the array, pointer, function pointer and dynamic types, the global namespace
+    /// and a using alias get no symbol at all. SCIP has no descriptor that can name a
+    /// constructed type and Roslyn gives them no name to build one from, but `local 7`
+    /// is not the fallback for that: a string[] is reachable from every document in the
+    /// solution, and saying otherwise is a falsehood an importing consumer will act on.
+    /// Occurrence.symbol is optional, and an absent symbol is the smaller claim.
+    ///
+    /// vela's own answers are untouched: the display name still tells int[] and
+    /// string[] apart, and it is the display name every query matches on.
+    /// </summary>
+    private const string NoSymbol = "";
+
+    /// <summary>
+    /// Whether a symbol genuinely cannot be reached from outside the document it appears
+    /// in, which is the one thing that licenses the `local` form.
+    ///
+    /// A local variable, a range variable, a discard, a label, a local function and a
+    /// lambda are all spelled inside one method body and are invisible outside the file
+    /// that spells them. So is anything declared within one: the parameters and type
+    /// parameters of a local function have no name that reaches any further than the
+    /// local function does, which is why this walks up the ancestry rather than testing
+    /// a kind. A parameter of an ordinary method is not local at all and is named in
+    /// full, which is the contrast that makes the rule a rule.
+    /// </summary>
+    private static bool IsDocumentLocal(ISymbol symbol)
+    {
+        for (var current = symbol; current is not null; current = current.ContainingSymbol)
+        {
+            if (current.Kind is SymbolKind.Local or SymbolKind.RangeVariable
+                or SymbolKind.Label or SymbolKind.Discard) return true;
+
+            if (current is IMethodSymbol
+                { MethodKind: MethodKind.LocalFunction or MethodKind.AnonymousFunction }) return true;
+
+            // Something else vela cannot name, and the walk stops here rather than
+            // inheriting an answer through it. An anonymous type declared inside a
+            // lambda is not local because the lambda is: `new { Cost = 1 }` escapes its
+            // method through inference every time a Razor view builds an HTML attribute
+            // object, and a property of one is reached through the type, not through
+            // whatever body happened to spell it.
+            if (HasNoDescriptor(current)) return false;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -188,7 +245,7 @@ public sealed class ScipMoniker
         if (descriptors.TryGetValue(symbol, out var cached)) return cached;
 
         string? chain;
-        if (IsLocal(symbol))
+        if (HasNoDescriptor(symbol))
         {
             chain = null;
         }
@@ -208,8 +265,9 @@ public sealed class ScipMoniker
             // above it, not the package.
             var prefix = owner is null ? string.Empty : Descriptors(owner);
 
-            // Anything under a local is itself local: the parameters and type parameters
-            // of a local function have no name that reaches outside the document.
+            // Anything under an unnameable owner is itself unnameable: the parameters
+            // and type parameters of a local function are reached through the local
+            // function and there is no path to them without it.
             chain = prefix is null ? null : prefix + Descriptor(symbol);
         }
 
@@ -218,17 +276,20 @@ public sealed class ScipMoniker
     }
 
     /// <summary>
-    /// Symbols that cannot be named from outside the document they appear in, and so
-    /// must use the `local &lt;id&gt;` form.
+    /// Symbols that no descriptor chain can name.
     ///
-    /// The array, pointer, function pointer and dynamic types are here for a different
-    /// reason: SCIP has no descriptor that can name a constructed type, and their Roslyn
-    /// name is empty, so there is nothing to build a global symbol out of. Emitting one
-    /// anyway would mean every `int[]` in the solution shared a symbol with every other
-    /// constructed type, which is worse than admitting the moniker is document-local.
-    /// vela's display name still tells the two apart, and that is what the queries use.
+    /// Two unrelated reasons, and they are deliberately not distinguished here because
+    /// the answer to both is the same: there is no chain. A local, a range variable, a
+    /// label, a discard, a local function and a lambda are invisible outside one
+    /// document. An array, pointer, function pointer or dynamic type is not - SCIP
+    /// simply has no descriptor for a constructed type, and Roslyn gives them no name to
+    /// build one from, so a chain would have to be invented. Same for an alias, a
+    /// preprocessing symbol and an anonymous type.
+    ///
+    /// Which form the symbol then takes is <see cref="IsDocumentLocal"/>'s question and
+    /// not this one's, because scip.proto says the choice turns on document scope alone.
     /// </summary>
-    private static bool IsLocal(ISymbol symbol) =>
+    private static bool HasNoDescriptor(ISymbol symbol) =>
         symbol.Kind is SymbolKind.Local or SymbolKind.RangeVariable or SymbolKind.Label
             or SymbolKind.Discard or SymbolKind.Alias or SymbolKind.Preprocessing
             or SymbolKind.ArrayType or SymbolKind.PointerType
