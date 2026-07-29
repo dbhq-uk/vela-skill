@@ -417,14 +417,16 @@ public static class Program
     /// code as one that failed to build.
     ///
     /// The walk starts at the root the index was built against, resolved by the same
-    /// ProjectRoot the emitter used, so the files that are watched are exactly the files
-    /// that are indexed. Walking the solution directory instead left everything above it
-    /// indexed and unwatched.
+    /// ProjectRoot the emitter used, so nothing indexed sits under a tree nothing
+    /// watches. Walking the solution directory instead left everything above it indexed
+    /// and unwatched. The watched SET is still narrower than the indexed set, because
+    /// the walk is bounded to the extensions vela indexes and skips build output, so
+    /// absence of a staleness banner is not proof that nothing changed.
     ///
-    /// The walk is best effort by design. If the root cannot be read at all, the record
-    /// is returned unchanged rather than thrown from: failing a query because the
-    /// freshness check could not run would be a worse outcome than the answer it was
-    /// checking.
+    /// A check that could not run is never reported as a check that passed. If the walk
+    /// throws, the record comes back degraded saying so, because the alternative is an
+    /// answer that looks freshness-checked and was not, which is the failure Constraint
+    /// 3 exists to prevent. The query itself still answers.
     /// </summary>
     private static HealthRecord CheckStaleness(HealthRecord health, string solution)
     {
@@ -434,7 +436,14 @@ public static class Program
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
-            return health;
+            var detail = "index freshness could not be checked: " + ex.Message
+                       + ". Nothing in this answer has been compared against the code on disk.";
+
+            return health with
+            {
+                Degraded = true,
+                Detail = string.IsNullOrEmpty(health.Detail) ? detail : health.Detail + "; " + detail
+            };
         }
     }
 

@@ -157,6 +157,43 @@ public class StalenessTests
         File.SetLastWriteTimeUtc(path, timeUtc);
     }
 
+    [Fact]
+    public void Check_WhenADirectoryCannotBeRead_DegradesRatherThanReportingFresh()
+    {
+        // A directory the walk cannot list may hold a file newer than the index, so a
+        // clean answer from an incomplete walk is a freshness check that did not run
+        // being reported as one that passed. Constraint 3 forbids exactly that.
+        using var temp = new TempDirectory();
+        var builtAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var locked = Path.Combine(temp.Path, "locked");
+        Directory.CreateDirectory(locked);
+        WriteAt(Path.Combine(locked, "Hidden.cs"), builtAt.AddMinutes(5));
+
+        // Everything readable is older than the index, so without the unreadable
+        // directory this walk would report the tree unchanged.
+        WriteAt(Path.Combine(temp.Path, "Readable.cs"), builtAt.AddMinutes(-5));
+
+        var mode = File.GetUnixFileMode(locked);
+        File.SetUnixFileMode(locked, UnixFileMode.None);
+        try
+        {
+            var scan = Staleness.Scan(temp.Path, builtAt);
+            Assert.Equal(0, scan.ChangedCount);
+            Assert.Equal(1, scan.UnreadableDirectories);
+
+            var health = Staleness.Check(
+                new HealthRecord(builtAt, null, Degraded: false, null), temp.Path);
+
+            Assert.True(health.Degraded);
+            Assert.Contains("could only be partly checked", health.Detail);
+        }
+        finally
+        {
+            File.SetUnixFileMode(locked, mode);
+        }
+    }
+
     private sealed class TempDirectory : IDisposable
     {
         public string Path { get; }

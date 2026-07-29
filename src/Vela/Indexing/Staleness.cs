@@ -105,6 +105,17 @@ public static class Staleness
         var scan = Scan(root, health.BuiltAtUtc, indexDirectory);
         var (changedCount, newestPath, newestTime) = (scan.ChangedCount, scan.NewestPath, scan.NewestTime);
 
+        // A directory the walk could not list may hold a file newer than the index, so a
+        // clean result from an incomplete walk is not evidence of freshness. Reported
+        // whether or not anything else was found to have changed.
+        if (scan.UnreadableDirectories > 0)
+        {
+            health = Degrade(health,
+                $"index freshness could only be partly checked: {scan.UnreadableDirectories} "
+                + "directory(ies) under the project root could not be read, so any source file in "
+                + "them has not been compared against the index.");
+        }
+
         if (changedCount == 0) return health;
 
         // Relative to the same root every path in an answer is relative to, so the file
@@ -165,6 +176,7 @@ public static class Staleness
         string? newestPath = null;
         var newestTime = DateTime.MinValue;
         var examined = 0;
+        var unreadable = 0;
 
         var pending = new Stack<string>();
         pending.Push(root);
@@ -180,9 +192,11 @@ public static class Staleness
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
             {
-                // A directory vela cannot read tells us nothing either way. It is not
-                // evidence the index is fresh, but it is also not a reason to declare
-                // it stale, and the walk must not throw on the query path.
+                // A directory vela cannot read tells us nothing either way, and that is
+                // exactly why it is counted. Passing over it in silence would report a
+                // check that did not run as a check that passed. The walk still must not
+                // throw on the query path, so the caller degrades on the count instead.
+                unreadable++;
                 continue;
             }
 
@@ -225,7 +239,7 @@ public static class Staleness
             }
         }
 
-        return new StalenessScan(count, newestPath, newestTime, examined);
+        return new StalenessScan(count, newestPath, newestTime, examined, unreadable);
     }
 
     /// <summary>
@@ -246,9 +260,14 @@ public static class Staleness
     /// above, which is written down and explained; a silent second filter that nothing
     /// documents is the Constraint 3 failure the whole check exists to prevent.
     ///
-    /// <see cref="EnumerationOptions.IgnoreInaccessible"/> is true because the walk
-    /// must not throw on the query path. The catch around this call handles a directory
-    /// that cannot be opened at all; this handles an entry inside one that can.
+    /// <see cref="EnumerationOptions.IgnoreInaccessible"/> is FALSE, which is the one
+    /// place this walk deliberately prefers throwing to carrying on. Left true, the
+    /// enumerator swallows a directory it cannot open and yields nothing for it, so the
+    /// walk cannot tell "no source files in there" from "could not look", and reports a
+    /// tree it never finished reading as unchanged. Throwing hands that directory to the
+    /// caller's catch, which counts it, and the count degrades the answer. The walk
+    /// still never throws out of <see cref="Scan"/>: the catch is per directory, so one
+    /// unreadable corner costs its own subtree and nothing else.
     /// </summary>
     private static IEnumerable<Entry> EnumerateEntries(string directory) =>
         new FileSystemEnumerable<Entry>(
@@ -258,7 +277,7 @@ public static class Staleness
             {
                 RecurseSubdirectories = false,
                 AttributesToSkip = 0,
-                IgnoreInaccessible = true
+                IgnoreInaccessible = false
             });
 }
 
@@ -272,4 +291,14 @@ public static class Staleness
 /// 50,906 files under the project root on every invocation, and a wall-clock assertion
 /// of that would be flaky on a shared machine. A count is not.
 /// </summary>
-public readonly record struct StalenessScan(int ChangedCount, string? NewestPath, DateTime NewestTime, int FilesExamined);
+/// <summary>
+/// What one walk of the tree found. <see cref="UnreadableDirectories"/> is how many
+/// directories the walk could not list: those are not evidence the index is fresh, so
+/// they are counted rather than passed over in silence, and the caller degrades on them.
+/// </summary>
+public readonly record struct StalenessScan(
+    int ChangedCount,
+    string? NewestPath,
+    DateTime NewestTime,
+    int FilesExamined,
+    int UnreadableDirectories = 0);
