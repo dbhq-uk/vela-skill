@@ -216,7 +216,7 @@ public static class ScipEmitter
                         described[doc.RelativePath] = alreadyDescribed = new HashSet<string>(StringComparer.Ordinal);
 
                     if (alreadyDescribed.Add(moniker))
-                        doc.Symbols.Add(monikers.Describe(symbol, doc.RelativePath, name));
+                        doc.Symbols.Add(monikers.Describe(symbol, doc.RelativePath));
                 }
             }
         }

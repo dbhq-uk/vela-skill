@@ -257,22 +257,37 @@ public class ScipEmitterTests
             .ToHashSet(StringComparer.Ordinal);
         Assert.All(doc.Symbols, s => Assert.Contains(s.Symbol, definitions));
 
-        var byDisplayName = doc.Symbols.ToDictionary(s => s.DisplayName, StringComparer.Ordinal);
+        // Found by moniker, because that is the unique one. display_name is the short
+        // name scip.proto asks for - "the symbol 'com/example/MyClass#myMethod(+1).'
+        // should have the display name 'myMethod'" - and IScent.Note and Perfume.Note
+        // are two symbols with one short name, which is the whole reason the field is
+        // not an identity.
+        var described = doc.Symbols.ToDictionary(s => s.Symbol, StringComparer.Ordinal);
+        Scip.SymbolInformation Described(string monikerSuffix) => Assert.Single(
+            described.Values.Where(s => s.Symbol.EndsWith(monikerSuffix, StringComparison.Ordinal)));
 
-        Assert.Equal(Scip.SymbolInformation.Types.Kind.Interface, byDisplayName["App.IScent"].Kind);
-        Assert.Equal(Scip.SymbolInformation.Types.Kind.Class, byDisplayName["App.Perfume"].Kind);
-        Assert.Equal(Scip.SymbolInformation.Types.Kind.Property, byDisplayName["App.Perfume.Note"].Kind);
-        Assert.Equal(Scip.SymbolInformation.Types.Kind.Constant, byDisplayName["App.Perfume.Limit"].Kind);
-        Assert.Equal(Scip.SymbolInformation.Types.Kind.StaticMethod, byDisplayName["App.Perfume.Publish()"].Kind);
-        Assert.Equal(Scip.SymbolInformation.Types.Kind.Namespace, byDisplayName["App"].Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Interface, Described("App/IScent#").Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Class, Described("App/Perfume#").Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Property, Described("App/Perfume#Note.").Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Constant, Described("App/Perfume#Limit.").Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.StaticMethod, Described("App/Perfume#Publish().").Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Namespace, Described(" App/").Kind);
+
+        Assert.Equal("IScent", Described("App/IScent#").DisplayName);
+        Assert.Equal("Perfume", Described("App/Perfume#").DisplayName);
+        Assert.Equal("Note", Described("App/Perfume#Note.").DisplayName);
+        Assert.Equal("Note", Described("App/IScent#Note.").DisplayName);
+        Assert.Equal("Limit", Described("App/Perfume#Limit.").DisplayName);
+        Assert.Equal("Publish", Described("App/Perfume#Publish().").DisplayName);
+        Assert.Equal("App", Described(" App/").DisplayName);
 
         // The doc comment, as prose rather than as a rendered signature, which is what
         // scip.proto asks new indexers for.
-        Assert.Equal("What a perfume smells of.", Assert.Single(byDisplayName["App.IScent"].Documentation));
-        Assert.Empty(byDisplayName["App.Perfume"].Documentation);
+        Assert.Equal("What a perfume smells of.", Assert.Single(Described("App/IScent#").Documentation));
+        Assert.Empty(Described("App/Perfume#").Documentation);
 
-        foreach (var described in doc.Symbols)
-            ScipSymbolGrammar.RoundTrip(described.Symbol);
+        foreach (var information in doc.Symbols)
+            ScipSymbolGrammar.RoundTrip(information.Symbol);
     }
 
     [Fact]

@@ -109,14 +109,27 @@ public sealed class ScipMoniker
     }
 
     /// <summary>
-    /// The SymbolInformation for a definition: the moniker, the kind, the display name
-    /// vela knows it by, and whatever documentation the source carries.
+    /// The SymbolInformation for a definition: the moniker, the kind, the short name it
+    /// is displayed by, and whatever documentation the source carries.
+    ///
+    /// display_name is the short name and not vela's qualified one. scip.proto:
+    /// "(optional) The name of this symbol as it should be displayed to the user. For
+    /// example, the symbol `com/example/MyClass#myMethod(+1).` should have the display
+    /// name `myMethod`." A foreign consumer renders this field in a symbol list beside
+    /// the qualification it already has from the moniker, so the qualified string put
+    /// there before was the whole path repeated. vela's own identity for the symbol is
+    /// untouched: it travels on the occurrence, not here.
+    ///
+    /// It is the symbol's Roslyn name rather than the descriptor's spelling, so a
+    /// generic type displays as `Box` where its descriptor says ``Box`1``. scip.proto,
+    /// of the symbol field: it "may encode names with special characters that should
+    /// not be displayed to the user".
     ///
     /// scip.proto asks for markdown in `documentation` and says new indexers should put
     /// only prose there, not a rendered signature, so this is the text of the doc
     /// comment's summary and remarks and nothing else.
     /// </summary>
-    public Scip.SymbolInformation Describe(ISymbol symbol, string documentPath, string displayName)
+    public Scip.SymbolInformation Describe(ISymbol symbol, string documentPath)
     {
         var canonical = Canonicalise(symbol);
         var moniker = For(canonical, documentPath);
@@ -125,7 +138,7 @@ public sealed class ScipMoniker
         {
             Symbol = moniker,
             Kind = KindOf(canonical),
-            DisplayName = displayName
+            DisplayName = canonical.Name
         };
 
         information.Documentation.AddRange(DocumentationOf(canonical));

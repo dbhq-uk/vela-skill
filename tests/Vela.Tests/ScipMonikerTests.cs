@@ -585,12 +585,45 @@ public class ScipMonikerTests
         var moniker = new ScipMoniker();
         var count = compilation.GetTypeByMetadataName("Fixture.Widget")!.GetMembers("Count").Single();
 
-        var information = moniker.Describe(count, Document, SymbolIdentity.For(count));
+        var information = moniker.Describe(count, Document);
 
         Assert.Equal(moniker.For(count, Document), information.Symbol);
         Assert.Equal(Scip.SymbolInformation.Types.Kind.Property, information.Kind);
-        Assert.Equal("Fixture.Widget.Count", information.DisplayName);
         Assert.Contains("How many there are.", Assert.Single(information.Documentation));
+
+        // scip.proto, of display_name: "the symbol 'com/example/MyClass#myMethod(+1).'
+        // should have the display name 'myMethod'". The short name, in other words, and
+        // not the qualified path: a foreign consumer renders this field in a symbol
+        // list, where the qualification is already the column beside it. vela's own
+        // identity for the symbol is unaffected - it lives in occurrence.symbol, which
+        // is a different field answering a different question.
+        Assert.Equal("Count", information.DisplayName);
+    }
+
+    [Fact]
+    public void Describe_PutsTheShortNameInDisplayNameForEveryShapeOfSymbol()
+    {
+        var (compilation, moniker) = Setup();
+        var outer = compilation.GetTypeByMetadataName("Fixture.Deep.Outer")!;
+        var box = compilation.GetTypeByMetadataName("Fixture.Deep.Box`1")!;
+        var deep = compilation.GlobalNamespace
+            .GetNamespaceMembers().Single(n => n.Name == "Fixture")
+            .GetNamespaceMembers().Single(n => n.Name == "Deep");
+
+        string Displayed(ISymbol symbol) => moniker.Describe(symbol, Document).DisplayName;
+
+        Assert.Equal("Deep", Displayed(deep));
+        Assert.Equal("Outer", Displayed(outer));
+        Assert.Equal("WithParameters", Displayed(outer.GetMembers("WithParameters").Single()));
+        Assert.Equal("Status", Displayed(outer.GetMembers("Status").OfType<IPropertySymbol>().Single()));
+        Assert.Equal("café", Displayed(outer.GetMembers("café").OfType<IFieldSymbol>().Single()));
+
+        // The descriptor spells a generic type with its arity, because that is what
+        // tells Box and Box<T> apart. A reader is not owed the backtick: scip.proto
+        // says the symbol "may encode names with special characters that should not be
+        // displayed to the user", which is this exactly.
+        Assert.EndsWith("`Box``1`#", moniker.For(box, Document), StringComparison.Ordinal);
+        Assert.Equal("Box", Displayed(box));
     }
 
     [Fact]
@@ -606,13 +639,15 @@ public class ScipMonikerTests
             .Single(v => v.Identifier.ValueText == "total");
         var local = model.GetDeclaredSymbol(declarator)!;
 
-        var information = moniker.Describe(local, Document, SymbolIdentity.For(local));
+        var information = moniker.Describe(local, Document);
 
         Assert.StartsWith("local ", information.Symbol, StringComparison.Ordinal);
+        Assert.Equal("total", information.DisplayName);
         Assert.Equal(Scip.SymbolInformation.Types.Kind.Variable, information.Kind);
 
         // scip.proto: a local symbol does not encode where it lives, so enclosing_symbol
-        // is how a consumer places it in a hierarchy.
+        // is how a consumer places it in a hierarchy. It is a symbol, so it is the
+        // qualified moniker and not the short name that goes here.
         Assert.Equal(Prefix + "Fixture/Deep/Outer#WithParameters().", information.EnclosingSymbol);
     }
 
