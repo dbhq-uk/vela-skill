@@ -443,6 +443,161 @@ public class QueryTests
         Assert.Equal("App.C", hits[0].Symbol);
     }
 
+    // ---- Generated documents ---------------------------------------------
+    //
+    // The Razor generator's output is compiled but never written to disk unless
+    // EmitCompilerGeneratedFiles is set, so on a scaffolded Razor app `refs ViewData`
+    // answered with fourteen hits of which nine named paths the reader cannot open.
+    // That contradicts the whole contract of the tool, which is to report locations you
+    // can go to. Suppressing generated documents outright is not available either: for
+    // some Razor page members the generated document holds the ONLY definition in the
+    // index, so `def` would become unanswerable for them.
+    //
+    // The resolution: refs and impact exclude generated documents by default and say
+    // exactly what they suppressed, def and outline always include them and mark them.
+
+    /// <summary>
+    /// One symbol defined only in generated code and referenced from both an openable
+    /// file and a generated one.
+    /// </summary>
+    private static SqliteConnection GeneratedDb()
+    {
+        var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO document(id, relative_path, language, generated) VALUES
+                (1, 'App/Pages/Index.cshtml', 'razor', 0),
+                (2, 'App/obj/Debug/net10.0/generated/Pages_Index_cshtml.g.cs', 'csharp', 1);
+            INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                (2, 'AspNetCore.Pages_Index.ViewData', 1, 5, 8, 6, 9),
+                (2, 'AspNetCore.Pages_Index.ViewData', 0, 9, 8, NULL, NULL),
+                (2, 'AspNetCore.Pages_Index.ViewData', 0, 11, 8, NULL, NULL),
+                (1, 'AspNetCore.Pages_Index.ViewData', 0, 2, 4, NULL, NULL);
+            INSERT INTO symbol_fts(symbol) VALUES ('AspNetCore.Pages_Index.ViewData');
+            """;
+        cmd.ExecuteNonQuery();
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+        return db;
+    }
+
+    [Fact]
+    public void Refs_ExcludesGeneratedDocumentsByDefault_AndCountsWhatItSuppressed()
+    {
+        using var db = GeneratedDb();
+
+        var hits = RefsQuery.Run(db, "ViewData");
+
+        Assert.All(hits, h => Assert.False(h.IsGenerated));
+        Assert.All(hits, h => Assert.DoesNotContain(".g.cs", h.RelativePath));
+        Assert.Single(hits);
+
+        // Constraint 3: what was left out is named, never silently dropped.
+        Assert.Equal(3, RefsQuery.CountInGeneratedCode(db, "ViewData"));
+    }
+
+    [Fact]
+    public void Refs_WithIncludeGenerated_ReturnsThemAgain()
+    {
+        using var db = GeneratedDb();
+
+        var hits = RefsQuery.Run(db, "ViewData", includeGenerated: true);
+
+        Assert.Equal(4, hits.Count);
+        Assert.Contains(hits, h => h.IsGenerated && h.RelativePath.EndsWith(".g.cs", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Impact_ExcludesGeneratedCallersByDefault_AndCountsWhatItSuppressed()
+    {
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language, generated) VALUES
+                    (1, 'App/Services/PerfumeService.cs', 'csharp', 0),
+                    (2, 'App/obj/generated/Pages_Index_cshtml.g.cs', 'csharp', 1);
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Services.PerfumeService.Publish()', 1, 30, 4, 40, 5),
+                    (1, 'App.Models.Perfume.Status', 0, 32, 12, NULL, NULL),
+                    (2, 'AspNetCore.Pages_Index.ExecuteAsync()', 1, 10, 4, 20, 5),
+                    (2, 'App.Models.Perfume.Status', 0, 12, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var hits = ImpactQuery.Run(db, "Perfume.Status");
+
+        Assert.Single(hits);
+        Assert.Equal("App.Services.PerfumeService.Publish()", hits[0].Symbol);
+        Assert.Equal(1, ImpactQuery.CountInGeneratedCode(db, "Perfume.Status"));
+
+        var withGenerated = ImpactQuery.Run(db, "Perfume.Status", includeGenerated: true);
+        Assert.Equal(2, withGenerated.Count);
+    }
+
+    [Fact]
+    public void Def_AlwaysIncludesGeneratedDocuments_AndMarksThem()
+    {
+        // The generated document holds the only definition of this member anywhere in
+        // the index. Suppressing it here would leave `def` with nothing to say about a
+        // symbol vela can see perfectly well.
+        using var db = GeneratedDb();
+
+        var hits = DefQuery.Run(db, "ViewData");
+
+        var hit = Assert.Single(hits);
+        Assert.True(hit.IsGenerated);
+
+        var output = OutputWriter.Render(hits, IndexHealth.Read(db));
+        Assert.Contains("(generated)", output, StringComparison.Ordinal);
+        Assert.Contains("not written to disk", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Outline_AlwaysIncludesGeneratedDocuments_AndMarksThem()
+    {
+        using var db = GeneratedDb();
+
+        var hits = OutlineQuery.Run(db, "App/obj/Debug/net10.0/generated/Pages_Index_cshtml.g.cs");
+
+        var hit = Assert.Single(hits);
+        Assert.True(hit.IsGenerated);
+        Assert.Contains("(generated)", OutputWriter.Render(hits, IndexHealth.Read(db)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RefsFromTheCommandLine_DeclaresWhatItSuppressed_AndCanBeAskedForIt()
+    {
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteIndexFileWithGeneratedDocument(indexPath);
+
+        var suppressed = await InvokeAsync("refs", "ViewData", "--solution", solution);
+        Assert.Equal(0, suppressed.ExitCode);
+        Assert.DoesNotContain(".g.cs", suppressed.Output, StringComparison.Ordinal);
+        Assert.Contains("3 further", suppressed.Output, StringComparison.Ordinal);
+        Assert.Contains("generated code", suppressed.Output, StringComparison.Ordinal);
+        Assert.Contains("--include-generated", suppressed.Output, StringComparison.Ordinal);
+
+        var included = await InvokeAsync("refs", "ViewData", "--include-generated", "--solution", solution);
+        Assert.Equal(0, included.ExitCode);
+        Assert.Contains(".g.cs", included.Output, StringComparison.Ordinal);
+        Assert.Contains("(generated)", included.Output, StringComparison.Ordinal);
+    }
+
     // ---- Zero hits have to say why ---------------------------------------
     //
     // Constraint 3 again, in its quieter form. "0 result(s)" reads as an
@@ -878,6 +1033,35 @@ public class QueryTests
         }
 
         IndexHealth.Write(db, health);
+    }
+
+    /// <summary>An on-disk index holding one openable document and one generated one.</summary>
+    private static void WriteIndexFileWithGeneratedDocument(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language, generated) VALUES
+                    (1, 'App/Pages/Index.cshtml', 'razor', 0),
+                    (2, 'App/obj/Debug/net10.0/generated/Pages_Index_cshtml.g.cs', 'csharp', 1);
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (2, 'AspNetCore.Pages_Index.ViewData', 1, 5, 8, 6, 9),
+                    (2, 'AspNetCore.Pages_Index.ViewData', 0, 9, 8, NULL, NULL),
+                    (2, 'AspNetCore.Pages_Index.ViewData', 0, 11, 8, NULL, NULL),
+                    (1, 'AspNetCore.Pages_Index.ViewData', 0, 2, 4, NULL, NULL);
+                INSERT INTO symbol_fts(symbol) VALUES ('AspNetCore.Pages_Index.ViewData');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
     }
 
     private sealed class TempDirectory : IDisposable

@@ -11,13 +11,31 @@ public static class RefsQuery
     /// "Perfume.Status" and "Status" both find "App.Models.Perfume.Status" and neither
     /// finds "App.Models.HttpStatus". See <see cref="QueryHelper.SymbolMatches"/> for
     /// why that is spelled out rather than left to LIKE.
+    ///
+    /// Occurrences in generated documents are excluded unless
+    /// <paramref name="includeGenerated"/> says otherwise. The Razor generator's output
+    /// is compiled but not written to disk, so those hits name paths the reader cannot
+    /// open, and on a scaffolded Razor app they were the majority of the answer. They
+    /// are never dropped silently: the caller asks
+    /// <see cref="CountInGeneratedCode"/> for what was left out and says so
+    /// (Constraint 3).
     /// </summary>
-    public static IReadOnlyList<Hit> Run(SqliteConnection db, string symbolPattern)
+    public static IReadOnlyList<Hit> Run(SqliteConnection db, string symbolPattern, bool includeGenerated = false)
         => QueryHelper.Select(db, $"""
-            SELECT d.relative_path, o.start_line, o.start_char, o.symbol, o.is_definition
+            SELECT d.relative_path, o.start_line, o.start_char, o.symbol, o.is_definition, d.generated
             FROM occurrence o JOIN document d ON d.id = o.document_id
             WHERE {QueryHelper.SymbolMatches("o.symbol")}
+              {(includeGenerated ? "" : "AND d.generated = 0")}
             ORDER BY d.relative_path, o.start_line
+            """, symbolPattern);
+
+    /// <summary>How many occurrences the default answer left out, and why it must say so.</summary>
+    public static int CountInGeneratedCode(SqliteConnection db, string symbolPattern)
+        => QueryHelper.Count(db, $"""
+            SELECT COUNT(*)
+            FROM occurrence o JOIN document d ON d.id = o.document_id
+            WHERE {QueryHelper.SymbolMatches("o.symbol")}
+              AND d.generated = 1
             """, symbolPattern);
 
     /// <summary>

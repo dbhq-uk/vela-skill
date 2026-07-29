@@ -27,13 +27,24 @@ public static class OutputWriter
         // on every machine regardless of the current culture (Constraint 1).
         foreach (var group in hits.GroupBy(h => h.RelativePath).OrderBy(g => g.Key, StringComparer.Ordinal))
         {
-            sb.AppendLine(group.Key);
+            // Marked on the file rather than on every line: the property belongs to the
+            // document, and the reader needs it before they try to open the path.
+            var generated = group.Any(h => h.IsGenerated);
+            sb.AppendLine(generated ? group.Key + "  (generated)" : group.Key);
+
             foreach (var hit in group.OrderBy(h => h.Line).ThenBy(h => h.Character))
                 sb.AppendLine($"  {hit.Line + 1,6}:{hit.Character + 1,-4} {(hit.IsDefinition ? "def" : "ref")}  {hit.Symbol}");
         }
 
         sb.AppendLine();
         sb.AppendLine($"{hits.Count} result(s)");
+
+        // A marker nobody can interpret is not a warning. def and outline report
+        // generated documents deliberately, so the one line that explains what the
+        // marker means travels with them.
+        if (hits.Any(h => h.IsGenerated))
+            sb.AppendLine("(generated) marks source-generated code, which is not written to disk: "
+                        + "the path is real to the compiler but you cannot open it.");
 
         // "0 result(s)" on its own reads as an authoritative "there is nothing
         // here". It is the sentence an agent acts on, so when it is printed it says

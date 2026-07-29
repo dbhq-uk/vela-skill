@@ -38,8 +38,26 @@ public static class ImpactQuery
     /// occurrence id, which is unique and so always settles it. Every key is an exact
     /// stored value; nothing here is scored, ranked or guessed.
     /// </summary>
-    public static IReadOnlyList<Hit> Run(SqliteConnection db, string symbolPattern)
-        => QueryHelper.Select(db, $"""
+    public static IReadOnlyList<Hit> Run(SqliteConnection db, string symbolPattern, bool includeGenerated = false)
+        => QueryHelper.Select(db, Sql(
+            includeGenerated ? "" : "AND d.generated = 0",
+            "SELECT d.relative_path, ranked.start_line, ranked.start_char, ranked.symbol, 1, d.generated"),
+            symbolPattern);
+
+    /// <summary>
+    /// How many callers the default answer left out because they live in generated
+    /// code. A blast radius that quietly shrinks is worse than one that is too large,
+    /// so the caller prints this rather than letting the shorter list stand alone
+    /// (Constraint 3).
+    /// </summary>
+    public static int CountInGeneratedCode(SqliteConnection db, string symbolPattern)
+        => QueryHelper.Count(db,
+            "SELECT COUNT(*) FROM (" +
+            Sql("AND d.generated = 1", "SELECT d.relative_path, ranked.symbol, ranked.start_line, ranked.start_char") +
+            ")", symbolPattern);
+
+    private static string Sql(string documentFilter, string projection)
+        => $"""
             WITH target AS (
                 SELECT o.id, o.document_id, o.start_line, o.start_char
                 FROM occurrence o
@@ -74,13 +92,14 @@ public static class ImpactQuery
                       OR (target.start_line = caller.enc_end_line
                           AND target.start_char <= caller.enc_end_char))
             )
-            SELECT d.relative_path, ranked.start_line, ranked.start_char, ranked.symbol, 1
+            {projection}
             FROM ranked
             JOIN document d ON d.id = ranked.document_id
             WHERE ranked.depth = 1
+              {documentFilter}
             GROUP BY d.relative_path, ranked.symbol, ranked.start_line, ranked.start_char
             ORDER BY d.relative_path, ranked.start_line
-            """, symbolPattern);
+            """;
 
     /// <summary>
     /// Why impact came back empty. Three different absences print the same

@@ -5,9 +5,22 @@ using OccurrenceKey = (string Symbol, int Line, int Character, bool IsDefinition
 
 namespace Vela.Harvest;
 
+/// <summary>
+/// An emitted index, plus the one fact about it that SCIP has nowhere to put.
+///
+/// scip.proto's Document carries a path, a language, occurrences and an encoding, and
+/// nothing that says how the document came to exist. vela needs that: a document
+/// produced by a source generator, whose occurrences do not map back to a view, names a
+/// path that is real to the compiler and absent from the disk, and every verb that
+/// reports locations has to know the difference. Extending the proto to carry it would
+/// deviate from the format for a consumer-side concern, so it travels beside the index
+/// instead and is stored in vela's own schema.
+/// </summary>
+public record EmitResult(Scip.Index Index, IReadOnlySet<string> GeneratedDocuments);
+
 public static class ScipEmitter
 {
-    public static async Task<Scip.Index> EmitAsync(
+    public static async Task<EmitResult> EmitAsync(
         Solution solution, IReadOnlyList<string> failures, CancellationToken ct)
     {
         var projectRoot = Path.GetDirectoryName(solution.FilePath)!;
@@ -42,6 +55,13 @@ public static class ScipEmitter
         // stopped at the source rather than hidden by the query. Keyed by relative
         // path, which is unique per document.
         var emitted = new Dictionary<string, Dictionary<OccurrenceKey, Scip.Occurrence>>(StringComparer.Ordinal);
+
+        // Whether every occurrence recorded into a document so far came from a
+        // source-generated tree that did not map back to a view. One contribution from
+        // an on-disk tree, or one occurrence in a generated tree that a #line directive
+        // sends back to its .cshtml, is enough to make the document openable, and an
+        // openable document must never be suppressed.
+        var generatedOnly = new Dictionary<string, bool>(StringComparer.Ordinal);
 
         foreach (var project in solution.Projects)
         {
@@ -93,6 +113,16 @@ public static class ScipEmitter
                     var doc = GetOrAddDocument(byOriginalPath, index, location.FilePath, projectRoot);
                     if (doc is null) continue;
 
+                    // Generated, and it stayed generated: the position mapped to the
+                    // generator's own output rather than back to a file on disk.
+                    var stayedInGeneratedCode = harvested.IsGenerated
+                        && string.Equals(location.FilePath, harvested.Tree.FilePath, StringComparison.OrdinalIgnoreCase);
+
+                    generatedOnly[doc.RelativePath] =
+                        generatedOnly.TryGetValue(doc.RelativePath, out var soFar)
+                            ? soFar && stayedInGeneratedCode
+                            : stayedInGeneratedCode;
+
                     var name = SymbolIdentity.For(symbol);
 
                     int[]? enclosingRange = null;
@@ -141,7 +171,12 @@ public static class ScipEmitter
         foreach (var failure in failures)
             index.Metadata.ToolInfo.Arguments.Add("load-failure: " + failure);
 
-        return index;
+        var generated = generatedOnly
+            .Where(entry => entry.Value)
+            .Select(entry => entry.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return new EmitResult(index, generated);
     }
 
     /// <summary>

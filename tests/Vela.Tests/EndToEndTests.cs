@@ -16,7 +16,7 @@ public class EndToEndTests
         var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
         Assert.Empty(load.Failures);
 
-        var index = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+        var index = (await ScipEmitter.EmitAsync(load.Solution, load.Failures, default)).Index;
 
         using var db = new SqliteConnection("Data Source=:memory:");
         db.Open();

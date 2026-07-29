@@ -16,7 +16,7 @@ public class ScipEmitterTests
         using var fx = FixtureSolution.CreateWebApp();
         var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
 
-        var index = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+        var index = (await ScipEmitter.EmitAsync(load.Solution, load.Failures, default)).Index;
 
         var razor = index.Documents
             .Where(d => d.RelativePath.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase))
@@ -32,12 +32,42 @@ public class ScipEmitterTests
     }
 
     [Fact]
+    public async Task EmitAsync_MarksGeneratedDocumentsThatAreNotOnDisk_AndOnlyThose()
+    {
+        // The Razor generator does not write its output to disk unless
+        // EmitCompilerGeneratedFiles is set, so the .g.cs documents in the index name
+        // paths that do not exist. The originating .cshtml does exist and must never be
+        // marked, or refs would suppress the very thing vela is for.
+        using var fx = FixtureSolution.CreateWebApp();
+        var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
+
+        var emitted = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+
+        Assert.NotEmpty(emitted.GeneratedDocuments);
+
+        foreach (var relativePath in emitted.GeneratedDocuments)
+        {
+            Assert.EndsWith(".g.cs", relativePath, StringComparison.OrdinalIgnoreCase);
+            Assert.False(File.Exists(Path.Combine(fx.Root, relativePath)),
+                $"'{relativePath}' is marked generated but exists on disk, so it is openable "
+                + "and suppressing it would hide a real location");
+        }
+
+        // Every view, and every hand-written .cs file, stays openable and unmarked.
+        foreach (var doc in emitted.Index.Documents)
+        {
+            if (doc.RelativePath.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase))
+                Assert.DoesNotContain(doc.RelativePath, emitted.GeneratedDocuments);
+        }
+    }
+
+    [Fact]
     public async Task EmitAsync_RecordsEnclosingRangeOnDefinitions()
     {
         using var fx = FixtureSolution.CreateWebApp();
         var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
 
-        var index = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+        var index = (await ScipEmitter.EmitAsync(load.Solution, load.Failures, default)).Index;
 
         var withEnclosure = index.Documents
             .SelectMany(d => d.Occurrences)
@@ -80,7 +110,7 @@ public class ScipEmitterTests
         using var fx = FixtureSolution.CreateWebApp();
         var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
 
-        var index = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+        var index = (await ScipEmitter.EmitAsync(load.Solution, load.Failures, default)).Index;
 
         Assert.NotEmpty(index.Documents);
 
@@ -120,7 +150,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         var straddler = occurrences.Single(o => o.Symbol == "Straddler");
@@ -150,7 +180,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         var inverted = occurrences.Single(o => o.Symbol == "Inverted");
@@ -172,7 +202,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
 
         // scip.proto forbids a relative_path that escapes project_root, so the file
         // cannot be emitted as a document.
@@ -213,7 +243,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
 
         var duplicates = index.Documents
             .SelectMany(d => d.Occurrences.Select(o => new
@@ -279,7 +309,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         var references = occurrences
@@ -345,7 +375,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         // The local is still indexed - it is a real declaration and `def` should find
@@ -410,7 +440,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         var locals = occurrences
@@ -466,7 +496,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
 
         // Recorded through the same visible channel as load-failure and
         // outside-project-root, so there is one place a reader has to look.
@@ -498,7 +528,7 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
 
         var reported = index.Metadata.ToolInfo.Arguments
             .Where(a => a.StartsWith("compile-error:", StringComparison.Ordinal))

@@ -4,9 +4,14 @@ namespace Vela.Query;
 
 public static class OutlineQuery
 {
+    /// <summary>
+    /// The definitions in one document. Generated documents are outlined like any
+    /// other, for the same reason def keeps them: the caller has named a specific
+    /// document, so refusing to describe it would answer a question nobody asked.
+    /// </summary>
     public static IReadOnlyList<Hit> Run(SqliteConnection db, string relativePath)
         => QueryHelper.Select(db, """
-            SELECT d.relative_path, o.start_line, o.start_char, o.symbol, o.is_definition
+            SELECT d.relative_path, o.start_line, o.start_char, o.symbol, o.is_definition, d.generated
             FROM occurrence o JOIN document d ON d.id = o.document_id
             WHERE d.relative_path = $s AND o.is_definition = 1
             ORDER BY o.start_line

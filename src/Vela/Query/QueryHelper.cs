@@ -71,8 +71,17 @@ public static class QueryHelper
         using var reader = cmd.ExecuteReader();
         while (reader.Read())
             hits.Add(new Hit(reader.GetString(0), reader.GetInt32(1), reader.GetInt32(2),
-                             reader.GetString(3), reader.GetInt32(4) != 0));
+                             reader.GetString(3), reader.GetInt32(4) != 0, reader.GetInt32(5) != 0));
         return hits;
+    }
+
+    /// <summary>Runs a query whose single row and column is a count.</summary>
+    public static int Count(SqliteConnection db, string sql, string parameter)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$s", parameter);
+        return Convert.ToInt32(cmd.ExecuteScalar());
     }
 
     /// <summary>

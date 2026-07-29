@@ -54,20 +54,24 @@ public static class Program
             DefaultValueFactory = _ => FindSolution()
         };
 
+        const string symbolHelp =
+            "Symbol name, matched a whole dotted segment at a time and case-sensitively, "
+            + "for example Status or Perfume.Status.";
+
         root.Add(BuildIndexCommand(solutionOption));
         root.Add(BuildFindCommand(solutionOption));
         root.Add(BuildHitCommand("def", "Where a symbol is defined",
-            "symbol", "Symbol name, or a suffix of one, for example Perfume.Status.",
-            solutionOption, DefQuery.Run, DefQuery.ExplainEmpty));
+            "symbol", symbolHelp,
+            solutionOption, (db, value, _) => DefQuery.Run(db, value), DefQuery.ExplainEmpty));
         root.Add(BuildHitCommand("refs", "Every usage of a symbol",
-            "symbol", "Symbol name, or a suffix of one, for example Perfume.Status.",
-            solutionOption, RefsQuery.Run, RefsQuery.ExplainEmpty));
+            "symbol", symbolHelp,
+            solutionOption, RefsQuery.Run, RefsQuery.ExplainEmpty, RefsQuery.CountInGeneratedCode));
         root.Add(BuildHitCommand("outline", "Symbols defined in a file",
             "file", "Path of the file, relative to the solution directory.",
-            solutionOption, OutlineQuery.Run, OutlineQuery.ExplainEmpty));
+            solutionOption, (db, value, _) => OutlineQuery.Run(db, value), OutlineQuery.ExplainEmpty));
         root.Add(BuildHitCommand("impact", "Callers and blast radius",
-            "symbol", "Symbol name, or a suffix of one, for example Perfume.Status.",
-            solutionOption, ImpactQuery.Run, ImpactQuery.ExplainEmpty));
+            "symbol", symbolHelp,
+            solutionOption, ImpactQuery.Run, ImpactQuery.ExplainEmpty, ImpactQuery.CountInGeneratedCode));
 
         return root;
     }
@@ -77,15 +81,34 @@ public static class Program
     /// which query they run, in what their single argument means, and in what an
     /// empty answer from them can honestly be said to mean.
     /// </summary>
+    /// <param name="countInGeneratedCode">
+    /// Supplied by the verbs that suppress generated documents by default (refs and
+    /// impact), and null for the verbs that always report them (def and outline).
+    /// Supplying it is what adds --include-generated and what makes the verb declare
+    /// the size of what it left out, so a verb cannot start suppressing results without
+    /// also gaining the sentence that says it did (Constraint 3).
+    /// </param>
     private static Command BuildHitCommand(
         string name, string description,
         string argumentName, string argumentDescription,
         Option<string> solutionOption,
-        Func<SqliteConnection, string, IReadOnlyList<Hit>> run,
-        Func<SqliteConnection, string, string> explainEmpty)
+        Func<SqliteConnection, string, bool, IReadOnlyList<Hit>> run,
+        Func<SqliteConnection, string, string> explainEmpty,
+        Func<SqliteConnection, string, int>? countInGeneratedCode = null)
     {
         var argument = new Argument<string>(argumentName) { Description = argumentDescription };
         var command = new Command(name, description) { argument, solutionOption };
+
+        Option<bool>? includeGeneratedOption = null;
+        if (countInGeneratedCode is not null)
+        {
+            includeGeneratedOption = new Option<bool>("--include-generated")
+            {
+                Description = "Also report occurrences in source-generated code, which is compiled "
+                            + "but not written to disk and so cannot be opened."
+            };
+            command.Add(includeGeneratedOption);
+        }
 
         command.SetAction(parseResult =>
         {
@@ -102,13 +125,30 @@ public static class Program
             // answer from an index nobody has checked.
             var health = CheckStaleness(IndexHealth.Read(db), solution!);
             var value = parseResult.GetRequiredValue(argument);
-            var hits = run(db, value);
+
+            // def and outline have no option and always include generated documents;
+            // refs and impact exclude them unless asked.
+            var includeGenerated = includeGeneratedOption is null
+                                   || parseResult.GetValue(includeGeneratedOption);
+
+            var hits = run(db, value, includeGenerated);
 
             // The reason is worked out only when there is nothing to report, so the
             // normal answer costs no extra query.
             var explanation = hits.Count == 0 ? explainEmpty(db, value) : null;
 
             output.Write(OutputWriter.Render(hits, health, explanation));
+
+            if (countInGeneratedCode is not null && !includeGenerated)
+            {
+                var suppressed = countInGeneratedCode(db, value);
+                if (suppressed > 0)
+                {
+                    output.WriteLine($"{suppressed} further result(s) in generated code, which is not on "
+                                   + "disk. Pass --include-generated to see them.");
+                }
+            }
+
             return health.Degraded ? IndexHealth.ExitDegraded : 0;
         });
 
@@ -169,7 +209,8 @@ public static class Program
             }
 
             var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(solution, cancellationToken);
-            var index = await Vela.Harvest.ScipEmitter.EmitAsync(load.Solution, load.Failures, cancellationToken);
+            var emitted = await Vela.Harvest.ScipEmitter.EmitAsync(load.Solution, load.Failures, cancellationToken);
+            var index = emitted.Index;
             var health = BuildHealthRecord(index, load.Failures);
 
             var path = IndexPaths.ForSolution(solution);
@@ -184,7 +225,7 @@ public static class Program
             {
                 db.Open();
                 Schema.Create(db);
-                ScipLoader.Load(db, index);
+                ScipLoader.Load(db, index, emitted.GeneratedDocuments);
                 IndexHealth.Write(db, health);
             }
 

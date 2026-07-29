@@ -4,10 +4,18 @@ namespace Vela.Query;
 
 public static class DefQuery
 {
-    /// <summary>Where a symbol is defined. Same whole-segment matching as refs.</summary>
+    /// <summary>
+    /// Where a symbol is defined. Same whole-segment matching as refs.
+    ///
+    /// Generated documents are always included here, unlike in refs and impact. For
+    /// several Razor page members the generated document holds the only definition
+    /// anywhere in the index, so excluding it would leave def with nothing to say about
+    /// a symbol vela can see perfectly well. The path is marked (generated) on the way
+    /// out so the reader knows it cannot be opened.
+    /// </summary>
     public static IReadOnlyList<Hit> Run(SqliteConnection db, string symbolPattern)
         => QueryHelper.Select(db, $"""
-            SELECT d.relative_path, o.start_line, o.start_char, o.symbol, o.is_definition
+            SELECT d.relative_path, o.start_line, o.start_char, o.symbol, o.is_definition, d.generated
             FROM occurrence o JOIN document d ON d.id = o.document_id
             WHERE o.is_definition = 1
               AND {QueryHelper.SymbolMatches("o.symbol")}

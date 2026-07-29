@@ -21,7 +21,14 @@ public static class ScipLoader
     /// is intelligible rather than a raw SqliteException from the relative_path
     /// UNIQUE constraint partway through the load.
     /// </exception>
-    public static void Load(SqliteConnection db, Scip.Index index)
+    /// <param name="generatedDocuments">
+    /// Relative paths of documents the emitter produced from a source-generated tree
+    /// that did not map back to a file on disk. SCIP has no field for this and the
+    /// path alone is not evidence of it, so it is carried beside the index and stored
+    /// in vela's own schema, where refs and impact read it.
+    /// </param>
+    public static void Load(
+        SqliteConnection db, Scip.Index index, IReadOnlySet<string>? generatedDocuments = null)
     {
         using (var checkCmd = db.CreateCommand())
         {
@@ -45,9 +52,10 @@ public static class ScipLoader
         using var insertDoc = db.CreateCommand();
         insertDoc.Transaction = tx;
         insertDoc.CommandText =
-            "INSERT INTO document(relative_path, language) VALUES ($p, $l) RETURNING id";
+            "INSERT INTO document(relative_path, language, generated) VALUES ($p, $l, $g) RETURNING id";
         insertDoc.Parameters.Add("$p", SqliteType.Text);
         insertDoc.Parameters.Add("$l", SqliteType.Text);
+        insertDoc.Parameters.Add("$g", SqliteType.Integer);
 
         using var insertOcc = db.CreateCommand();
         insertOcc.Transaction = tx;
@@ -70,6 +78,8 @@ public static class ScipLoader
         {
             insertDoc.Parameters["$p"].Value = doc.RelativePath;
             insertDoc.Parameters["$l"].Value = doc.Language;
+            insertDoc.Parameters["$g"].Value =
+                generatedDocuments is not null && generatedDocuments.Contains(doc.RelativePath) ? 1 : 0;
             var docId = Convert.ToInt64(insertDoc.ExecuteScalar());
 
             foreach (var occ in doc.Occurrences)
