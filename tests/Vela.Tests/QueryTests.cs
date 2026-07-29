@@ -749,6 +749,85 @@ public class QueryTests
         Assert.Contains("3 result(s)", included.Output, StringComparison.Ordinal);
     }
 
+    // ---- The schema this build understands ---------------------------------
+    //
+    // The index is a cache, and OpenIndex opened whatever file was there. Adding the
+    // document.generated column therefore turned every cache built before it into a
+    // raw "SqliteException: no such column: d.generated" from every verb, which tells
+    // the user nothing about what to do. Constraint 3 again: a schema vela cannot read
+    // must announce itself, not surface as a stack trace or, worse, as a partial answer.
+
+    [Fact]
+    public void SchemaCreate_StampsTheVersionThisBuildReads()
+    {
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        Assert.Equal(Schema.Version, Schema.ReadVersion(db));
+        Assert.True(Schema.Version > 0, "an unstamped database reads 0, so 0 cannot be a valid version");
+    }
+
+    [Fact]
+    public async Task AnIndexBuiltBeforeTheGeneratedColumn_SaysToReindexInsteadOfThrowingRawSql()
+    {
+        // The real developer cache, reproduced: the schema as it stood before the
+        // generated column, with no version stamp on it. Every verb selects
+        // d.generated, so without a guard this is SqliteException, uncaught, with
+        // EnableDefaultExceptionHandler off, and the test fails as a thrown exception.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WritePreviousSchemaIndexFile(indexPath);
+
+        var result = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+
+        Assert.Equal(Program.ExitCannotAnswer, result.ExitCode);
+        Assert.DoesNotContain("no such column", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("schema", result.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vela index", result.Output, StringComparison.Ordinal);
+
+        // find opens the same index by the same route, so it carries the same answer.
+        var find = await InvokeAsync("find", "Status", "--solution", solution);
+        Assert.Equal(Program.ExitCannotAnswer, find.ExitCode);
+        Assert.Contains("vela index", find.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AnIndexAtTheCurrentSchemaVersionOpens_AndOneAtAnyOtherVersionDoesNot()
+    {
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteIndexFile(indexPath, new HealthRecord(DateTime.UtcNow, null, false, null));
+
+        var current = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+        Assert.Equal(0, current.ExitCode);
+        Assert.Contains("App/Models/Perfume.cs", current.Output, StringComparison.Ordinal);
+
+        // Same tables, different stamp. A future schema is as unreadable as a past one,
+        // so the guard is a mismatch test rather than a "too old" test.
+        SetSchemaVersion(indexPath, Schema.Version + 1);
+
+        var mismatched = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+        Assert.Equal(Program.ExitCannotAnswer, mismatched.ExitCode);
+        Assert.Contains("schema", mismatched.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("vela index", mismatched.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("App/Models/Perfume.cs", mismatched.Output, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task RefsFromTheCommandLine_DeclaresWhatItSuppressed_AndCanBeAskedForIt()
     {
@@ -1272,6 +1351,66 @@ public class QueryTests
         }
 
         IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>
+    /// The schema exactly as it stood before document.generated was added, unstamped,
+    /// which is what a developer's cache from that build still holds.
+    /// </summary>
+    private static void WritePreviousSchemaIndexFile(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                CREATE TABLE document (
+                    id            INTEGER PRIMARY KEY,
+                    relative_path TEXT NOT NULL UNIQUE,
+                    language      TEXT NOT NULL
+                );
+                CREATE TABLE occurrence (
+                    id            INTEGER PRIMARY KEY,
+                    document_id   INTEGER NOT NULL REFERENCES document(id),
+                    symbol        TEXT NOT NULL,
+                    is_definition INTEGER NOT NULL,
+                    start_line    INTEGER NOT NULL,
+                    start_char    INTEGER NOT NULL,
+                    enc_end_line  INTEGER,
+                    enc_end_char  INTEGER
+                );
+                CREATE VIRTUAL TABLE symbol_fts USING fts5(symbol);
+                CREATE TABLE index_health (
+                    built_at_utc TEXT NOT NULL,
+                    git_ref      TEXT,
+                    degraded     INTEGER NOT NULL,
+                    detail       TEXT
+                );
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Models/Perfume.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Models.Perfume.Status', 1, 10, 4, 12, 5);
+                INSERT INTO symbol_fts(symbol) VALUES ('App.Models.Perfume.Status');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>Restamps an existing index file, leaving its tables alone.</summary>
+    private static void SetSchemaVersion(string path, int version)
+    {
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = $"PRAGMA user_version = {version}";
+        cmd.ExecuteNonQuery();
     }
 
     private sealed class TempDirectory : IDisposable

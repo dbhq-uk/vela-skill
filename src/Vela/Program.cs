@@ -352,6 +352,32 @@ public static class Program
 
         var db = new SqliteConnection(ConnectionStringFor(path));
         db.Open();
+
+        // Constraint 3, applied to the container rather than to its contents. The index
+        // is a cache opened by whatever build of vela is on the PATH, so a schema this
+        // build does not understand is a routine event, not a corrupt file. Answering
+        // from it either throws raw SQL at the user (adding document.generated made
+        // every verb fail with "no such column: d.generated") or, on a change that only
+        // adds rows, quietly answers from a schema whose columns mean something else.
+        // Both are an incomplete index looking like a complete one, so the check comes
+        // before the first query and the message names the fix.
+        var version = Schema.ReadVersion(db);
+        if (version != Schema.Version)
+        {
+            db.Dispose();
+
+            var built = version == 0
+                ? "before vela recorded a schema version in its index"
+                : $"against index schema version {version}";
+
+            error.WriteLine($"The index at {path} was built {built}, and this vela reads schema version "
+                          + $"{Schema.Version}. It cannot be queried, and answering from it anyway would "
+                          + "risk a wrong answer rather than no answer.");
+            error.WriteLine("The index is a cache, so it is rebuilt rather than migrated.");
+            error.WriteLine($"Run: vela index --solution {solution}");
+            return null;
+        }
+
         return db;
     }
 

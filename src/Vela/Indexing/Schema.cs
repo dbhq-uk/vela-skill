@@ -4,6 +4,35 @@ namespace Vela.Indexing;
 
 public static class Schema
 {
+    /// <summary>
+    /// The shape of the database this build reads and writes, stamped into every index
+    /// it creates and checked before any index is queried.
+    ///
+    /// The index is a cache, and it is opened by whatever build of vela happens to be
+    /// on the PATH. Adding document.generated therefore turned every cache built before
+    /// it into a raw "SqliteException: no such column: d.generated" from every verb,
+    /// which tells the user nothing about what to do and is exactly the shape of
+    /// failure Constraint 3 exists to forbid: the index cannot be read, so it must say
+    /// so, in words, rather than as a stack trace or as a partial answer.
+    ///
+    /// 0 is what an unstamped database reads, which is every index built before this
+    /// existed, so it can never be a valid version. 1 was the schema without the
+    /// generated column. 2 adds it. A future change bumps this and nothing else: there
+    /// is no migration, because re-indexing takes seconds and rebuilds from the truth
+    /// rather than from a guess about what the old rows meant.
+    /// </summary>
+    public const int Version = 2;
+
+    /// <summary>
+    /// The version stamped on a database, or 0 for one built before vela stamped them.
+    /// </summary>
+    public static int ReadVersion(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "PRAGMA user_version";
+        return Convert.ToInt32(cmd.ExecuteScalar());
+    }
+
     public static void Create(SqliteConnection db)
     {
         using var cmd = db.CreateCommand();
@@ -48,5 +77,12 @@ public static class Schema
             );
             """;
         cmd.ExecuteNonQuery();
+
+        // Stamped last, so a database that failed part way through the DDL is left
+        // unstamped and is rejected on open rather than trusted. PRAGMA takes no
+        // parameter binding, hence the interpolation of a private int constant.
+        using var stamp = db.CreateCommand();
+        stamp.CommandText = $"PRAGMA user_version = {Version}";
+        stamp.ExecuteNonQuery();
     }
 }

@@ -35,6 +35,8 @@ The solution must build. If a project fails to load, or compiles with errors, ve
 
 Add `--stats` to see what was indexed, including how many Razor views were covered.
 
+The index is a cache, and it carries the schema version of the vela that wrote it. If you upgrade vela and the shape of the index has changed, every verb refuses to answer and tells you to re-index rather than querying a database it cannot read. Re-index; there is nothing else to do.
+
 ### 2. Establish shape before pulling content
 
 ```bash
