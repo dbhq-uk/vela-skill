@@ -50,19 +50,41 @@ public static class Staleness
     };
 
     /// <summary>
-    /// The health record, degraded if the tree is newer than the index. Any existing
-    /// degradation is kept: staleness is an additional reason, never a replacement.
+    /// The health record, degraded if a watched file is newer than the index, and also
+    /// degraded if the check could not be made at all because the root is not there.
+    /// Any existing degradation is kept: staleness is an additional reason, never a
+    /// replacement.
     /// </summary>
     /// <param name="projectRoot">
     /// The root the index was built against, from <see cref="ProjectRoot"/>. Every
-    /// document in the index lives under it, and every file under it can become one, so
-    /// this is the walk that watches exactly what the index covers and no more.
+    /// document in the index lives under it, so nothing is indexed from outside the
+    /// tree this walks.
     /// </param>
     public static HealthRecord Check(HealthRecord health, string projectRoot, string? indexPath = null)
     {
         var root = string.IsNullOrEmpty(projectRoot) ? null : Path.GetFullPath(projectRoot);
+
+        // A root that is not there is not evidence of freshness. It used to be treated
+        // as one: the method returned the record untouched, so every verb answered at
+        // exit 0 with no banner, which is a freshness check that did not run reported
+        // as a freshness check that passed. The root is not stored in the index; it is
+        // worked out again on every query by walking up for a `.git` entry, so a moved
+        // or renamed repository, a removed linked worktree, or a `.git` file whose
+        // gitdir no longer resolves can all land here while the index itself is
+        // perfectly readable.
         if (string.IsNullOrEmpty(root) || !Directory.Exists(root))
-            return health;
+        {
+            var named = string.IsNullOrEmpty(root)
+                ? "no root could be worked out for it"
+                : $"'{root}' is not there";
+
+            return Degrade(health,
+                $"index freshness could not be checked: the root the index was built against, {named}. "
+                + "That root is worked out on each query by walking up for a .git entry, so the "
+                + "repository has most likely moved, been renamed or been removed since the index was "
+                + "built. Nothing in this answer has been compared against the code on disk. Run vela "
+                + "index from the solution's current location.");
+        }
 
         var indexDirectory = string.IsNullOrEmpty(indexPath)
             ? null
@@ -77,17 +99,24 @@ public static class Staleness
         // named here can be handed straight back to outline.
         var relative = Path.GetRelativePath(root, newestPath!).Replace('\\', '/');
 
-        var detail =
+        return Degrade(health,
             $"stale index: {changedCount} source file(s) changed after the index was built at "
             + $"{health.BuiltAtUtc:u}, most recently '{relative}' at {newestTime:u}. Line numbers and "
-            + "references in this answer describe the code as it was, not as it is. Run vela index.";
+            + "references in this answer describe the code as it was, not as it is. Run vela index.");
+    }
 
-        return health with
+    /// <summary>
+    /// The record with one more reason on it. Any existing degradation is kept and the
+    /// new reason is appended: a build-time failure and an out-of-date tree are two
+    /// different things wrong with one answer, and replacing either with the other
+    /// would hide it.
+    /// </summary>
+    private static HealthRecord Degrade(HealthRecord health, string detail) =>
+        health with
         {
             Degraded = true,
             Detail = string.IsNullOrEmpty(health.Detail) ? detail : health.Detail + "; " + detail
         };
-    }
 
     /// <summary>
     /// Every entry the walk enumerates from a directory: its full path, whether it is

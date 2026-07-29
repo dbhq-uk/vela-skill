@@ -103,6 +103,41 @@ public class StalenessTests
         Assert.Equal(1, largeScan.FilesExamined);
     }
 
+    [Fact]
+    public void Check_ReportsDegraded_WhenTheRootTheIndexWasBuiltAgainstIsNotThere()
+    {
+        // The root is resolved at query time by walking up for `.git`, not read back
+        // from the index, so a moved or renamed repository, a worktree that has been
+        // removed, or a changed `.git` layout can point the check at a directory that
+        // does not exist. The walk then finds nothing to compare, and "nothing newer
+        // than the index" printed as a clean exit 0 is the most confident wrong answer
+        // vela can give: it is a freshness check that did not run, reported as a
+        // freshness check that passed.
+        var missing = Path.Combine(Path.GetTempPath(), "vela-absent-" + Guid.NewGuid().ToString("N")[..8]);
+        var health = new HealthRecord(DateTime.UtcNow, null, false, null);
+
+        var checked_ = Staleness.Check(health, missing);
+
+        Assert.True(checked_.Degraded);
+        Assert.Contains("could not be checked", checked_.Detail!, StringComparison.Ordinal);
+        Assert.Contains(missing, checked_.Detail!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Check_KeepsAnExistingDegradation_WhenTheRootIsNotThere()
+    {
+        // Staleness is an additional reason and never a replacement, and a missing
+        // root is no different: the build-time reason has to survive it.
+        var missing = Path.Combine(Path.GetTempPath(), "vela-absent-" + Guid.NewGuid().ToString("N")[..8]);
+        var health = new HealthRecord(DateTime.UtcNow, null, true, "1 project(s) failed to load");
+
+        var checked_ = Staleness.Check(health, missing);
+
+        Assert.True(checked_.Degraded);
+        Assert.Contains("1 project(s) failed to load", checked_.Detail!, StringComparison.Ordinal);
+        Assert.Contains("could not be checked", checked_.Detail!, StringComparison.Ordinal);
+    }
+
     private static void PopulateIrrelevantFiles(string root, int count)
     {
         var assets = Path.Combine(root, "assets");
