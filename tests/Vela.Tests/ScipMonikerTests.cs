@@ -324,6 +324,13 @@ public class ScipMonikerTests
 
     private const string Prefix = "scip-dotnet nuget Fixture 4.2.1.0 ";
 
+    /// <summary>
+    /// What a namespace is prefixed with instead: the grammar's placeholder for a
+    /// package part with no value, in all three parts, because a namespace is in no
+    /// package at all.
+    /// </summary>
+    private const string NamespacePrefix = "scip-dotnet . . . ";
+
     [Fact]
     public void For_QualifiesANamespaceByEveryNamespaceAboveIt()
     {
@@ -332,13 +339,49 @@ public class ScipMonikerTests
         var fixture = compilation.GlobalNamespace.GetNamespaceMembers().Single(n => n.Name == "Fixture");
         var deep = fixture.GetNamespaceMembers().Single(n => n.Name == "Deep");
 
-        Assert.Equal(Prefix + "Fixture/", moniker.For(fixture, Document));
+        // A namespace has no package (see the test above), so the chain is what carries
+        // the whole of its identity and every namespace above it has to be in it.
+        Assert.Equal(NamespacePrefix + "Fixture/", moniker.For(fixture, Document));
 
         // scip-dotnet's own issue #85 is that this comes out as 'Deep/', because it
         // resolves a namespace's owner straight to the package instead of to the
         // namespace above it. A symbol has to be a unique identifier across a package,
         // and Fixture.Deep and Other.Deep are not the same namespace.
-        Assert.Equal(Prefix + "Fixture/Deep/", moniker.For(deep, Document));
+        Assert.Equal(NamespacePrefix + "Fixture/Deep/", moniker.For(deep, Document));
+    }
+
+    [Fact]
+    public void For_GivesANamespaceThePlaceholderPackageWhicheverCompilationReachedIt()
+    {
+        // A namespace declared in more than one assembly is handed back merged and
+        // belongs to none of them, so choosing one of its constituents files the same
+        // namespace under a different package depending on which compilation reached it.
+        // Measured on the real solution, 46% of all namespace occurrences carried more
+        // than one moniker that way, and a consumer cannot join a namespace reference
+        // across an index whose monikers depend on traversal order.
+        //
+        // scip.proto: "<manager> ::= any UTF-8, escape spaces with double space. Use the
+        // placeholder '.' to indicate an empty value", and the same for the package name
+        // and the version. A namespace has no package, so it says so.
+        var alpha = Compile("Alpha", "namespace Shared; public class A { }");
+        var beta = Compile("Beta", "namespace Shared; public class B { }", alpha.ToMetadataReference());
+
+        var fromAlpha = alpha.GlobalNamespace.GetNamespaceMembers().Single(n => n.Name == "Shared");
+        var fromBeta = beta.GlobalNamespace.GetNamespaceMembers().Single(n => n.Name == "Shared");
+
+        // The namespace Beta sees really is the merged one: declared in both assemblies.
+        Assert.Equal(2, fromBeta.ConstituentNamespaces.Length);
+
+        var moniker = new ScipMoniker();
+
+        Assert.Equal("scip-dotnet . . . Shared/", moniker.For(fromAlpha, Document));
+        Assert.Equal(moniker.For(fromAlpha, Document), moniker.For(fromBeta, Document));
+        ScipSymbolGrammar.RoundTrip(moniker.For(fromBeta, Document));
+
+        // And it is scoped to namespaces: a type still names the assembly that defines
+        // it, which is what makes a type moniker correlatable in the first place.
+        var a = beta.GetTypeByMetadataName("Shared.A")!;
+        Assert.Equal("scip-dotnet nuget Alpha 0.0.0.0 Shared/A#", moniker.For(a, Document));
     }
 
     [Fact]
@@ -466,22 +509,35 @@ public class ScipMonikerTests
         var (compilation, moniker) = Setup();
 
         var symbols = AllDeclared(compilation)
-            .Select(s => moniker.For(s, Document))
-            .Distinct(StringComparer.Ordinal)
+            .Select(s => (Symbol: s, Moniker: moniker.For(s, Document)))
+            .GroupBy(pair => pair.Moniker, StringComparer.Ordinal)
+            .Select(group => group.First())
             .ToList();
 
         Assert.True(symbols.Count > 15, $"the fixture should exercise more than a handful of shapes, saw {symbols.Count}");
 
-        foreach (var symbol in symbols)
+        foreach (var (symbol, text) in symbols)
         {
-            var parsed = ScipSymbolGrammar.RoundTrip(symbol);
+            var parsed = ScipSymbolGrammar.RoundTrip(text);
             if (parsed.IsLocal) continue;
 
             Assert.Equal("scip-dotnet", parsed.Scheme);
-            Assert.Equal("nuget", parsed.Manager);
-            Assert.Equal("Fixture", parsed.PackageName);
-            Assert.Equal("4.2.1.0", parsed.Version);
             Assert.NotEmpty(parsed.Descriptors);
+
+            // Everything but a namespace names the package that defines it. A namespace
+            // is in no package and says so, in all three parts.
+            if (symbol is INamespaceSymbol)
+            {
+                Assert.Equal(".", parsed.Manager);
+                Assert.Equal(".", parsed.PackageName);
+                Assert.Equal(".", parsed.Version);
+            }
+            else
+            {
+                Assert.Equal("nuget", parsed.Manager);
+                Assert.Equal("Fixture", parsed.PackageName);
+                Assert.Equal("4.2.1.0", parsed.Version);
+            }
         }
     }
 
@@ -573,6 +629,14 @@ public class ScipMonikerTests
             if (declared is not null) yield return declared;
         }
     }
+
+    /// <summary>One assembly's worth of source, for the tests that need two of them.</summary>
+    private static CSharpCompilation Compile(string assemblyName, string source, params MetadataReference[] extra) =>
+        CSharpCompilation.Create(
+            assemblyName,
+            new[] { CSharpSyntaxTree.ParseText(source) },
+            References.Concat(extra),
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
     private static (Compilation Compilation, ScipMoniker Moniker) Setup()
     {

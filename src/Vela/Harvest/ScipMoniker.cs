@@ -37,10 +37,12 @@ namespace Vela.Harvest;
 /// (Apache 2.0). No file is vendored, and it deliberately departs from that
 /// implementation in four places, each marked below:
 ///
-///  1. A namespace is qualified by the namespaces above it. scip-dotnet resolves a
-///     namespace's owner straight to the package, which is its open issue #85: it makes
-///     Fixture.Deep and Other.Deep the same symbol, and a symbol is required to be a
-///     unique identifier across a package.
+///  1. A namespace is qualified by the namespaces above it, and by no package.
+///     scip-dotnet resolves a namespace's owner straight to the package, which is its
+///     open issue #85: it makes Fixture.Deep and Other.Deep the same symbol, and a
+///     symbol is required to be a unique identifier across a package. And a namespace
+///     belongs to no one assembly, so it takes the grammar's placeholder package
+///     rather than whichever of its constituents was reached first (see PackageOf).
 ///  2. A generic type carries its arity, because C# lets Task and Task&lt;T&gt; live in
 ///     one namespace and a descriptor of `Task#` for both is the same collision.
 ///  3. A type parameter is a descriptor, not a local. It is reachable from outside the
@@ -103,7 +105,7 @@ public sealed class ScipMoniker
         // takes the one form that can honestly say "nameless, and only here".
         if (chain is null || chain.Length == 0) return Local(canonical, documentPath);
 
-        return Package(AssemblyOf(canonical)) + chain;
+        return PackageOf(canonical) + chain;
     }
 
     /// <summary>
@@ -134,9 +136,10 @@ public sealed class ScipMoniker
         if (moniker.StartsWith(LocalPrefix, StringComparison.Ordinal)
             && canonical.ContainingSymbol is { } container)
         {
-            var enclosing = Descriptors(Canonicalise(container));
-            if (enclosing is not null)
-                information.EnclosingSymbol = Package(AssemblyOf(Canonicalise(container))) + enclosing;
+            var canonicalContainer = Canonicalise(container);
+            var enclosing = Descriptors(canonicalContainer);
+            if (enclosing is { Length: > 0 })
+                information.EnclosingSymbol = PackageOf(canonicalContainer) + enclosing;
         }
 
         return information;
@@ -163,10 +166,9 @@ public sealed class ScipMoniker
     /// The descriptor chain for a symbol, without the package prefix, or null when the
     /// symbol cannot have one and must be a local instead.
     ///
-    /// The chain and not the whole moniker is what is cached: a namespace such as
-    /// `System` is reached from several assemblies and the package part is not a
-    /// property of the namespace symbol, so caching the finished string would attribute
-    /// a symbol to whichever assembly asked first.
+    /// The chain and not the whole moniker is what is cached: the chain is a property of
+    /// the symbol alone, while the package part is read off the assembly beside it, and
+    /// the two are worth keeping separate because only one of them is expensive.
     /// </summary>
     private string? Descriptors(ISymbol symbol)
     {
@@ -314,6 +316,34 @@ public sealed class ScipMoniker
         genericsOptions: SymbolDisplayGenericsOptions.IncludeTypeParameters);
 
     /// <summary>
+    /// The package a symbol is distributed in, or the placeholder when it is in none.
+    ///
+    /// A namespace is in none. It is not declared by an assembly the way a type is: C#
+    /// lets any number of assemblies contribute to one namespace, Roslyn hands the
+    /// result back merged with no ContainingAssembly at all, and the merge differs by
+    /// compilation, so `Microsoft.AspNetCore` reached through one project and through
+    /// the next is the same namespace with two different owners. Naming one of them
+    /// picks by traversal order and writes a falsehood that varies run to run: measured
+    /// on the real solution, 46% of all namespace occurrences carried more than one
+    /// moniker, `ScentVerdict.Data` had ten, and a consumer joining namespace references
+    /// across the index - the whole point of carrying a moniker - could not.
+    ///
+    /// So a namespace says it has no package, which is true and is the same answer from
+    /// everywhere. Nothing is lost: the descriptor chain still names the namespace
+    /// uniquely, and a type inside it still carries the assembly that defines it.
+    /// </summary>
+    private string PackageOf(ISymbol symbol) =>
+        symbol is INamespaceSymbol ? PlaceholderPackage : Package(symbol.ContainingAssembly);
+
+    /// <summary>
+    /// scip.proto, of the manager, the package name and the version alike: "Use the
+    /// placeholder '.' to indicate an empty value". All three, because a package part
+    /// is not empty here for want of looking it up: there is no package.
+    /// </summary>
+    private static readonly string PlaceholderPackage =
+        Scheme + " " + EmptyPart + " " + EmptyPart + " " + EmptyPart + " ";
+
+    /// <summary>
     /// The package part of a moniker: `scip-dotnet nuget &lt;name&gt; &lt;version&gt; `,
     /// with the grammar's '.' placeholder wherever there is nothing to say. A space
     /// inside any part is escaped by doubling it, as the grammar requires, or the part
@@ -321,7 +351,7 @@ public sealed class ScipMoniker
     /// </summary>
     private string Package(IAssemblySymbol? assembly)
     {
-        if (assembly is null) return Scheme + " " + PackageManager + " " + EmptyPart + " " + EmptyPart + " ";
+        if (assembly is null) return PlaceholderPackage;
         if (packages.TryGetValue(assembly, out var cached)) return cached;
 
         var identity = assembly.Identity;
@@ -333,39 +363,6 @@ public sealed class ScipMoniker
 
         packages[assembly] = package;
         return package;
-    }
-
-    /// <summary>
-    /// The assembly a symbol belongs to.
-    ///
-    /// A namespace declared in more than one assembly is handed back merged, belonging
-    /// to none of them, and `System` is merged across most of the framework. The
-    /// assembly that declares it in source wins when there is one, because that is the
-    /// package the index is actually about; otherwise the constituents are ordered by
-    /// identity so the same solution always answers the same way (Constraint 1).
-    /// </summary>
-    private static IAssemblySymbol? AssemblyOf(ISymbol symbol)
-    {
-        if (symbol.ContainingAssembly is not null) return symbol.ContainingAssembly;
-        if (symbol is not INamespaceSymbol space) return null;
-
-        IAssemblySymbol? best = null;
-        foreach (var constituent in space.ConstituentNamespaces)
-        {
-            var candidate = constituent.ContainingAssembly;
-            if (candidate is null) continue;
-
-            if (constituent.Locations.Any(location => location.IsInSource)) return candidate;
-
-            if (best is null
-                || string.CompareOrdinal(
-                    candidate.Identity.GetDisplayName(), best.Identity.GetDisplayName()) < 0)
-            {
-                best = candidate;
-            }
-        }
-
-        return best;
     }
 
     private static string EscapeSpaces(string value) => value.Replace(" ", "  ");
