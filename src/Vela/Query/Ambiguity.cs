@@ -150,12 +150,12 @@ public static class Ambiguity
     private static string HowToNarrowIt(IReadOnlyList<SymbolTally> tally)
     {
         var target = tally[0].Symbol;
-        var segments = NameWithoutParameters(target).Split('.');
+        var segments = QueryHelper.DottedName(target).Split('.');
 
         for (var take = 1; take <= segments.Length; take++)
         {
             var candidate = string.Join('.', segments[^take..]);
-            if (tally.Count(entry => Matches(entry.Symbol, candidate)) == 1)
+            if (tally.Count(entry => QueryHelper.Matches(entry.Symbol, candidate)) == 1)
             {
                 return $"To ask about one of them, give more of its name: '{candidate}' matches {target} "
                      + "and none of the others. Any trailing run of a symbol's dotted segments matches "
@@ -166,35 +166,5 @@ public static class Ambiguity
         return "To ask about one of them, give more of its name. Any trailing run of a symbol's dotted "
              + "segments matches that symbol, so lengthen the name from the full names above until one "
              + "symbol is left.";
-    }
-
-    /// <summary>
-    /// Whether a stored symbol name matches a pattern, in C#.
-    ///
-    /// This mirrors <see cref="QueryHelper.SymbolMatches"/>, and it is used for one thing
-    /// only: choosing which qualified name to suggest. No query is answered from it, so
-    /// the two cannot disagree about which rows come back. The suggestion it produces is
-    /// fed back through the real SQL by a test, which is what keeps the mirror honest.
-    /// </summary>
-    private static bool Matches(string symbol, string pattern)
-    {
-        var head = NameWithoutParameters(symbol);
-        var suffix = "." + pattern;
-
-        return symbol == pattern
-            || symbol.EndsWith(suffix, StringComparison.Ordinal)
-            || head == pattern
-            || head.EndsWith(suffix, StringComparison.Ordinal);
-    }
-
-    /// <summary>
-    /// The stored name with any parameter list removed, so a method is reachable by its
-    /// name. A '(' at position 0 is not a parameter list, which is the same edge the SQL
-    /// spells out with instr() > 0.
-    /// </summary>
-    private static string NameWithoutParameters(string symbol)
-    {
-        var open = symbol.IndexOf('(', StringComparison.Ordinal);
-        return open > 0 ? symbol[..open] : symbol;
     }
 }

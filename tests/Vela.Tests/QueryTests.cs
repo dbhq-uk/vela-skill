@@ -256,6 +256,185 @@ public class QueryTests
             RefsQuery.Run(db, "App.Services.PerfumeService.Publish(App.Models.Perfume)").Select(h => h.Symbol));
     }
 
+    // ---- A parameter list is not part of the name, and what follows it is --
+    //
+    // The parameter list was stripped at the FIRST '(', which threw away every
+    // segment after the closing ')'. A constructor parameter's stored identity is
+    // exactly that shape:
+    //
+    //   App.Services.PerfumeService.PerfumeService(ILogger<...>, IImageService).logger
+    //
+    // Cut at the first '(' that reads App.Services.PerfumeService.PerfumeService,
+    // whose last segment is PerfumeService, so `refs PerfumeService` answered with
+    // occurrences of the constructor's parameters as though they were the type. On
+    // the real solution 6 of its 13 results were parameter variables, and the same
+    // thing happens to every method: `refs Get` answered 9,493 where 362 are real,
+    // the other 9,131 being locals and parameters declared inside some Get(...).
+    //
+    // Those are precisely the false hits vela exists to remove, and the shape fires
+    // on every dependency-injected service class in every codebase.
+    //
+    // So the parameter list ends at the last ')' that a name follows, and whatever
+    // follows it is part of the name: a parameter is reachable by its own name, and
+    // is not reachable by the name of the type or method it is declared in.
+
+    private const string Constructor =
+        "App.Services.PerfumeService.PerfumeService(Microsoft.Extensions.Logging.ILogger"
+      + "<App.Services.PerfumeService>, App.Services.IImageService)";
+
+    private const string Publish = "App.Services.PerfumeService.Publish(App.Models.Perfume)";
+
+    private const string Report =
+        "App.Reporting.Reporter.Report(Microsoft.Extensions.Logging.ILogger"
+      + "<App.Models.Perfume<App.Models.Note>>, App.Models.Baz)";
+
+    /// <summary>
+    /// The real shapes, in miniature: a type, its constructor, that constructor's
+    /// parameters, a method, a local inside it, and a method whose parameter list
+    /// nests generic arguments two deep.
+    /// </summary>
+    private static SqliteConnection ParameterListDb()
+    {
+        var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        var symbols = new[]
+        {
+            "App.Services.PerfumeService",
+            Constructor,
+            Constructor + ".logger",
+            Constructor + ".imageService",
+            Publish,
+            Publish + ".draft",
+            Report,
+            Report + ".state"
+        };
+
+        using (var document = db.CreateCommand())
+        {
+            document.CommandText =
+                "INSERT INTO document(id, relative_path, language) VALUES (1, 'App/Services/PerfumeService.cs', 'csharp')";
+            document.ExecuteNonQuery();
+        }
+
+        for (var i = 0; i < symbols.Length; i++)
+        {
+            using var cmd = db.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char) "
+              + "VALUES (1, $s, 1, $l, 4)";
+            cmd.Parameters.AddWithValue("$s", symbols[i]);
+            cmd.Parameters.AddWithValue("$l", i);
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+        return db;
+    }
+
+    [Fact]
+    public void Refs_MatchesTheTypeAndItsConstructor_ButNotTheConstructorsParameters()
+    {
+        // The motivating case. A parameter of PerfumeService's constructor is a
+        // variable; it is not the type, and an answer that counts it as one is the
+        // noise this tool exists to remove.
+        using var db = ParameterListDb();
+
+        var symbols = RefsQuery.Run(db, "PerfumeService").Select(h => h.Symbol).ToList();
+
+        Assert.Contains("App.Services.PerfumeService", symbols);
+        Assert.Contains(Constructor, symbols);
+        Assert.DoesNotContain(Constructor + ".logger", symbols);
+        Assert.DoesNotContain(Constructor + ".imageService", symbols);
+        Assert.DoesNotContain(Publish + ".draft", symbols);
+    }
+
+    [Fact]
+    public void Refs_MatchesAMethodWithAndWithoutItsParameterList()
+    {
+        using var db = ParameterListDb();
+
+        Assert.Contains(Publish, RefsQuery.Run(db, "Publish").Select(h => h.Symbol));
+        Assert.Contains(Publish, RefsQuery.Run(db, "PerfumeService.Publish").Select(h => h.Symbol));
+        Assert.Contains(Publish, RefsQuery.Run(db, Publish).Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Refs_MatchesALocalOrParameterByItsOwnName_AndByTheNameItIsDeclaredIn()
+    {
+        // The segments after the parameter list are the ones a reader can see in the
+        // source, so they have to be the ones that match. Lengthening the pattern
+        // across the stripped parameter list has to keep working too: the answer's
+        // own advice is to lengthen a name until one symbol is left.
+        using var db = ParameterListDb();
+
+        Assert.Equal(new[] { Constructor + ".logger" },
+            RefsQuery.Run(db, "logger").Select(h => h.Symbol));
+        Assert.Equal(new[] { Publish + ".draft" },
+            RefsQuery.Run(db, "draft").Select(h => h.Symbol));
+        Assert.Equal(new[] { Constructor + ".logger" },
+            RefsQuery.Run(db, "PerfumeService.logger").Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Refs_HandlesAParameterListThatNestsGenericArguments()
+    {
+        // Report(ILogger<Perfume<Note>>, Baz) carries no nested parentheses but plenty
+        // of nested punctuation, and its local is stored after the closing ')'.
+        using var db = ParameterListDb();
+
+        Assert.Contains(Report, RefsQuery.Run(db, "Report").Select(h => h.Symbol));
+        Assert.Contains(Report, RefsQuery.Run(db, "Reporter.Report").Select(h => h.Symbol));
+        Assert.Equal(new[] { Report + ".state" }, RefsQuery.Run(db, "state").Select(h => h.Symbol));
+
+        // The method's own containing type does not reach into its body, and a type
+        // named inside the parameter list is not the method's name.
+        Assert.DoesNotContain(Report + ".state", RefsQuery.Run(db, "Reporter").Select(h => h.Symbol));
+        Assert.Empty(RefsQuery.Run(db, "Note"));
+        Assert.Empty(RefsQuery.Run(db, "Baz"));
+    }
+
+    [Fact]
+    public void Refs_AcrossAParameterList_IsStillCaseSensitiveAndStillHasNoWildcards()
+    {
+        using var db = ParameterListDb();
+
+        Assert.Empty(RefsQuery.Run(db, "perfumeService"));
+        Assert.Empty(RefsQuery.Run(db, "LOGGER"));
+
+        // '_' would be "any one character" and '%' "any run of characters" if a
+        // pattern language had crept back in with the parameter-list handling.
+        Assert.Empty(RefsQuery.Run(db, "logge_"));
+        Assert.Empty(RefsQuery.Run(db, "%"));
+        Assert.Empty(RefsQuery.Run(db, "%logger"));
+    }
+
+    [Fact]
+    public void Impact_DoesNotAttributeCallersOfALocalToTheTypeItIsDeclaredIn()
+    {
+        // The same defect, where it costs most: a blast radius sized from a count that
+        // included every parameter of every constructor of the type asked about.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Services/PerfumeService.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Services.PerfumeService.Publish(App.Models.Perfume)', 1, 30, 4, 40, 5),
+                    (1, '{Constructor}.logger', 0, 32, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        Assert.Empty(ImpactQuery.Run(db, "PerfumeService"));
+        Assert.NotEmpty(ImpactQuery.Run(db, "logger"));
+    }
+
     [Fact]
     public void Def_MatchesAWholeDottedSegment_NotAnArbitrarySuffix()
     {
