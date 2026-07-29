@@ -5,13 +5,18 @@ namespace Vela.Indexing;
 /// and the root the freshness check has to watch.
 ///
 /// One definition, read from two places. ScipEmitter roots the emitted index here, and
-/// Staleness walks this same directory, so the set of files that can be in the index and
-/// the set of files that can make it stale are the same set by construction. They were
-/// not: the index widened to the repository root while the walk still started at the
-/// solution directory, so in the ordinary `repo/src/App.sln` layout every file under
-/// `repo/tests/` was indexed and none of it was watched. Editing one left every verb
-/// answering at exit 0, with no banner, at line numbers that had moved, which is the
-/// exact shape Constraint 3 exists to forbid.
+/// Staleness starts its walk at this same directory, so no file can be indexed from
+/// outside the tree the freshness check covers. It could: the index widened to the
+/// repository root while the walk still started at the solution directory, so in the
+/// ordinary `repo/src/App.sln` layout every file under `repo/tests/` was indexed and
+/// none of it was watched. Editing one left every verb answering at exit 0, with no
+/// banner, at line numbers that had moved, which is the exact shape Constraint 3 exists
+/// to forbid.
+///
+/// Sharing the root makes the two trees the same tree. It does not make the two SETS of
+/// files the same set, and they are not: Staleness watches only the extensions vela
+/// indexes and skips several directories outright, so it is a documented subset. See
+/// <see cref="Staleness"/> for what that costs and where it is stated to the reader.
 /// </summary>
 public static class ProjectRoot
 {

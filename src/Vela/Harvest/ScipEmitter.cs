@@ -513,9 +513,13 @@ public static class ScipEmitter
     /// Where an index is rooted, and which directories hold code that is nobody's
     /// first-party source.
     ///
-    /// project_root comes from <see cref="Vela.Indexing.ProjectRoot"/>, which is also
-    /// what Staleness watches, so an index cannot cover a file that nothing checks the
-    /// freshness of.
+    /// project_root comes from <see cref="Vela.Indexing.ProjectRoot"/>, which is where
+    /// Staleness starts its walk, so an index cannot cover a file OUTSIDE the tree the
+    /// freshness check looks at. That is a guarantee about the root and not about the
+    /// set of files: Staleness examines only the extensions vela indexes and never
+    /// descends into `bin`, `obj`, `.git`, `.vs`, `.idea` or `node_modules`, while this
+    /// emitter indexes whatever the compilation hands it, so 365 documents of the real
+    /// solution sit under `bin` or `obj` and are indexed without being watched.
     /// </summary>
     private sealed record Roots(string ProjectRoot, IReadOnlyList<string> ExternalRoots)
     {

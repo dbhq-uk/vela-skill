@@ -13,9 +13,9 @@ namespace Vela.Indexing;
 ///
 /// This is the cheap, honest mitigation and nothing more. It is not incremental
 /// reindex, and it does not try to work out whether the specific symbol you asked about
-/// was affected: it compares timestamps, and if anything under the root the index was
-/// built against is newer than the index, it says so and lets the existing banner and
-/// exit code do the rest. No file is opened and nothing is hashed, so the cost is a
+/// was affected: it compares timestamps, and if a watched file under the root the index
+/// was built against is newer than the index, it says so and lets the existing banner
+/// and exit code do the rest. No file is opened and nothing is hashed, so the cost is a
 /// directory walk.
 ///
 /// That root is <see cref="ProjectRoot"/>, the same one ScipEmitter rooted the index at,
@@ -24,6 +24,18 @@ namespace Vela.Indexing;
 /// index widened to the repository root: in a `repo/src/App.sln` layout every file under
 /// `repo/tests/` was in the index and none of it was watched, so editing a test left
 /// every verb answering exit 0 at line numbers that had moved.
+///
+/// <b>What the shared root does and does not guarantee.</b> It guarantees the ROOT: no
+/// document can be indexed from outside the tree this walk covers, which is the failure
+/// above. It does not guarantee the SET. <see cref="SourceExtensions"/> and
+/// <see cref="SkippedDirectories"/> make the watched files a proper subset of the
+/// indexed ones - on the real solution 365 indexed documents sit under `bin` or `obj`
+/// alone, and a generated file the compiler was handed from anywhere else with an
+/// extension not on that list is indexed and unwatched too. Those files can change
+/// without degrading anything. The exclusions are deliberate and are the price of a
+/// walk cheap enough to run on every query; what is not acceptable is a reader
+/// believing otherwise, so README.md and SKILL.md both say outright that the absence of
+/// a banner is not proof the tree is unchanged.
 /// </summary>
 public static class Staleness
 {
