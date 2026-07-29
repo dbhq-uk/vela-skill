@@ -216,6 +216,60 @@ public class ScipImporterTests
         Assert.Equal(1, report.UnconvertedDocuments);
     }
 
+    [Fact]
+    public void Import_CountsTheDocumentsThatDeclareNoPositionEncodingRatherThanAssumingOneInSilence()
+    {
+        // scip.proto, of UnspecifiedPositionEncoding = 0: "Default value. This value
+        // should not be used by new SCIP indexers so that a consumer can process the
+        // SCIP index without ambiguity." A real index uses it anyway - scip-typescript
+        // 0.4.0 leaves the field unset on every document it writes - and NeedsConversion
+        // handles only UTF-8 and UTF-32, so 0 fell through as though the indexer had
+        // declared UTF-16 and was counted nowhere.
+        //
+        // vela still reads it as UTF-16, because that is what every row in the index
+        // already means and there is nothing else to read it as: the unit is decided by
+        // the indexer's implementation language, which the file does not state. What it
+        // must not do is call that a fact. It is right for scip-typescript and silently
+        // wrong for an indexer written in Go, Rust, C++ or Python that omits the field,
+        // so the number is counted and reported (Constraint 3).
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+        };
+
+        // Declared nothing at all, which is what a real scip-typescript index looks like.
+        index.Documents.Add(new Scip.Document { RelativePath = "silent.ts", Language = "typescript" });
+
+        // Declared UTF-16, so it is not ambiguous and is not counted.
+        index.Documents.Add(new Scip.Document
+        {
+            RelativePath = "declared.ts",
+            Language = "typescript",
+            PositionEncoding = Scip.PositionEncoding.Utf16CodeUnitOffsetFromLineStart
+        });
+
+        // Declared UTF-8, which is a different fact reported by a different number.
+        index.Documents.Add(new Scip.Document
+        {
+            RelativePath = "declared.go",
+            Language = "go",
+            PositionEncoding = Scip.PositionEncoding.Utf8CodeUnitOffsetFromLineStart
+        });
+
+        using var db = Fresh();
+        var report = ScipImporter.Import(db, index, "/repo");
+
+        Assert.Equal(3, report.Documents);
+        Assert.Equal(1, report.UnspecifiedEncodingDocuments);
+
+        // The declared encoding is stored exactly as it arrived, 0 included, so what the
+        // index said and what vela assumed are both recoverable.
+        // Ordered by path: declared.go, declared.ts, silent.ts.
+        Assert.Equal(
+            new[] { 1, 2, 0 },
+            Column(db, "SELECT position_encoding FROM document ORDER BY relative_path"));
+    }
+
     // ================================================================================
     // Hazard 2: local symbols are document-scoped
     // ================================================================================

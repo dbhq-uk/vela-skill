@@ -28,6 +28,22 @@ namespace Vela.Indexing;
 /// whose text could not be found, so the numbers were stored as they arrived. Exact on
 /// any line of pure ASCII and wrong on any line that is not.
 /// </param>
+/// <param name="UnspecifiedEncodingDocuments">
+/// Documents that declared no position encoding at all, so what unit their character
+/// offsets are counted in is not stated anywhere in the file.
+///
+/// scip.proto, of UnspecifiedPositionEncoding = 0: "Default value. This value should not
+/// be used by new SCIP indexers so that a consumer can process the SCIP index without
+/// ambiguity." Real indexers use it anyway - scip-typescript 0.4.0 leaves the field unset
+/// on every document it writes, and four such documents are live in the index vela was
+/// developed against. <b>vela reads them as UTF-16 code units</b>, because that is what
+/// every other row in the database already means and because the unit is chosen by the
+/// indexer's implementation language, which the file does not state either. That
+/// assumption is right for an indexer implemented in JVM/.NET or JavaScript/TypeScript
+/// and silently wrong for one implemented in Go, Rust, C++ or Python that omits the
+/// field. So it is counted and said out loud rather than assumed away: an ambiguous index
+/// has to look ambiguous.
+/// </param>
 /// <param name="UnparsedMonikers">
 /// Monikers that do not fit the grammar in scip.proto, so no dotted display name could
 /// be derived and the moniker itself stands in as the name.
@@ -38,6 +54,7 @@ public sealed record ImportReport(
     int Occurrences,
     int UnnamedOccurrences,
     int UnconvertedDocuments,
+    int UnspecifiedEncodingDocuments,
     int UnparsedMonikers,
     IReadOnlyList<string> Problems)
 {
@@ -208,6 +225,7 @@ public static class ScipImporter
         private int occurrences;
         private int unnamed;
         private int unconverted;
+        private int unspecifiedEncoding;
         private int unparsed;
         private bool committed;
 
@@ -318,6 +336,13 @@ public static class ScipImporter
             var lines = LinesOf(document, path);
             if (NeedsConversion(document.PositionEncoding) && lines is null) unconverted++;
 
+            // Not a conversion failure and not a gap: an ambiguity. Nothing in the file
+            // says what unit these offsets are counted in, they are read as UTF-16
+            // because that is what every other row in this database means, and the count
+            // is reported so that reading is a stated assumption rather than a silent one.
+            if (document.PositionEncoding == Scip.PositionEncoding.UnspecifiedPositionEncoding)
+                unspecifiedEncoding++;
+
             insertDoc.Parameters["$p"].Value = path;
             insertDoc.Parameters["$l"].Value = LanguageOf(document, path);
             insertDoc.Parameters["$g"].Value = IsGenerated(document) ? 1 : 0;
@@ -389,7 +414,8 @@ public static class ScipImporter
         {
             tx.Commit();
             committed = true;
-            return new ImportReport(tool, documents, occurrences, unnamed, unconverted, unparsed, problems);
+            return new ImportReport(
+                tool, documents, occurrences, unnamed, unconverted, unspecifiedEncoding, unparsed, problems);
         }
 
         public void Dispose()

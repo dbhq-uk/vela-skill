@@ -123,6 +123,14 @@ public class ScipImportEndToEndTests
         Assert.Equal(702, report.Occurrences);
         Assert.False(report.Degraded, string.Join("; ", report.Problems));
 
+        // Every one of the four declares no position encoding, which scip.proto says
+        // "should not be used by new SCIP indexers so that a consumer can process the
+        // SCIP index without ambiguity". vela reads them as UTF-16, which is right for
+        // an indexer implemented in TypeScript and would be wrong for one implemented in
+        // Go, Rust, C++ or Python. So the number is reported rather than assumed away.
+        Assert.Equal(4, report.UnspecifiedEncodingDocuments);
+        Assert.Equal(0, report.UnconvertedDocuments);
+
         // Hazard 3: every path is rebased onto vela's root, so a hit can be opened from
         // the repository rather than from the directory the indexer happened to run in.
         Assert.Equal(
@@ -358,6 +366,10 @@ public class ScipImportEndToEndTests
         Assert.Equal(0, imported.ExitCode);
         Assert.Contains("scip-typescript", imported.Output, StringComparison.Ordinal);
         Assert.Contains("1 document", imported.Output, StringComparison.Ordinal);
+
+        // It declares no position encoding, like every real scip-typescript index, so the
+        // verb says which unit it read the offsets in rather than assuming in silence.
+        Assert.Contains("declare no position encoding", imported.Output, StringComparison.Ordinal);
 
         // The C# is still there and the TypeScript is now beside it, in one index, and
         // one query reaches the new language.

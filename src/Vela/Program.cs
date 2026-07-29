@@ -434,6 +434,23 @@ public static class Program
                                + "pure ASCII and may be off on a line that is not.");
             }
 
+            // Also plainly, and also never a reason to raise the exit code: nothing is
+            // missing, but what unit these offsets are counted in is not stated anywhere
+            // in the file, and the reading vela chose is a stated assumption rather than
+            // a fact. scip.proto asks indexers not to leave the field unset "so that a
+            // consumer can process the SCIP index without ambiguity"; every real
+            // scip-typescript index leaves it unset anyway.
+            if (report.UnspecifiedEncodingDocuments > 0)
+            {
+                output.WriteLine($"{report.UnspecifiedEncodingDocuments} document(s) declare no position "
+                               + "encoding, so their character offsets were read as UTF-16 code units, which "
+                               + "is what every other row in this index means. That is what an indexer "
+                               + "written in .NET, Java or TypeScript counts in; an indexer written in Go, "
+                               + "Rust, C++ or Python counts in something else, and if one of those left the "
+                               + "field unset then columns on lines holding non-ASCII characters are off. The "
+                               + "line and the file are right either way.");
+            }
+
             if (report.UnnamedOccurrences > 0)
             {
                 output.WriteLine($"{report.UnnamedOccurrences} occurrence(s) carry no symbol at all, so they "
