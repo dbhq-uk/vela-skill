@@ -24,7 +24,7 @@ public class WorkspaceLoaderTests
 
         var result = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
 
-        // Constraint 4: the failure must be visible, not swallowed into an empty result.
+        // Constraint 3: the failure must be visible, not swallowed into an empty result.
         Assert.NotEmpty(result.Failures);
     }
 

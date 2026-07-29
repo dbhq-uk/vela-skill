@@ -538,6 +538,50 @@ public class ScipEmitterTests
         Assert.False(Program.BuildHealthRecord(index, Array.Empty<string>()).Degraded);
     }
 
+    [Fact]
+    public async Task EmitAsync_AnchorsADefinitionAtItsIdentifier_NotAtItsAttributeList()
+    {
+        // A definition was recorded at node.SpanStart, and a MethodDeclarationSyntax
+        // begins at its attribute list. So `def` on `[HttpPost] public IActionResult
+        // Foo()` sent the reader to the line holding `[HttpPost]`, which is not where
+        // anyone looking for the declaration expects to land, and on a method with
+        // several attributes is several lines away from it.
+        var root = SyntheticRoot();
+        var file = Path.Combine(root, "App", "Controller.cs");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 1 "{{Escape(file)}}"
+            public class Controller
+            {
+                [System.Obsolete]
+                public int Foo() => 0;
+            }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
+
+        var method = Assert.Single(occurrences.Where(o =>
+            o.Symbol == "Controller.Foo()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+
+        // Mapped lines are zero-based and `#line 1` puts the first source line at 0, so
+        // the attribute is line 2 and the declaration line 3, with `Foo` at column 15.
+        Assert.Equal(3, method.Range[0]);
+        Assert.Equal(15, method.Range[1]);
+
+        // A type is anchored at its name for the same reason.
+        var type = Assert.Single(occurrences.Where(o =>
+            o.Symbol == "Controller" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+        Assert.Equal(0, type.Range[0]);
+        Assert.Equal(13, type.Range[1]);
+
+        // The body range still opens where the occurrence does, which is what impact
+        // reads, so moving the anchor must move both together.
+        Assert.Equal(method.Range[0], method.EnclosingRange[0]);
+        Assert.Equal(method.Range[1], method.EnclosingRange[1]);
+    }
+
     private static string SyntheticRoot() =>
         Path.Combine(Path.GetTempPath(), "vela-synth-" + Guid.NewGuid().ToString("N")[..8]);
 

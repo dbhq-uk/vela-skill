@@ -100,14 +100,16 @@ public static class ScipEmitter
 
                     var isDefinition = declared is not null;
 
-                    // Where the occurrence is recorded. A declaration is recorded where
-                    // it begins, because that is where its enclosing range begins too.
-                    // A reference is recorded at the name that spells it, which folds
-                    // the chain of nodes describing one reference into one occurrence:
-                    // see NamingNode.
-                    var anchor = isDefinition ? node : NamingNode(node);
+                    // Where the occurrence is recorded. A declaration is recorded at the
+                    // token that names it (see DeclarationAnchor), a reference at the
+                    // name that spells it (see NamingNode). Both rules say the same
+                    // thing: an occurrence sits on the identifier, which is where a
+                    // reader jumping to it expects to land.
+                    var anchorPosition = isDefinition
+                        ? DeclarationAnchor(node)
+                        : NamingNode(node).SpanStart;
 
-                    var location = RazorMapper.MapToOriginal(harvested.Tree, anchor.SpanStart);
+                    var location = RazorMapper.MapToOriginal(harvested.Tree, anchorPosition);
                     if (location is null) continue;
 
                     var doc = GetOrAddDocument(byOriginalPath, index, location.FilePath, projectRoot);
@@ -247,6 +249,51 @@ public static class ScipEmitter
         SymbolKind.Discard => false,
         SymbolKind.Alias => false,
         _ => true
+    };
+
+    /// <summary>
+    /// The position a declaration is recorded at: the token that names it.
+    ///
+    /// node.SpanStart is the start of the whole declaration, and a declaration begins at
+    /// its attribute list. So `def` on
+    ///
+    ///     [HttpPost]
+    ///     public IActionResult Foo()
+    ///
+    /// answered with the line holding `[HttpPost]`, and with several attributes it
+    /// answered several lines above the declaration. That is not wrong in the sense of
+    /// naming the wrong member, but it sends the reader to a line that does not look
+    /// like what they asked for, and `def` exists to be jumped to.
+    ///
+    /// The enclosing range opens at this position too, so the body range now begins at
+    /// the name rather than at the attributes. That is the more accurate reading in any
+    /// case: an attribute argument is not code the member runs.
+    /// </summary>
+    private static int DeclarationAnchor(SyntaxNode node) => node switch
+    {
+        BaseTypeDeclarationSyntax type => type.Identifier.SpanStart,
+        DelegateDeclarationSyntax d => d.Identifier.SpanStart,
+        EnumMemberDeclarationSyntax member => member.Identifier.SpanStart,
+        MethodDeclarationSyntax method => method.Identifier.SpanStart,
+        LocalFunctionStatementSyntax local => local.Identifier.SpanStart,
+        ConstructorDeclarationSyntax ctor => ctor.Identifier.SpanStart,
+        DestructorDeclarationSyntax dtor => dtor.Identifier.SpanStart,
+        // An operator has no identifier; the token a reader looks for is the operator
+        // itself, and for a conversion it is the type being converted to.
+        OperatorDeclarationSyntax op => op.OperatorToken.SpanStart,
+        ConversionOperatorDeclarationSyntax conversion => conversion.Type.SpanStart,
+        PropertyDeclarationSyntax property => property.Identifier.SpanStart,
+        EventDeclarationSyntax e => e.Identifier.SpanStart,
+        IndexerDeclarationSyntax indexer => indexer.ThisKeyword.SpanStart,
+        AccessorDeclarationSyntax accessor => accessor.Keyword.SpanStart,
+        VariableDeclaratorSyntax variable => variable.Identifier.SpanStart,
+        ParameterSyntax parameter => parameter.Identifier.SpanStart,
+        TypeParameterSyntax typeParameter => typeParameter.Identifier.SpanStart,
+        BaseNamespaceDeclarationSyntax ns => ns.Name.SpanStart,
+        // Anything else, including every VB declaration and anything C# grows later,
+        // keeps the position it had. A declaration recorded where it begins is a
+        // slightly blunt answer, never a false one.
+        _ => node.SpanStart
     };
 
     /// <summary>
