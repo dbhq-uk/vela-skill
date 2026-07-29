@@ -160,11 +160,16 @@ public static class Ambiguity
     /// That case gets the rule without the promise, because claiming a pattern matches
     /// only one symbol when it matches two would be the failure this block exists to fix,
     /// committed by the sentence meant to fix it.
+    ///
+    /// The segments are taken from <see cref="QueryHelper.PlainName"/> and not from the
+    /// stored name, because the stored name is not made of dotted segments where a type
+    /// argument sits: splitting 'App.Logging.ILogger&lt;App.Services.PerfumeService&gt;'
+    /// on '.' offers 'PerfumeService&gt;' and 'ILogger&lt;App' as names to type back in.
     /// </summary>
     private static string HowToNarrowIt(IReadOnlyList<SymbolTally> tally)
     {
         var target = tally[0].Symbol;
-        var segments = QueryHelper.DottedName(target).Split('.');
+        var segments = QueryHelper.PlainName(target).Split('.');
 
         for (var take = 1; take <= segments.Length; take++)
         {

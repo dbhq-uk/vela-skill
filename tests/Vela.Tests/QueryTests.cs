@@ -435,6 +435,275 @@ public class QueryTests
         Assert.NotEmpty(ImpactQuery.Run(db, "logger"));
     }
 
+    // ---- A generic type argument list is not part of the name either ----------
+    //
+    // The parameter list was stripped; the type argument list was not. So every
+    // constructed generic carried its arguments in its last dotted segment and no
+    // bare name could reach it:
+    //
+    //   Microsoft.Extensions.Logging.ILogger<ScentVerdict.Web.Pages.IndexModel>
+    //   ScentVerdict.Ai.Auditing.AuditRunner.RunWithAuditAsync<(int, int)>(System.String)
+    //
+    // On the real solution `refs ILogger` found 2 occurrences of 271, and
+    // `refs RunWithAuditAsync` matched none of its 33 instantiations. 13,366 of the
+    // index's 135,321 distinct symbols carry a '<' before any parameter list, so this
+    // is the same silent under-count as the parameter list, over a tenth of the index:
+    // the tool reports a widely used symbol as barely used, which is exactly the
+    // conclusion that makes an agent delete something.
+    //
+    // A type argument list can contain anything a type can: dots, commas, nested
+    // argument lists, and a tuple's parentheses. So it is removed by matching angle
+    // brackets rather than by cutting at the first one, and a name whose brackets do
+    // not balance, which is what 'operator <(A, B)' is, is left exactly as it is.
+
+    private const string LoggerOfService = "App.Logging.ILogger<App.Services.PerfumeService>";
+
+    private const string LoggerOfList =
+        "App.Logging.ILogger<App.Collections.List<App.Models.Note>>";
+
+    private const string RunWithAudit =
+        "App.Auditing.AuditRunner.RunWithAuditAsync<System.String>(System.String)";
+
+    private const string RunWithAuditTuple =
+        "App.Auditing.AuditRunner.RunWithAuditAsync<(System.Int32, System.Int32)>(System.String)";
+
+    private const string HandlerInvoke =
+        "App.Events.Handler<System.Func<System.Int32, System.String>>.Invoke";
+
+    private const string DictionaryOfLists =
+        "System.Collections.Generic.Dictionary<System.String, System.Collections.Generic.List<System.Int32>>";
+
+    private const string LessThan = "App.Models.Money.operator <(App.Models.Money, App.Models.Note)";
+
+    private const string GreaterThan = "App.Models.Money.operator >(App.Models.Money, App.Models.Note)";
+
+    /// <summary>
+    /// The generic shapes, in miniature: an open generic type and two constructions of
+    /// it, one of them nested; a generic method and the same method with a tuple type
+    /// argument, which puts a comma and a pair of parentheses inside the angle
+    /// brackets; a local declared inside one of them; a member reached across a type
+    /// argument list that itself contains dots and parentheses; a type with two type
+    /// arguments; and the two comparison operators, whose stored names contain an angle
+    /// bracket that opens nothing.
+    /// </summary>
+    private static SqliteConnection TypeArgumentDb()
+    {
+        var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        var symbols = new[]
+        {
+            "App.Logging.ILogger",
+            LoggerOfService,
+            LoggerOfList,
+            RunWithAudit,
+            RunWithAudit + ".attempt",
+            RunWithAuditTuple,
+            HandlerInvoke,
+            DictionaryOfLists,
+            "App.Models.Money",
+            LessThan,
+            GreaterThan
+        };
+
+        using (var document = db.CreateCommand())
+        {
+            document.CommandText =
+                "INSERT INTO document(id, relative_path, language) VALUES (1, 'App/Logging/Logger.cs', 'csharp')";
+            document.ExecuteNonQuery();
+        }
+
+        for (var i = 0; i < symbols.Length; i++)
+        {
+            using var cmd = db.CreateCommand();
+            cmd.CommandText =
+                "INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char) "
+              + "VALUES (1, $s, 1, $l, 4)";
+            cmd.Parameters.AddWithValue("$s", symbols[i]);
+            cmd.Parameters.AddWithValue("$l", i);
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+        return db;
+    }
+
+    [Fact]
+    public void Refs_MatchesAGenericTypeWhateverItsTypeArguments()
+    {
+        // The motivating case. ILogger<T> is one type, and an answer that reaches only
+        // the occurrences written without type arguments reports a type used everywhere
+        // as used almost nowhere.
+        using var db = TypeArgumentDb();
+
+        var symbols = RefsQuery.Run(db, "ILogger").Select(h => h.Symbol).ToList();
+
+        Assert.Contains("App.Logging.ILogger", symbols);
+        Assert.Contains(LoggerOfService, symbols);
+        Assert.Contains(LoggerOfList, symbols);
+
+        // Lengthening the name across the type argument list has to keep working, since
+        // that is what the ambiguity block tells the reader to do.
+        Assert.Equal(3, RefsQuery.Run(db, "Logging.ILogger").Count);
+        Assert.Equal(3, RefsQuery.Run(db, "App.Logging.ILogger").Count);
+    }
+
+    [Fact]
+    public void Refs_MatchesAGenericMethodByItsNameAndByItsParameterList()
+    {
+        using var db = TypeArgumentDb();
+
+        var byName = RefsQuery.Run(db, "RunWithAuditAsync").Select(h => h.Symbol).ToList();
+        Assert.Contains(RunWithAudit, byName);
+        Assert.Contains(RunWithAuditTuple, byName);
+
+        // A method's parameter list is part of how it is written down, so a pattern
+        // carrying it must still reach the method whatever its type arguments are.
+        var bySignature = RefsQuery.Run(db, "RunWithAuditAsync(System.String)").Select(h => h.Symbol).ToList();
+        Assert.Contains(RunWithAudit, bySignature);
+        Assert.Contains(RunWithAuditTuple, bySignature);
+
+        Assert.Contains(RunWithAudit,
+            RefsQuery.Run(db, "AuditRunner.RunWithAuditAsync").Select(h => h.Symbol));
+        Assert.Contains(RunWithAudit, RefsQuery.Run(db, RunWithAudit).Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Refs_MatchesASegmentReachedAcrossATypeArgumentList()
+    {
+        // Handler<Func<int, string>>.Invoke puts dots, a comma and two closing angle
+        // brackets between the type's name and the member's, so a rule that cut at the
+        // first '<' or paired the wrong brackets would lose the member entirely.
+        using var db = TypeArgumentDb();
+
+        Assert.Equal(new[] { HandlerInvoke }, RefsQuery.Run(db, "Invoke").Select(h => h.Symbol));
+        Assert.Equal(new[] { HandlerInvoke }, RefsQuery.Run(db, "Handler.Invoke").Select(h => h.Symbol));
+        Assert.Equal(new[] { HandlerInvoke }, RefsQuery.Run(db, "Events.Handler.Invoke").Select(h => h.Symbol));
+
+        Assert.Equal(new[] { DictionaryOfLists }, RefsQuery.Run(db, "Dictionary").Select(h => h.Symbol));
+        Assert.Equal(new[] { DictionaryOfLists }, RefsQuery.Run(db, "Generic.Dictionary").Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Refs_MatchesAGenericMethodWhoseTypeArgumentIsATuple()
+    {
+        // A tuple type argument carries a comma and a pair of parentheses inside the
+        // angle brackets, so the parameter list is no longer the first '(' in the name.
+        using var db = TypeArgumentDb();
+
+        Assert.Contains(RunWithAuditTuple, RefsQuery.Run(db, "RunWithAuditAsync").Select(h => h.Symbol));
+        Assert.Contains(RunWithAuditTuple,
+            RefsQuery.Run(db, "AuditRunner.RunWithAuditAsync").Select(h => h.Symbol));
+        Assert.Contains(RunWithAuditTuple, RefsQuery.Run(db, RunWithAuditTuple).Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Refs_DoesNotMatchATypeArgumentAsThoughItWereTheSymbolItself()
+    {
+        // A type argument names a different symbol, which has its own occurrence at its
+        // own position. Counting ILogger<PerfumeService> as an occurrence of
+        // PerfumeService would double-count it and put the noise back.
+        using var db = TypeArgumentDb();
+
+        Assert.Empty(RefsQuery.Run(db, "PerfumeService"));
+        Assert.Empty(RefsQuery.Run(db, "List"));
+        Assert.Empty(RefsQuery.Run(db, "Func"));
+        Assert.Empty(RefsQuery.Run(db, "Int32"));
+        Assert.Empty(RefsQuery.Run(db, "Services.PerfumeService"));
+    }
+
+    [Fact]
+    public void Refs_ALocalInsideAGenericMethodKeepsItsOwnName()
+    {
+        using var db = TypeArgumentDb();
+
+        Assert.Equal(new[] { RunWithAudit + ".attempt" }, RefsQuery.Run(db, "attempt").Select(h => h.Symbol));
+        Assert.Equal(new[] { RunWithAudit + ".attempt" },
+            RefsQuery.Run(db, "RunWithAuditAsync.attempt").Select(h => h.Symbol));
+
+        // And is not the method, exactly as a parameter is not the type.
+        Assert.DoesNotContain(RunWithAudit + ".attempt",
+            RefsQuery.Run(db, "RunWithAuditAsync").Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Refs_WhenTheAngleBracketsDoNotBalance_TheStoredNameIsLeftAlone()
+    {
+        // 'Money.operator <(Money, Note)' contains a '<' that opens nothing. Counting
+        // brackets without checking they pair swallows the rest of the name, and
+        // 'operator >' is worse: the count goes negative and the parameter list is
+        // promoted into the name, so `refs Note` answers with the operator as though
+        // the type in its signature were the symbol.
+        using var db = TypeArgumentDb();
+
+        Assert.Empty(RefsQuery.Run(db, "Note"));
+        Assert.Empty(RefsQuery.Run(db, "Models.Note"));
+        Assert.Equal(new[] { "App.Models.Money" }, RefsQuery.Run(db, "Money").Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Refs_AcrossATypeArgumentList_IsStillCaseSensitiveAndStillHasNoWildcards()
+    {
+        using var db = TypeArgumentDb();
+
+        Assert.Empty(RefsQuery.Run(db, "ilogger"));
+        Assert.Empty(RefsQuery.Run(db, "ILOGGER"));
+        Assert.Empty(RefsQuery.Run(db, "runWithAuditAsync"));
+
+        // '_' would be "any one character" and '%' "any run of characters" if a pattern
+        // language had crept back in with the type argument handling.
+        Assert.Empty(RefsQuery.Run(db, "ILogge_"));
+        Assert.Empty(RefsQuery.Run(db, "Dictionar_"));
+        Assert.Empty(RefsQuery.Run(db, "%"));
+        Assert.Empty(RefsQuery.Run(db, "%ILogger"));
+    }
+
+    [Fact]
+    public void Impact_FindsCallersOfAGenericMethodWhateverItsTypeArguments()
+    {
+        // Where the under-count costs most: a blast radius sized from a query that
+        // matched none of the method's instantiations reads as "nothing calls this".
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Auditing/Caller.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Auditing.Caller.Run()', 1, 30, 4, 40, 5),
+                    (1, '{RunWithAudit}', 0, 32, 12, NULL, NULL),
+                    (1, '{RunWithAuditTuple}', 0, 33, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        Assert.Equal(new[] { "App.Auditing.Caller.Run()" },
+            ImpactQuery.Run(db, "RunWithAuditAsync").Select(h => h.Symbol));
+        Assert.Equal(2, ImpactQuery.MatchedSymbols(db, "RunWithAuditAsync").Sum(tally => tally.Count));
+    }
+
+    [Fact]
+    public void Ambiguity_SuggestsANameWithoutTypeArguments_BecauseThatIsWhatTheQueryReads()
+    {
+        // The block's whole value is that the pattern it prints can be typed back in.
+        // Splitting a constructed generic on '.' produces segments like 'ILogger<App'
+        // and 'PerfumeService>', so the suggestion was a fragment of a type argument.
+        var tally = new[]
+        {
+            new SymbolTally(LoggerOfService, 5),
+            new SymbolTally("App.Diagnostics.ILogger", 2)
+        };
+
+        var block = Ambiguity.RenderOccurrences("ILogger", tally);
+
+        Assert.Contains("'Logging.ILogger'", block, StringComparison.Ordinal);
+        Assert.DoesNotContain("'PerfumeService>'", block, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Def_MatchesAWholeDottedSegment_NotAnArbitrarySuffix()
     {

@@ -62,6 +62,8 @@ Symbols can be given bare (`Status`) or qualified (`Perfume.Status`). `def`, `re
 
 A method matches with or without its parameter list (`Publish` or `PerfumeService.Publish`), and a local or a parameter matches by its own name rather than by the name of the method or type it is declared in: `refs PerfumeService` finds the type and its constructor, not the variables that constructor is handed, and `refs Get` finds the methods rather than every local declared inside one.
 
+Generic type arguments are not part of a name either, so a bare name reaches a generic whatever it was constructed with: `refs ILogger` finds every `ILogger<T>` in the solution, and `refs RunWithAuditAsync` finds every instantiation of the method as well as its declaration. A type argument is not counted as an occurrence of the symbol it names, so `ILogger<PerfumeService>` is an occurrence of `ILogger` and not of `PerfumeService`, which has its own occurrence at its own position.
+
 `find` is the exception: it searches name tokens with a trailing prefix, so `find Stat` finds `Status` where `refs Stat` finds nothing. Use `find` to discover a name and the other three to ask about it.
 
 ## Reading the output
