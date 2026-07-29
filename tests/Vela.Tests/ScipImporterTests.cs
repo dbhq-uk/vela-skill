@@ -57,12 +57,22 @@ public class ScipImporterTests
     [InlineData("scip-x . . . `.ts`/A#", "_ts.A")]
     [InlineData("scip-x . . . ts/A#", "ts.A")]
 
-    // A dot the extension rule does not account for still cannot open a segment. Both
-    // of these come straight out of a real index: a Vue single-file component, whose
-    // extension no rule here strips, and TypeScript's own multi-part library names.
-    [InlineData("scip-x . . . src/`Card.vue`/props.", "src.Card_vue.props")]
+    // A dot the extension rule does not account for still cannot open a segment: a
+    // module whose name really carries one, and TypeScript's own multi-part library
+    // names, which come straight out of a real index.
+    [InlineData("scip-x . . . src/`a.b.ts`/props.", "src.a_b.props")]
     [InlineData("scip-typescript npm typescript 5.9.3 lib/`lib.es2015.symbol.wellknown.d.ts`/Symbol#",
                 "lib.lib_es2015_symbol_wellknown.Symbol")]
+
+    // The component-file extensions. A single-file component is a module like any other
+    // and its name is the name a person types: `refs Card` has to reach the module and
+    // not only the symbols inside it, and these read Card_vue and Card_svelte until the
+    // extensions were recognised. ScentVerdict.Mobile, the app vela was measured on, is
+    // a Vue app, so this was not hypothetical.
+    [InlineData("scip-x . . . src/`Card.vue`/props.", "src.Card.props")]
+    [InlineData("scip-x . . . src/`Card.svelte`/props.", "src.Card.props")]
+    [InlineData("scip-x . . . src/`Page.astro`/props.", "src.Page.props")]
+    [InlineData("scip-x . . . docs/`Guide.mdx`/heading.", "docs.Guide.heading")]
 
     // vela's own grammar, which is scip-dotnet's. The generic arity is the one place a
     // descriptor name is not the name a person reads.

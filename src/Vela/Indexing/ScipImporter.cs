@@ -1382,6 +1382,30 @@ public static class MonikerName
 /// reactivity.d.ts is a module named reactivity, not one named reactivity.d, and a real
 /// index of a TypeScript project is mostly .d.ts. Matching is case-insensitive, because
 /// Index.CSHTML is a Razor view on the file systems that allow it.
+///
+/// <b>The component-file extensions are here too</b>, and the reason they were left out
+/// was wrong. .vue, .svelte, .astro and .mdx were skipped because adding an extension
+/// also means claiming a language for it in document.language, and that costs nothing:
+/// the column is only ever compared against 'razor', by `vela index --stats`, and
+/// scip.proto says of Document.language that it "is typed as a string to permit any
+/// programming language, including ones that are not specified by the `Language` enum".
+/// vue and svelte are the SCIP enum's own names lowercased, as every other value here is;
+/// astro and mdx are not in that enum, so they are their own extension's name. Without
+/// them a Vue single-file component was a module called Card_vue, which `refs Card` did
+/// not reach - and the app vela was measured on is a Vue app.
+///
+/// <b>The stripper runs on EVERY namespace descriptor, including a directory component,
+/// and that is left alone deliberately.</b> A directory called types.ts/ contributes the
+/// segment types, exactly as a module types.ts beside it does. Nothing in SCIP tells them
+/// apart: both are namespace descriptors, an indexer emits a path as one namespace
+/// descriptor per component, and the last one is not reliably the file - vue-router's
+/// index-BzEKChPW.d.ts/'vue'/ has a namespace after the module. The alternatives are
+/// asking the filesystem, which makes the name depend on what is on disk when the import
+/// runs (Constraint 1), or a positional guess that is wrong on that real moniker. So the
+/// rule stays, and the collision it can produce is no longer silent: two symbols reaching
+/// one display name are counted and named in the import report, which catches the form
+/// this can actually take - a file types.ts/foo.ts beside a member types.ts#foo - because
+/// their descriptor names differ before the extension comes off.
 /// </summary>
 internal static class SourceFile
 {
@@ -1391,6 +1415,7 @@ internal static class SourceFile
         (".d.ts", "typescript"), (".d.mts", "typescript"), (".d.cts", "typescript"),
         (".ts", "typescript"), (".tsx", "typescript"), (".mts", "typescript"), (".cts", "typescript"),
         (".js", "javascript"), (".jsx", "javascript"), (".mjs", "javascript"), (".cjs", "javascript"),
+        (".vue", "vue"), (".svelte", "svelte"), (".astro", "astro"), (".mdx", "mdx"),
         (".py", "python"), (".pyi", "python"), (".go", "go"), (".rs", "rust"),
         (".java", "java"), (".kt", "kotlin"), (".kts", "kotlin"), (".scala", "scala"),
         (".rb", "ruby"), (".php", "php"), (".dart", "dart"),
