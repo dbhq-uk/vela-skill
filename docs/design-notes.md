@@ -78,7 +78,7 @@ MVC views, and Blazor - is reachable, and nothing on the market reaches it.
 ## What vela is
 
 A local, deterministic code index for .NET, built by the compiler and queried from
-a CLI. Index once, query in milliseconds, nothing resident.
+a CLI. Index once, then query in about a second, nothing resident.
 
 It is not a language server, not an MCP server, and not a daemon.
 
@@ -111,7 +111,7 @@ Roslyn.
 **3. SQLite.** Documents, symbols, occurrences and relationships, plus FTS5 for
 name search. One portable file. Nothing resident between queries.
 
-**4. Query.** A CLI answering in milliseconds with output shaped for a context
+**4. Query.** A CLI answering in about a second, with output shaped for a context
 window rather than a terminal.
 
 ### Why not the alternatives
@@ -119,6 +119,15 @@ window rather than a terminal.
 **Live Roslyn workspace per invocation.** Measured: 9.3s to load a 10-project
 solution, 23.8s more to compile the web project, ~1GB peak. Correct but unusable
 in a loop.
+
+vela's own cost, measured on the same 375,608-line solution once the index is
+built: about 0.45s for a typical query (`def Perfume.Status`) and about 1.5s for
+one returning several thousand results (`refs Perfume`, 3,104 of them). Not
+milliseconds - an earlier version of this document and the README both said so,
+and neither had measured it. The comparison above is still the honest one: a
+live workspace pays 9.3s plus 23.8s on every single invocation, because nothing
+stays resident; vela pays a cost like that once, when the index is built, and
+every query after that is seconds, not tens of seconds.
 
 **A resident daemon or MCP server.** Amortises that cost but keeps ~1GB alive per
 project. The cost is a *build* cost, not a *query* cost, so paying it once at index

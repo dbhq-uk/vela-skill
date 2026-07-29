@@ -16,7 +16,7 @@ A free, open-source tool by [DBHQ](https://dbhq.uk)
 
 Vela is the sail of Argo Navis - the largest constellation ever catalogued, later broken into Carina the keel, Puppis the stern, and Vela the sails. A whole decomposed into its named parts, which is what an index of a codebase is. The sails are also the part you navigate by.
 
-vela builds a compiler-exact index of a .NET solution and answers questions about it in milliseconds: where is this symbol defined, everywhere it is used, who calls it, and what breaks if you change it. The answers come from Roslyn, so they are what the compiler believes, not what a regular expression matched.
+vela builds a compiler-exact index of a .NET solution and answers questions about it in about a second: where is this symbol defined, everywhere it is used, who calls it, and what breaks if you change it. The answers come from Roslyn, so they are what the compiler believes, not what a regular expression matched.
 
 ## What makes it different
 
@@ -40,6 +40,18 @@ On a 375,608-line C# solution with 307 Razor views:
 | `Perfume.Name` | 243 | 2,760 | 8.8% |
 | `Brand.Name` | 324 | 2,760 | 11.7% |
 | `PerfumeService` | - | 24 | grep is fine |
+
+Query latency, several runs each, after the index is already built:
+
+| Query | Results | Time |
+|---|---|---|
+| `def Perfume.Status` | 2 | ~0.45s |
+| `refs Perfume` | 3,104 | ~1.5s |
+
+Not milliseconds, and this README used to say it was. For comparison, loading the
+same solution into a live Roslyn workspace costs 9.3s, plus 23.8s more to compile
+the web project - every invocation, because nothing stays resident. vela pays a
+cost like that once, at index time, and answers everything after it from a file.
 
 ## Install
 
