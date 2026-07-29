@@ -26,7 +26,7 @@ public class EndToEndTests
         using var db = new SqliteConnection("Data Source=:memory:");
         db.Open();
         Schema.Create(db);
-        ScipLoader.Load(db, emitted.Index, emitted.GeneratedDocuments);
+        ScipLoader.Load(db, emitted);
         IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
 
         var razorHits = RefsQuery.Run(db, "ViewData")

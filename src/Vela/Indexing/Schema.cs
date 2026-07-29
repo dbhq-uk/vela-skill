@@ -17,11 +17,12 @@ public static class Schema
     ///
     /// 0 is what an unstamped database reads, which is every index built before this
     /// existed, so it can never be a valid version. 1 was the schema without the
-    /// generated column. 2 adds it. 3 adds external_document. A future change bumps this
-    /// and nothing else: there is no migration, because re-indexing takes seconds and
-    /// rebuilds from the truth rather than from a guess about what the old rows meant.
+    /// generated column. 2 adds it. 3 adds external_document. 4 adds
+    /// occurrence.scip_symbol. A future change bumps this and nothing else: there is no
+    /// migration, because re-indexing takes seconds and rebuilds from the truth rather
+    /// than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 3;
+    public const int Version = 4;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -52,10 +53,26 @@ public static class Schema
                 generated     INTEGER NOT NULL DEFAULT 0
             );
 
+            -- Two names for one symbol, and they are not interchangeable.
+            --
+            -- symbol is the Roslyn display string, ScentVerdict.Data.Entities.Perfume.Status.
+            -- It is what a person or an agent types and reads, what every query matches
+            -- against, what the whole-dotted-segment rule operates on and what the
+            -- ambiguity tally groups by. Every one of those was measured and hardened on
+            -- a real solution, so this column is the one the query layer uses and the
+            -- only one it uses.
+            --
+            -- scip_symbol is the SCIP moniker for the same thing:
+            -- scip-dotnet nuget ScentVerdict.Data 1.0.0.0 ScentVerdict/Data/Entities/Perfume#Status.
+            -- It is what makes the index exportable and what lets an index somebody
+            -- else's tool produced be correlated with this one. It is a different
+            -- grammar answering a different question, so it is stored beside the display
+            -- name rather than in place of it.
             CREATE TABLE IF NOT EXISTS occurrence (
                 id            INTEGER PRIMARY KEY,
                 document_id   INTEGER NOT NULL REFERENCES document(id),
                 symbol        TEXT NOT NULL,
+                scip_symbol   TEXT NOT NULL DEFAULT '',
                 is_definition INTEGER NOT NULL,
                 start_line    INTEGER NOT NULL,
                 start_char    INTEGER NOT NULL,

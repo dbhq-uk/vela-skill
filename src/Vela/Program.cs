@@ -280,7 +280,7 @@ public static class Program
             {
                 db.Open();
                 Schema.Create(db);
-                ScipLoader.Load(db, index, emitted.GeneratedDocuments);
+                ScipLoader.Load(db, emitted);
 
                 var external = ExternalDocumentPaths(index);
                 ExternalDocuments.Write(db, external);

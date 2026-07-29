@@ -202,6 +202,69 @@ public class ScipLoaderTests
             Assert.Contains(path, rendered, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Load_StoresBothNamesForEveryOccurrence()
+    {
+        // The whole point of storing two names. symbol is the display name the query
+        // layer matches on, and scip_symbol is the moniker that makes the index
+        // exportable and correlatable. Overwriting either with the other loses
+        // something no other column holds.
+        using var fx = FixtureSolution.CreateWebApp();
+        var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
+        var emitted = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, emitted);
+
+        Assert.Equal(0, ScalarInt(db, "SELECT COUNT(*) FROM occurrence WHERE scip_symbol = ''"));
+
+        // A display name is a dotted Roslyn string and a moniker is not, so a column
+        // that had quietly been filled with the other one would show here.
+        Assert.Equal(0, ScalarInt(db,
+            "SELECT COUNT(*) FROM occurrence WHERE symbol LIKE 'scip-dotnet %' OR symbol LIKE 'local %'"));
+        Assert.True(ScalarInt(db,
+            "SELECT COUNT(*) FROM occurrence WHERE scip_symbol LIKE 'scip-dotnet nuget %'") > 0);
+
+        // The full-text index is what `find` searches, and a person types a name.
+        Assert.Equal(0, ScalarInt(db, "SELECT COUNT(*) FROM symbol_fts WHERE symbol LIKE 'scip-dotnet %'"));
+
+        // The symbol the end-to-end test asks for by name, with both of its names.
+        var pair = ReadOne(db,
+            "SELECT symbol, scip_symbol FROM occurrence WHERE symbol LIKE '%.ViewData' LIMIT 1");
+        Assert.NotNull(pair);
+        Assert.StartsWith("scip-dotnet nuget ", pair!.Value.Scip, StringComparison.Ordinal);
+        Assert.EndsWith("ViewData.", pair.Value.Scip, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Load_KeepsAForeignSymbolAsItsOwnDisplayName()
+    {
+        // An index read from another tool's .scip file has one name, theirs. Storing
+        // an empty display name for it would make it unfindable, so the SCIP symbol
+        // stands in for both.
+        var index = MinimalIndex();
+
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, index);
+
+        var pair = ReadOne(db, "SELECT symbol, scip_symbol FROM occurrence LIMIT 1");
+        Assert.NotNull(pair);
+        Assert.Equal("scip-csharp cargo Foo 1.0.0 Foo#", pair!.Value.Display);
+        Assert.Equal("scip-csharp cargo Foo 1.0.0 Foo#", pair.Value.Scip);
+    }
+
+    private static (string Display, string Scip)? ReadOne(SqliteConnection db, string sql)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = sql;
+        using var reader = cmd.ExecuteReader();
+        return reader.Read() ? (reader.GetString(0), reader.GetString(1)) : null;
+    }
+
     private static Scip.Index MinimalIndex()
     {
         var index = new Scip.Index();

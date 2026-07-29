@@ -27,8 +27,24 @@ public static class ScipLoader
     /// path alone is not evidence of it, so it is carried beside the index and stored
     /// in vela's own schema, where refs and impact read it.
     /// </param>
+    /// <summary>
+    /// Loads what the emitter just produced, with both of a symbol's names: the display
+    /// name the queries use and the SCIP moniker the occurrence carries on the wire.
+    /// </summary>
+    public static void Load(SqliteConnection db, Vela.Harvest.EmitResult emitted) =>
+        Load(db, emitted.Index, emitted.GeneratedDocuments, emitted.DisplayNames);
+
+    /// <param name="displayNames">
+    /// What vela calls each occurrence's symbol, which cannot be read off the index
+    /// because Occurrence.symbol is the SCIP moniker. An occurrence with no entry keeps
+    /// the moniker as its display name, which is what an index read from another tool's
+    /// .scip file gets: their symbol is the only name it has.
+    /// </param>
     public static void Load(
-        SqliteConnection db, Scip.Index index, IReadOnlySet<string>? generatedDocuments = null)
+        SqliteConnection db,
+        Scip.Index index,
+        IReadOnlySet<string>? generatedDocuments = null,
+        IReadOnlyDictionary<Scip.Occurrence, string>? displayNames = null)
     {
         using (var checkCmd = db.CreateCommand())
         {
@@ -60,12 +76,13 @@ public static class ScipLoader
         using var insertOcc = db.CreateCommand();
         insertOcc.Transaction = tx;
         insertOcc.CommandText = """
-            INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char)
-            VALUES ($d, $s, $def, $sl, $sc, $el, $ec)
+            INSERT INTO occurrence(document_id, symbol, scip_symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char)
+            VALUES ($d, $s, $scip, $def, $sl, $sc, $el, $ec)
             """;
-        foreach (var name in new[] { "$d", "$s", "$def", "$sl", "$sc", "$el", "$ec" })
+        foreach (var name in new[] { "$d", "$s", "$scip", "$def", "$sl", "$sc", "$el", "$ec" })
             insertOcc.Parameters.Add(name, SqliteType.Integer);
         insertOcc.Parameters["$s"].SqliteType = SqliteType.Text;
+        insertOcc.Parameters["$scip"].SqliteType = SqliteType.Text;
 
         using var insertFts = db.CreateCommand();
         insertFts.Transaction = tx;
@@ -85,8 +102,13 @@ public static class ScipLoader
             foreach (var occ in doc.Occurrences)
             {
                 var isDef = (occ.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0;
+                var display = displayNames is not null && displayNames.TryGetValue(occ, out var known)
+                    ? known
+                    : occ.Symbol;
+
                 insertOcc.Parameters["$d"].Value = docId;
-                insertOcc.Parameters["$s"].Value = occ.Symbol;
+                insertOcc.Parameters["$s"].Value = display;
+                insertOcc.Parameters["$scip"].Value = occ.Symbol;
                 insertOcc.Parameters["$def"].Value = isDef ? 1 : 0;
                 insertOcc.Parameters["$sl"].Value = occ.Range.Count > 0 ? occ.Range[0] : 0;
                 insertOcc.Parameters["$sc"].Value = occ.Range.Count > 1 ? occ.Range[1] : 0;
@@ -96,9 +118,11 @@ public static class ScipLoader
                     occ.EnclosingRange.Count > 3 ? occ.EnclosingRange[3] : (object)DBNull.Value;
                 insertOcc.ExecuteNonQuery();
 
-                if (seenSymbols.Add(occ.Symbol))
+                // The full-text index is what `find` searches, and `find` is a person
+                // typing a name, so it holds display names.
+                if (seenSymbols.Add(display))
                 {
-                    insertFts.Parameters["$s"].Value = occ.Symbol;
+                    insertFts.Parameters["$s"].Value = display;
                     insertFts.ExecuteNonQuery();
                 }
             }

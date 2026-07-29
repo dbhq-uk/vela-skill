@@ -140,6 +140,142 @@ public class ScipEmitterTests
     }
 
     [Fact]
+    public async Task EmitAsync_PutsAScipSymbolOnTheWireAndKeepsTheDisplayNameBesideIt()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
+
+        var emitted = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+        var occurrences = emitted.Index.Documents.SelectMany(d => d.Occurrences).ToList();
+
+        Assert.NotEmpty(occurrences);
+
+        // Occurrence.symbol is the wire format, so every one of them has to be a
+        // sentence in the grammar scip.proto specifies, not a Roslyn display string.
+        foreach (var symbol in occurrences.Select(o => o.Symbol).Distinct(StringComparer.Ordinal))
+            ScipSymbolGrammar.RoundTrip(symbol);
+
+        // And the display name is still there, beside it. It is what the query layer
+        // matches on and it cannot be read back off the moniker, so every occurrence
+        // has to carry its own: DisplayNameOf falls back to the SCIP symbol when it
+        // does not, and no display name is ever a SCIP symbol.
+        Assert.All(occurrences, o => Assert.NotEqual(o.Symbol, emitted.DisplayNameOf(o)));
+
+        // vela renders the global namespace as the empty string, which is what
+        // `global::` in generated Razor resolves to, and that is unchanged here. What
+        // must not happen is the moniker taking its place.
+        Assert.All(
+            occurrences.Where(o => emitted.DisplayNameOf(o).Length == 0),
+            o => Assert.StartsWith("local ", o.Symbol, StringComparison.Ordinal));
+
+        var viewData = occurrences
+            .Where(o => emitted.DisplayNameOf(o).EndsWith(".ViewData", StringComparison.Ordinal))
+            .ToList();
+        Assert.NotEmpty(viewData);
+        Assert.All(viewData, o => Assert.EndsWith("ViewData.", o.Symbol, StringComparison.Ordinal));
+        Assert.All(viewData, o => Assert.StartsWith("scip-dotnet nuget ", o.Symbol, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task EmitAsync_KeepsEveryLocalSymbolInsideOneDocument()
+    {
+        // scip.proto: "Local symbols MUST only be used for entities which are local to
+        // a Document, and cannot be accessed from outside the Document." A local id
+        // that turned up in two documents would be claiming two unrelated things are
+        // the same, which is exactly what the id form cannot express.
+        using var fx = FixtureSolution.CreateWebApp();
+        var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
+
+        var emitted = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+
+        var documentsPerLocal = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        foreach (var doc in emitted.Index.Documents)
+        {
+            foreach (var occurrence in doc.Occurrences)
+            {
+                if (!occurrence.Symbol.StartsWith("local ", StringComparison.Ordinal)) continue;
+
+                if (!documentsPerLocal.TryGetValue(occurrence.Symbol, out var documents))
+                    documentsPerLocal[occurrence.Symbol] = documents = new HashSet<string>(StringComparer.Ordinal);
+                documents.Add(doc.RelativePath);
+            }
+        }
+
+        Assert.NotEmpty(documentsPerLocal);
+
+        var shared = documentsPerLocal
+            .Where(entry => entry.Value.Count > 1)
+            .Select(entry => $"{entry.Key} appears in {string.Join(", ", entry.Value.Order(StringComparer.Ordinal))}")
+            .ToList();
+
+        Assert.True(shared.Count == 0, string.Join("\n", shared));
+    }
+
+    [Fact]
+    public async Task EmitAsync_DescribesTheSymbolsEachDocumentDefines()
+    {
+        // scip.proto's Document.symbols: "Symbols that are 'defined' within this
+        // document." Without them a consumer has the positions and no idea what any of
+        // them is, and has to run a compiler of its own to find out.
+        var root = SyntheticRoot();
+        var file = Path.Combine(root, "App", "Described.cs");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 1 "{{Escape(file)}}"
+            namespace App;
+
+            /// <summary>
+            /// What a perfume smells of.
+            /// </summary>
+            public interface IScent
+            {
+                string Note { get; }
+            }
+
+            public class Perfume : IScent
+            {
+                public string Note => "amber";
+                public const int Limit = 3;
+                public static void Publish() { }
+            }
+            #line default
+            """);
+
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var doc = Assert.Single(emitted.Index.Documents.Where(d => d.RelativePath.EndsWith("Described.cs", StringComparison.Ordinal)));
+
+        Assert.NotEmpty(doc.Symbols);
+
+        // Described once each, and only what this document defines.
+        Assert.Equal(
+            doc.Symbols.Select(s => s.Symbol).Distinct(StringComparer.Ordinal).Count(),
+            doc.Symbols.Count);
+
+        var definitions = doc.Occurrences
+            .Where(o => (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0)
+            .Select(o => o.Symbol)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.All(doc.Symbols, s => Assert.Contains(s.Symbol, definitions));
+
+        var byDisplayName = doc.Symbols.ToDictionary(s => s.DisplayName, StringComparer.Ordinal);
+
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Interface, byDisplayName["App.IScent"].Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Class, byDisplayName["App.Perfume"].Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Property, byDisplayName["App.Perfume.Note"].Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Constant, byDisplayName["App.Perfume.Limit"].Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.StaticMethod, byDisplayName["App.Perfume.Publish()"].Kind);
+        Assert.Equal(Scip.SymbolInformation.Types.Kind.Namespace, byDisplayName["App"].Kind);
+
+        // The doc comment, as prose rather than as a rendered signature, which is what
+        // scip.proto asks new indexers for.
+        Assert.Equal("What a perfume smells of.", Assert.Single(byDisplayName["App.IScent"].Documentation));
+        Assert.Empty(byDisplayName["App.Perfume"].Documentation);
+
+        foreach (var described in doc.Symbols)
+            ScipSymbolGrammar.RoundTrip(described.Symbol);
+    }
+
+    [Fact]
     public async Task EmitAsync_OmitsEnclosingRangeWhenTheDefinitionEndMapsToAnotherFile()
     {
         var root = SyntheticRoot();
@@ -158,15 +294,16 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
-        var straddler = occurrences.Single(o => o.Symbol == "Straddler");
+        var straddler = occurrences.Single(o => emitted.DisplayNameOf(o) == "Straddler");
         Assert.Empty(straddler.EnclosingRange);
 
         // A definition that stays inside one file keeps its range, so the guard is
         // not simply switching enclosing ranges off.
-        var contained = occurrences.Single(o => o.Symbol == "Straddler.Contained()");
+        var contained = occurrences.Single(o => emitted.DisplayNameOf(o) == "Straddler.Contained()");
         Assert.Equal(4, contained.EnclosingRange.Count);
     }
 
@@ -188,13 +325,14 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
-        var inverted = occurrences.Single(o => o.Symbol == "Inverted");
+        var inverted = occurrences.Single(o => emitted.DisplayNameOf(o) == "Inverted");
         Assert.Empty(inverted.EnclosingRange);
 
-        var contained = occurrences.Single(o => o.Symbol == "Inverted.Contained()");
+        var contained = occurrences.Single(o => emitted.DisplayNameOf(o) == "Inverted.Contained()");
         Assert.Equal(4, contained.EnclosingRange.Count);
     }
 
@@ -210,7 +348,8 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         // scip.proto forbids a relative_path that escapes project_root, so the file
         // cannot be emitted as a document.
@@ -245,7 +384,8 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         Assert.Contains(index.Metadata.ToolInfo.Arguments,
             a => a.StartsWith("outside-project-root:", StringComparison.Ordinal) && a.Contains("Foo.cs"));
@@ -289,7 +429,8 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         Assert.Contains(index.Metadata.ToolInfo.Arguments,
             a => a.StartsWith("external-document:", StringComparison.Ordinal)
@@ -322,7 +463,8 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         Assert.Contains(index.Metadata.ToolInfo.Arguments,
             a => a.StartsWith("outside-project-root:", StringComparison.Ordinal) && a.Contains("External.cshtml"));
@@ -357,7 +499,8 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         Assert.Equal(new Uri(repository.Path).AbsoluteUri, index.Metadata.ProjectRoot);
 
@@ -393,7 +536,8 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         Assert.Equal(new Uri(repository.Path).AbsoluteUri, index.Metadata.ProjectRoot);
 
@@ -431,13 +575,14 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         var duplicates = index.Documents
             .SelectMany(d => d.Occurrences.Select(o => new
             {
                 d.RelativePath,
-                o.Symbol,
+                Symbol = emitted.DisplayNameOf(o),
                 Role = o.SymbolRoles,
                 Range = string.Join(',', o.Range),
                 Enclosing = string.Join(',', o.EnclosingRange)
@@ -456,10 +601,10 @@ public class ScipEmitterTests
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         Assert.NotEmpty(occurrences.Where(o =>
-            o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0));
+            emitted.DisplayNameOf(o) == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0));
 
         Assert.Single(occurrences.Where(o =>
-            o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+            emitted.DisplayNameOf(o) == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
     }
 
     [Fact]
@@ -497,11 +642,12 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         var references = occurrences
-            .Where(o => o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0)
+            .Where(o => emitted.DisplayNameOf(o) == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0)
             .Select(o => (Line: o.Range[0], Character: o.Range[1]))
             .OrderBy(o => o.Line).ThenBy(o => o.Character)
             .ToList();
@@ -524,11 +670,11 @@ public class ScipEmitterTests
         // The receiver is a different symbol at a different position, and folding a
         // reference onto its name node must not lose it.
         Assert.Contains(occurrences, o =>
-            o.Symbol == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0);
+            emitted.DisplayNameOf(o) == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0);
 
         // And the definition is still exactly one, still where it was.
         Assert.Single(occurrences.Where(o =>
-            o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+            emitted.DisplayNameOf(o) == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
     }
 
     [Fact]
@@ -563,26 +709,27 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         // The local is still indexed - it is a real declaration and `def` should find
         // it - but it carries no body range, so it can never enclose anything.
         var local = Assert.Single(occurrences.Where(o =>
-            o.Symbol.EndsWith("status", StringComparison.Ordinal)
+            emitted.DisplayNameOf(o).EndsWith("status", StringComparison.Ordinal)
             && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
         Assert.Empty(local.EnclosingRange);
 
         // The parameter is the same shape of declaration and must be treated the same.
         var parameter = Assert.Single(occurrences.Where(o =>
-            o.Symbol.EndsWith("perfume", StringComparison.Ordinal)
+            emitted.DisplayNameOf(o).EndsWith("perfume", StringComparison.Ordinal)
             && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
         Assert.Empty(parameter.EnclosingRange);
 
         using var db = new SqliteConnection("Data Source=:memory:");
         db.Open();
         Schema.Create(db);
-        ScipLoader.Load(db, index);
+        ScipLoader.Load(db, emitted);
 
         var hits = ImpactQuery.Run(db, "Perfume.Status");
 
@@ -628,13 +775,14 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         var locals = occurrences
             .Where(o => (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0
-                        && o.Symbol.EndsWith("count", StringComparison.Ordinal))
-            .Select(o => o.Symbol)
+                        && emitted.DisplayNameOf(o).EndsWith("count", StringComparison.Ordinal))
+            .Select(emitted.DisplayNameOf)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(s => s, StringComparer.Ordinal)
             .ToList();
@@ -646,7 +794,7 @@ public class ScipEmitterTests
         Assert.Contains("Counter.Third(System.Int32).count", locals);
 
         // Types and members keep exactly the identity format they had.
-        var symbols = occurrences.Select(o => o.Symbol).ToHashSet(StringComparer.Ordinal);
+        var symbols = occurrences.Select(emitted.DisplayNameOf).ToHashSet(StringComparer.Ordinal);
         Assert.Contains("Counter", symbols);
         Assert.Contains("Counter.First()", symbols);
         Assert.Contains("Counter.Third(System.Int32)", symbols);
@@ -654,7 +802,7 @@ public class ScipEmitterTests
         using var db = new SqliteConnection("Data Source=:memory:");
         db.Open();
         Schema.Create(db);
-        ScipLoader.Load(db, index);
+        ScipLoader.Load(db, emitted);
 
         // The consequence that matters: asking about one method's local no longer
         // answers with another method's.
@@ -684,7 +832,8 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         // Recorded through the same visible channel as load-failure and
         // outside-project-root, so there is one place a reader has to look.
@@ -716,7 +865,8 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         var reported = index.Metadata.ToolInfo.Arguments
             .Where(a => a.StartsWith("compile-error:", StringComparison.Ordinal))
@@ -747,11 +897,12 @@ public class ScipEmitterTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         var method = Assert.Single(occurrences.Where(o =>
-            o.Symbol == "Controller.Foo()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+            emitted.DisplayNameOf(o) == "Controller.Foo()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
 
         // Mapped lines are zero-based and `#line 1` puts the first source line at 0, so
         // the attribute is line 2 and the declaration line 3, with `Foo` at column 15.
@@ -760,7 +911,7 @@ public class ScipEmitterTests
 
         // A type is anchored at its name for the same reason.
         var type = Assert.Single(occurrences.Where(o =>
-            o.Symbol == "Controller" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+            emitted.DisplayNameOf(o) == "Controller" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
         Assert.Equal(0, type.Range[0]);
         Assert.Equal(13, type.Range[1]);
 
@@ -796,11 +947,12 @@ public class ScipEmitterTests
             End Class
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
         var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
 
         var references = occurrences
-            .Where(o => o.Symbol == "Helper.DoIt()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0)
+            .Where(o => emitted.DisplayNameOf(o) == "Helper.DoIt()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0)
             .Select(o => (Line: o.Range[0], Character: o.Range[1]))
             .ToList();
 
@@ -813,18 +965,18 @@ public class ScipEmitterTests
         // Folding a reference onto its name must not lose the receiver, which is a
         // different symbol at a different position.
         Assert.Contains(occurrences, o =>
-            o.Symbol == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0);
+            emitted.DisplayNameOf(o) == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0);
 
         // A VB declaration is two nodes, a block and the statement that opens it, and
         // GetDeclaredSymbol answers on both. Exactly one definition, at the identifier:
         // line 1, column 15 for `DoIt`, and line 0, column 14 for `Helper`.
         var definition = Assert.Single(occurrences.Where(o =>
-            o.Symbol == "Helper.DoIt()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+            emitted.DisplayNameOf(o) == "Helper.DoIt()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
         Assert.Equal(1, definition.Range[0]);
         Assert.Equal(15, definition.Range[1]);
 
         var module = Assert.Single(occurrences.Where(o =>
-            o.Symbol == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+            emitted.DisplayNameOf(o) == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
         Assert.Equal(0, module.Range[0]);
         Assert.Equal(14, module.Range[1]);
     }
@@ -965,7 +1117,8 @@ public class ScipEmitterPackageCacheTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         Assert.Contains(index.Metadata.ToolInfo.Arguments,
             a => a.StartsWith("external-document:", StringComparison.Ordinal)
@@ -1001,7 +1154,8 @@ public class ScipEmitterPackageCacheTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         // Still recorded, and still named: the file is genuinely not in the index, and
         // a reader asking why is owed the answer.
@@ -1043,7 +1197,8 @@ public class ScipEmitterPackageCacheTests
             #line default
             """);
 
-        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var index = emitted.Index;
 
         Assert.Contains(index.Metadata.ToolInfo.Arguments,
             a => a.StartsWith("external-document:", StringComparison.Ordinal)

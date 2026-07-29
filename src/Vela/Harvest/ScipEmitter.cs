@@ -11,7 +11,7 @@ using OccurrenceKey = (string Symbol, int Line, int Character, bool IsDefinition
 namespace Vela.Harvest;
 
 /// <summary>
-/// An emitted index, plus the one fact about it that SCIP has nowhere to put.
+/// An emitted index, plus the two facts about it that SCIP has nowhere to put.
 ///
 /// scip.proto's Document carries a path, a language, occurrences and an encoding, and
 /// nothing that says how the document came to exist. vela needs that: a document
@@ -20,8 +20,32 @@ namespace Vela.Harvest;
 /// reports locations has to know the difference. Extending the proto to carry it would
 /// deviate from the format for a consumer-side concern, so it travels beside the index
 /// instead and is stored in vela's own schema.
+///
+/// <paramref name="DisplayNames"/> is the second. Occurrence.symbol is the wire format
+/// and holds the SCIP moniker, and vela's own identity for a symbol is a Roslyn display
+/// string that every query matches against (see <see cref="SymbolIdentity"/>). The two
+/// are not interchangeable and neither can be derived from the other: a moniker names a
+/// declaration, so `List&lt;Perfume&gt;` and `List&lt;int&gt;` share one, and a local
+/// symbol's moniker is an integer that encodes no name at all. So the display name
+/// travels beside the occurrence it belongs to. Keyed by reference, because two
+/// protobuf messages holding the same values are equal to each other and are still two
+/// different occurrences.
 /// </summary>
-public record EmitResult(Scip.Index Index, IReadOnlySet<string> GeneratedDocuments);
+public record EmitResult(
+    Scip.Index Index,
+    IReadOnlySet<string> GeneratedDocuments,
+    IReadOnlyDictionary<Scip.Occurrence, string>? DisplayNames = null)
+{
+    /// <summary>
+    /// What vela calls this occurrence's symbol, falling back to the SCIP symbol when
+    /// nothing said otherwise. The fallback is what an index read from somebody else's
+    /// .scip file gets: their symbol is the only name it has.
+    /// </summary>
+    public string DisplayNameOf(Scip.Occurrence occurrence) =>
+        DisplayNames is not null && DisplayNames.TryGetValue(occurrence, out var name)
+            ? name
+            : occurrence.Symbol;
+}
 
 public static class ScipEmitter
 {
@@ -67,6 +91,16 @@ public static class ScipEmitter
         // sends back to its .cshtml, is enough to make the document openable, and an
         // openable document must never be suppressed.
         var generatedOnly = new Dictionary<string, bool>(StringComparer.Ordinal);
+
+        // The two names, side by side. The moniker goes on the occurrence, because that
+        // field is the wire format; the display name travels beside it, because that is
+        // what every query matches against and it cannot be recovered from the moniker.
+        var monikers = new ScipMoniker();
+        var displayNames = new Dictionary<Scip.Occurrence, string>(ReferenceEqualityComparer.Instance);
+
+        // Which symbols each document has already described, so SymbolInformation is
+        // written once per document however many times the symbol is defined in it.
+        var described = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
 
         foreach (var project in solution.Projects)
         {
@@ -131,6 +165,7 @@ public static class ScipEmitter
                             : stayedInGeneratedCode;
 
                     var name = SymbolIdentity.For(symbol);
+                    var moniker = monikers.For(symbol, doc.RelativePath);
 
                     int[]? enclosingRange = null;
                     if (isDefinition && CanEnclose(symbol))
@@ -161,14 +196,27 @@ public static class ScipEmitter
 
                     var occurrence = new Scip.Occurrence
                     {
-                        Symbol = name,
+                        Symbol = moniker,
                         SymbolRoles = isDefinition ? (int)Scip.SymbolRole.Definition : 0
                     };
                     occurrence.Range.AddRange(new[] { location.Line, location.Character, location.Character });
                     if (enclosingRange is not null) occurrence.EnclosingRange.AddRange(enclosingRange);
 
                     doc.Occurrences.Add(occurrence);
+                    displayNames[occurrence] = name;
                     seen[key] = occurrence;
+
+                    // scip.proto: a Document carries the symbols defined within it, so a
+                    // consumer gets the kind and the documentation without having to
+                    // re-run a compiler. Definitions only, and once each: a reference is
+                    // not this document's to describe.
+                    if (!isDefinition) continue;
+
+                    if (!described.TryGetValue(doc.RelativePath, out var alreadyDescribed))
+                        described[doc.RelativePath] = alreadyDescribed = new HashSet<string>(StringComparer.Ordinal);
+
+                    if (alreadyDescribed.Add(moniker))
+                        doc.Symbols.Add(monikers.Describe(symbol, doc.RelativePath, name));
                 }
             }
         }
@@ -183,7 +231,7 @@ public static class ScipEmitter
             .Select(entry => entry.Key)
             .ToHashSet(StringComparer.Ordinal);
 
-        return new EmitResult(index, generated);
+        return new EmitResult(index, generated, displayNames);
     }
 
     /// <summary>

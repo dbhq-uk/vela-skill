@@ -95,7 +95,13 @@ public sealed class ScipMoniker
         var canonical = Canonicalise(symbol);
 
         var chain = Descriptors(canonical);
-        if (chain is null) return Local(canonical, documentPath);
+
+        // An empty chain is the global namespace, which is the root of every ancestry
+        // and has no name in either grammar: vela's display name for it is the empty
+        // string and SCIP has no descriptor that could spell it. A package prefix with
+        // no descriptor after it is not a symbol at all - it does not parse - so it
+        // takes the one form that can honestly say "nameless, and only here".
+        if (chain is null || chain.Length == 0) return Local(canonical, documentPath);
 
         return Package(AssemblyOf(canonical)) + chain;
     }
