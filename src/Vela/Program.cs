@@ -115,6 +115,9 @@ public static class Program
     /// <param name="matchedSymbols">
     /// Supplied by impact alone. Its rows name the CALLERS, so the symbols the pattern
     /// matched appear nowhere in its answer and the tally has to come from the index.
+    /// That is also why it is asked even when impact named nobody: an empty answer to an
+    /// ambiguous pattern is explained in the singular, and the block is the only thing
+    /// that says the explanation covers several symbols at once.
     /// </param>
     private static Command BuildHitCommand(
         string name, string description,
@@ -167,16 +170,11 @@ public static class Program
             // normal answer costs no extra query.
             var explanation = hits.Count == 0 ? explainEmpty(db, value) : null;
 
-            output.Write(OutputWriter.Render(hits, health, explanation,
-                hitsAreOccurrencesOfTheArgument ? value : null));
+            output.Write(OutputWriter.Render(hits, health, explanation));
 
-            // impact's own ambiguity block, which the renderer cannot produce because
-            // the answer it is rendering names the callers rather than the symbols the
-            // pattern matched. Nothing to narrow when there is nothing above it: an
-            // empty answer already explains itself.
-            if (matchedSymbols is not null && hits.Count > 0)
-                output.Write(Ambiguity.RenderCallers(value, matchedSymbols(db, value, includeGenerated)));
-
+            // Printed here rather than after the ambiguity block, because it qualifies
+            // the result count and a screen of symbol names between the two leaves the
+            // number reading as the whole answer.
             if (countInGeneratedCode is not null && !includeGenerated)
             {
                 var suppressed = countInGeneratedCode(db, value);
@@ -186,6 +184,15 @@ public static class Program
                                    + "disk. Pass --include-generated to see them.");
                 }
             }
+
+            // Last, because it is the longest thing in the answer and it qualifies
+            // everything above it. refs and def tally their own rows; impact cannot,
+            // so it reads the symbols the pattern matched from the index and says so in
+            // different words. Neither prints anything when one symbol was matched.
+            if (hitsAreOccurrencesOfTheArgument)
+                output.Write(Ambiguity.RenderOccurrences(value, Ambiguity.Of(hits)));
+            else if (matchedSymbols is not null)
+                output.Write(Ambiguity.RenderCallers(value, matchedSymbols(db, value, includeGenerated), hits.Count > 0));
 
             return health.Degraded ? IndexHealth.ExitDegraded : 0;
         });

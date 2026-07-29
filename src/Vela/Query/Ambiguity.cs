@@ -77,16 +77,22 @@ public static class Ambiguity
 
     /// <summary>
     /// The block for a verb whose results are occurrences of the pattern: refs and def.
-    /// The counts decompose the reported total exactly, and the wording says so, because
-    /// a reader who cannot check the block against the total has been handed a second
-    /// confident number rather than an explanation of the first.
+    /// The counts decompose the reported total exactly, which is what lets a reader
+    /// check the block against the number it explains rather than weigh two confident
+    /// numbers against each other.
+    ///
+    /// The sentence describes the results and not the index, because that is all the
+    /// tally saw. refs leaves generated documents out by default, so a symbol whose
+    /// every occurrence is in the Razor generator's output is not in these rows at all:
+    /// on the real solution `refs Name` spans 426 symbols and
+    /// `refs Name --include-generated` spans 427. "it matches N distinct symbols" was a
+    /// claim about the whole index drawn from a filtered view of it, which is the exact
+    /// failure this block exists to report.
     /// </summary>
     public static string RenderOccurrences(string pattern, IReadOnlyList<SymbolTally> tally) =>
         Render(tally,
-            $"'{pattern}' is ambiguous: it matches {tally.Count} distinct symbols, so the "
-          + $"{tally.Sum(entry => entry.Count)} result(s) above are occurrences of {tally.Count} "
-          + "different things rather than of one. Every result is real, and the counts below add up "
-          + "to that total, so no single symbol accounts for it:");
+            $"'{pattern}' is ambiguous: the {tally.Sum(entry => entry.Count)} result(s) above span "
+          + $"{tally.Count} distinct symbols:");
 
     /// <summary>
     /// The block for impact, whose results are the callers and not the symbol asked
@@ -97,15 +103,23 @@ public static class Ambiguity
     /// however many references it contains, so a caller that uses two of the matched
     /// symbols is one row and would be counted twice, and the tally would not decompose
     /// the total. They are the references the pattern matched, which is what impact went
-    /// looking for callers of, and the sentence says exactly that so the number cannot be
-    /// mistaken for the other one.
+    /// looking for callers of, and some of them yield no caller at all: a reference in a
+    /// Razor view or in a top level statement sits inside no recorded body range. The
+    /// sentence says exactly which of the two quantities the number is, so it cannot be
+    /// read as the other.
+    ///
+    /// <paramref name="anyCallers"/> is false when impact named nobody. The block is
+    /// printed then too, because an empty answer explained in the singular is still an
+    /// answer about several symbols at once, and that explanation is the whole of it.
     /// </summary>
-    public static string RenderCallers(string pattern, IReadOnlyList<SymbolTally> tally) =>
+    public static string RenderCallers(string pattern, IReadOnlyList<SymbolTally> tally, bool anyCallers) =>
         Render(tally,
-            $"'{pattern}' is ambiguous: it matches {tally.Count} distinct symbols, so the callers "
-          + $"above are the callers of all {tally.Count} of them together and this is not the blast "
-          + "radius of one symbol. The number beside each symbol below is how many references to it "
-          + "vela searched for callers of, not how many callers it has:");
+            $"'{pattern}' is ambiguous: "
+          + (anyCallers
+                ? $"the callers above are those of {tally.Count} distinct symbols together, not of one."
+                : $"the empty answer above is about {tally.Count} distinct symbols together, not about one.")
+          + " The number beside each symbol below is how many references to it vela searched for "
+          + "callers of, not how many callers it has:");
 
     private static string Render(IReadOnlyList<SymbolTally> tally, string lead)
     {

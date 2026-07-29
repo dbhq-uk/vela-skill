@@ -1550,6 +1550,119 @@ public class QueryTests
         Assert.True(block.Split('\n').Length <= 20, block);
     }
 
+    [Fact]
+    public async Task Refs_TheAmbiguityBlockCountsTheResultsItShowed_AndNotTheWholeIndex()
+    {
+        // The tally is taken from the rows the answer printed, and refs leaves
+        // generated documents out by default, so a symbol whose every occurrence is in
+        // the Razor generator's output is not in it. "it matches N distinct symbols"
+        // was therefore a claim about the index made from a filtered view of it: on the
+        // real solution `refs Name` said 426 where `refs Name --include-generated` said
+        // 427. A filtered view that describes itself as the whole is the failure this
+        // tool exists to prevent, so the sentence says what it counted, and the answer
+        // still declares what it left out.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguityAcrossGeneratedCodeIndexFile(indexPath);
+
+        var shown = await InvokeAsync("refs", "Perfume", "--solution", solution);
+
+        Assert.Equal(0, shown.ExitCode);
+        Assert.Equal(5, ReportedTotal(shown.Output));
+        Assert.Contains("the 5 result(s) above span 2 distinct symbols", shown.Output, StringComparison.Ordinal);
+
+        // The claim it must not make: the third symbol exists, and this answer cannot
+        // see it.
+        Assert.DoesNotContain("matches 2 distinct symbols", shown.Output, StringComparison.Ordinal);
+        Assert.Contains("2 further result(s) in generated code", shown.Output, StringComparison.Ordinal);
+        Assert.Equal(ReportedTotal(shown.Output), AmbiguityRows(shown.Output).Sum(row => row.Count));
+
+        // And asked for the whole index, it says three, so the number really was a
+        // property of the view rather than of the code.
+        var all = await InvokeAsync("refs", "Perfume", "--include-generated", "--solution", solution);
+
+        Assert.Equal(0, all.ExitCode);
+        Assert.Equal(7, ReportedTotal(all.Output));
+        Assert.Contains("the 7 result(s) above span 3 distinct symbols", all.Output, StringComparison.Ordinal);
+        Assert.Contains("AspNetCore.Pages_Index.Perfume", all.Output, StringComparison.Ordinal);
+        Assert.Equal(ReportedTotal(all.Output), AmbiguityRows(all.Output).Sum(row => row.Count));
+    }
+
+    [Fact]
+    public async Task Refs_TheGeneratedCodeLineStaysWithTheCountItQualifies_AndTheBlockComesLast()
+    {
+        // "N further result(s) in generated code" qualifies the result count, and it
+        // was printed after the ambiguity block, which put a screen of symbol names
+        // between a number and the sentence that corrects it.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguityAcrossGeneratedCodeIndexFile(indexPath);
+
+        var output = (await InvokeAsync("refs", "Perfume", "--solution", solution)).Output;
+
+        var count = output.IndexOf("5 result(s)", StringComparison.Ordinal);
+        var generated = output.IndexOf("2 further result(s) in generated code", StringComparison.Ordinal);
+        var block = output.IndexOf("is ambiguous", StringComparison.Ordinal);
+
+        Assert.True(count < generated, output);
+        Assert.True(generated < block, output);
+    }
+
+    [Fact]
+    public async Task Impact_WhenAnAmbiguousPatternHasNoCallersAtAll_StillSaysTheAnswerSpansSeveralSymbols()
+    {
+        // The block was printed only when there were callers to qualify, so an
+        // ambiguous pattern with none fell through to an explanation written in the
+        // singular: "references to 'Perfume' are in the index, but none of them falls
+        // inside a definition whose body range was recorded". That reads as a statement
+        // about one symbol, and it is the whole answer.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousWithoutCallersIndexFile(indexPath);
+
+        var result = await InvokeAsync("impact", "Perfume", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(0, ReportedTotal(result.Output));
+
+        Assert.Contains("'Perfume' is ambiguous", result.Output, StringComparison.Ordinal);
+        Assert.Contains("2 distinct symbols", result.Output, StringComparison.Ordinal);
+        Assert.Equal(
+            new[]
+            {
+                (2, "App.Data.Entities.Perfume"),
+                (1, "App.Data.Enums.EntityType.Perfume")
+            },
+            AmbiguityRows(result.Output));
+
+        // The explanation is still there, and the block corrects it rather than
+        // replacing it.
+        var explanation = result.Output.IndexOf("no calling symbol can be named", StringComparison.Ordinal);
+        Assert.True(explanation >= 0, result.Output);
+        Assert.True(explanation < result.Output.IndexOf("is ambiguous", StringComparison.Ordinal), result.Output);
+    }
+
     /// <summary>
     /// The count and symbol on each line of a rendered ambiguity block, read back out of
     /// the output the caller actually sees. Hit lines cannot match: they carry a
@@ -1983,6 +2096,78 @@ public class QueryTests
                     (1, 'App.Data.Entities.Perfume',             0, 33, 12, NULL, NULL),
                     (1, 'App.Data.Entities.Perfume.Status',      0, 34, 12, NULL, NULL),
                     (1, 'App.Data.Enums.EntityType.Perfume',     0, 52, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>
+    /// Three distinct symbols ending in the segment Perfume, the third of them known
+    /// only from the Razor generator's output, which refs and impact leave out of their
+    /// default answer. So the default view spans two and the index holds three, which is
+    /// the case that makes "it matches N distinct symbols" a claim the tally cannot
+    /// support.
+    /// </summary>
+    private static void WriteAmbiguityAcrossGeneratedCodeIndexFile(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language, generated) VALUES
+                    (1, 'App/Data/Entities/Perfume.cs', 'csharp', 0),
+                    (2, 'App/Pages/Index.cshtml', 'razor', 0),
+                    (3, 'App/obj/Debug/net10.0/generated/Pages_Index_cshtml.g.cs', 'csharp', 1);
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Data.Entities.Perfume',         1,  4, 13,   40,    1),
+                    (1, 'App.Data.Entities.Perfume',         0, 12,  8, NULL, NULL),
+                    (2, 'App.Data.Entities.Perfume',         0,  3,  6, NULL, NULL),
+                    (1, 'App.Data.Enums.EntityType.Perfume', 1, 20,  8, NULL, NULL),
+                    (2, 'App.Data.Enums.EntityType.Perfume', 0,  9,  6, NULL, NULL),
+                    (3, 'AspNetCore.Pages_Index.Perfume',    1,  5,  8,    6,    9),
+                    (3, 'AspNetCore.Pages_Index.Perfume',    0,  9,  8, NULL, NULL);
+                INSERT INTO symbol_fts(symbol) VALUES
+                    ('App.Data.Entities.Perfume'),
+                    ('App.Data.Enums.EntityType.Perfume'),
+                    ('AspNetCore.Pages_Index.Perfume');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>
+    /// Two distinct symbols ending in Perfume, referred to only from a Razor view,
+    /// which has no recorded body range. So the references are real, the pattern is
+    /// ambiguous, and impact can name no caller for either of them.
+    /// </summary>
+    private static void WriteAmbiguousWithoutCallersIndexFile(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Pages/Index.cshtml', 'razor');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Data.Entities.Perfume',         0, 3, 6, NULL, NULL),
+                    (1, 'App.Data.Entities.Perfume',         0, 4, 6, NULL, NULL),
+                    (1, 'App.Data.Enums.EntityType.Perfume', 0, 5, 6, NULL, NULL);
                 """;
             cmd.ExecuteNonQuery();
         }

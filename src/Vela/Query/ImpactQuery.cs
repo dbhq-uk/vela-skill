@@ -65,10 +65,12 @@ public static class ImpactQuery
     /// symbols, and the symbols asked about appear nowhere in the answer. The tally has
     /// to be read from the index instead, and it counts the references the pattern
     /// matched rather than the callers found. Those are different numbers on purpose. A
-    /// caller containing three references to the target is one row above, and a caller
-    /// that uses two of the matched symbols is still one row, so per-symbol caller counts
-    /// would not decompose the total and the block would fail the check that makes it
-    /// worth printing. <see cref="Ambiguity.RenderCallers"/> labels the number it prints.
+    /// caller containing three references to the target is one row above, a caller that
+    /// uses two of the matched symbols is still one row, and a reference in a Razor view
+    /// or a top level statement falls inside no recorded body range and so yields no row
+    /// at all. Per-symbol caller counts would therefore not decompose the total, and the
+    /// block would fail the check that makes it worth printing.
+    /// <see cref="Ambiguity.RenderCallers"/> labels the number it prints as what it is.
     ///
     /// The document filter mirrors <see cref="Run"/> so the two describe the same view of
     /// the index: a target is only reachable through a caller in the same document, so

@@ -17,16 +17,13 @@ public static class OutputWriter
     /// report on. Callers pass the explanation their verb computed; null keeps the
     /// bare count, which is the right output when the caller cannot tell.
     ///
-    /// <paramref name="symbolPattern"/> is passed only by the verbs whose hits are
-    /// occurrences of a symbol pattern, which is refs and def, and turns on the
-    /// ambiguity block. outline passes null because its argument is a file path and
-    /// every file defines several symbols, so the notice would fire on every outline
-    /// ever run. impact passes null too: its hits name the callers rather than the
-    /// symbol asked about, so a tally read off them would name the wrong symbols
-    /// entirely. It renders <see cref="Ambiguity.RenderCallers"/> itself instead.
+    /// The ambiguity block is deliberately not rendered here. It qualifies the result
+    /// count, and so does the line naming what was suppressed for living in generated
+    /// code, which only the caller knows; both belong after this, in that order, so
+    /// that the shorter sentence stays beside the number it corrects.
     /// </summary>
     public static string Render(IReadOnlyList<Hit> hits, HealthRecord health,
-                                string? emptyExplanation = null, string? symbolPattern = null)
+                                string? emptyExplanation = null)
     {
         var sb = new StringBuilder();
 
@@ -54,13 +51,6 @@ public static class OutputWriter
         if (hits.Any(h => h.IsGenerated))
             sb.AppendLine("(generated) marks source-generated code, which is not written to disk: "
                         + "the path is real to the compiler but you cannot open it.");
-
-        // A pattern matches a whole dotted segment, so a bare name matches every symbol
-        // whose last segment is that name, and the count above can describe four
-        // different things at once. Nothing is filtered: the block only says what the
-        // total spans. It prints nothing when the pattern resolved to one symbol.
-        if (symbolPattern is not null)
-            sb.Append(Ambiguity.RenderOccurrences(symbolPattern, Ambiguity.Of(hits)));
 
         // "0 result(s)" on its own reads as an authoritative "there is nothing
         // here". It is the sentence an agent acts on, so when it is printed it says
