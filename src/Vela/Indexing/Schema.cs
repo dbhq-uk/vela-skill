@@ -18,11 +18,12 @@ public static class Schema
     /// 0 is what an unstamped database reads, which is every index built before this
     /// existed, so it can never be a valid version. 1 was the schema without the
     /// generated column. 2 adds it. 3 adds external_document. 4 adds
+    /// occurrence.scip_symbol. 5 adds document.position_encoding and an index on
     /// occurrence.scip_symbol. A future change bumps this and nothing else: there is no
     /// migration, because re-indexing takes seconds and rebuilds from the truth rather
     /// than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 4;
+    public const int Version = 5;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -46,11 +47,27 @@ public static class Schema
             -- these by default and declare what they suppressed; def and outline keep
             -- them, because for some Razor members the generated document holds the
             -- only definition there is.
+            --
+            -- position_encoding: the Scip.PositionEncoding the index this document came
+            -- from declared for it. It is NOT how to read the numbers in the occurrence
+            -- table. Every start_char and enc_end_char in this database is a count of
+            -- UTF-16 code units, whatever the source said, because that is what Roslyn
+            -- produces and what every row vela has ever written already meant.
+            --
+            -- It is recorded because the conversion is otherwise unauditable and an
+            -- export cannot put a document back the way its indexer wrote it. scip.proto
+            -- tells an indexer to pick by implementation language - UTF-16 for .NET and
+            -- TypeScript, UTF-32 for Python, UTF-8 for Go, Rust and C++ - so a polyglot
+            -- index legitimately holds documents counted three different ways, and 0
+            -- (UnspecifiedPositionEncoding) is what a real indexer writes when it
+            -- declares nothing: scip-typescript 0.4.0 leaves the field unset on every
+            -- document it emits.
             CREATE TABLE IF NOT EXISTS document (
                 id           INTEGER PRIMARY KEY,
                 relative_path TEXT NOT NULL UNIQUE,
                 language      TEXT NOT NULL,
-                generated     INTEGER NOT NULL DEFAULT 0
+                generated     INTEGER NOT NULL DEFAULT 0,
+                position_encoding INTEGER NOT NULL DEFAULT 0
             );
 
             -- Two names for one symbol, and they are not interchangeable.
@@ -68,6 +85,25 @@ public static class Schema
             -- else's tool produced be correlated with this one. It is a different
             -- grammar answering a different question, so it is stored beside the display
             -- name rather than in place of it.
+            --
+            -- Two values in this column are sentinels and not monikers, and a join that
+            -- forgets either fuses unrelated symbols:
+            --
+            --   '' means THIS OCCURRENCE HAS NO MONIKER, not "the empty moniker".
+            --   scip.proto makes Occurrence.symbol optional, and vela leaves it empty
+            --   rather than claim a document scope an array type or the global namespace
+            --   does not have. 23,200 occurrences of the real solution (2.48%) carry it,
+            --   so any join on this column needs `AND scip_symbol <> ''` or it makes one
+            --   equivalence class of all 23,200.
+            --
+            --   'local <id>' is scoped to ONE document. scip.proto: local symbols "MUST
+            --   only be used for entities which are local to a Document, and cannot be
+            --   accessed from outside the Document". The ids are counters, so `local 1`
+            --   in two files is two unrelated things - four documents of a real
+            --   scip-typescript index over ScentVerdict.Mobile each carry one. A join on
+            --   this column must therefore also match document_id. The display name in
+            --   the symbol column is namespaced by document and does not have this
+            --   problem, which is why it is the column every query uses.
             CREATE TABLE IF NOT EXISTS occurrence (
                 id            INTEGER PRIMARY KEY,
                 document_id   INTEGER NOT NULL REFERENCES document(id),
@@ -82,6 +118,22 @@ public static class Schema
 
             CREATE INDEX IF NOT EXISTS ix_occurrence_symbol ON occurrence(symbol);
             CREATE INDEX IF NOT EXISTS ix_occurrence_document ON occurrence(document_id);
+
+            -- The moniker is stored so two indexes can be correlated through it, and
+            -- correlating means one lookup per symbol. Without this each lookup is a
+            -- scan of every occurrence. Measured on the real solution's index, 935,029
+            -- occurrences carrying 140,430 distinct monikers over a 277.9 MiB database:
+            -- counting the occurrences of one moniker took 148.8ms unindexed and 0.01ms
+            -- with this index, which SQLite then serves as a covering index. It costs
+            -- 76.3 MiB, a 27% larger file, and 1.6s to build.
+            --
+            -- Deliberately NOT a partial index on `scip_symbol <> ''`, which would have
+            -- excluded the 23,200 sentinel rows and cost less. SQLite only uses a
+            -- partial index when the query's WHERE clause provably implies the index's,
+            -- and a bound parameter proves nothing, so `WHERE scip_symbol = $x AND
+            -- scip_symbol <> ''` went back to a full scan. An index the obvious query
+            -- cannot use is worse than no index, because it costs the space anyway.
+            CREATE INDEX IF NOT EXISTS ix_occurrence_scip_symbol ON occurrence(scip_symbol);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(symbol);
 

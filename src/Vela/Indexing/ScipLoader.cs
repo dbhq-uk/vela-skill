@@ -71,10 +71,12 @@ public static class ScipLoader
         using var insertDoc = db.CreateCommand();
         insertDoc.Transaction = tx;
         insertDoc.CommandText =
-            "INSERT INTO document(relative_path, language, generated) VALUES ($p, $l, $g) RETURNING id";
+            "INSERT INTO document(relative_path, language, generated, position_encoding) "
+            + "VALUES ($p, $l, $g, $e) RETURNING id";
         insertDoc.Parameters.Add("$p", SqliteType.Text);
         insertDoc.Parameters.Add("$l", SqliteType.Text);
         insertDoc.Parameters.Add("$g", SqliteType.Integer);
+        insertDoc.Parameters.Add("$e", SqliteType.Integer);
 
         using var insertOcc = db.CreateCommand();
         insertOcc.Transaction = tx;
@@ -100,6 +102,11 @@ public static class ScipLoader
             insertDoc.Parameters["$l"].Value = doc.Language;
             insertDoc.Parameters["$g"].Value =
                 generatedDocuments is not null && generatedDocuments.Contains(doc.RelativePath) ? 1 : 0;
+
+            // Carried across as the index declares it and not normalised, because this
+            // load is the emitter's own output and the emitter's offsets are already
+            // UTF-16 code units. <see cref="ScipImporter"/> is the path that converts.
+            insertDoc.Parameters["$e"].Value = (int)doc.PositionEncoding;
             var docId = Convert.ToInt64(insertDoc.ExecuteScalar());
 
             foreach (var occ in doc.Occurrences)
