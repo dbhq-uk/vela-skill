@@ -75,6 +75,25 @@ public static class QueryHelper
         return hits;
     }
 
+    /// <summary>
+    /// Runs a query returning one row per symbol with a count beside it, and orders the
+    /// result here rather than in SQL. The ordering has to be total and identical on
+    /// every machine (Constraint 1), and an ORDER BY that leaves ties unbroken is settled
+    /// by whatever the query plan produced.
+    /// </summary>
+    public static IReadOnlyList<SymbolTally> Tally(SqliteConnection db, string sql, string parameter)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = sql;
+        cmd.Parameters.AddWithValue("$s", parameter);
+
+        var tallies = new List<SymbolTally>();
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read()) tallies.Add(new SymbolTally(reader.GetString(0), reader.GetInt32(1)));
+
+        return Ambiguity.Ordered(tallies);
+    }
+
     /// <summary>Runs a query whose single row and column is a count.</summary>
     public static int Count(SqliteConnection db, string sql, string parameter)
     {

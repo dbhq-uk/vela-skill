@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Vela.Indexing;
 using Vela.Query;
@@ -1060,6 +1061,334 @@ public class QueryTests
         Assert.Contains("not treat an empty or short result as proof", output, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ---- A bare name must never silently merge distinct symbols -----------
+    //
+    // Measured on a real 375,608-line solution: `vela refs Perfume` answered 3,104
+    // results, which is MORE than `grep -w Perfume` answers there (1,897). Matching is
+    // by whole dotted segment, so every symbol whose last segment is Perfume matches,
+    // and the single number at the foot of the answer merged at least four distinct
+    // symbols: the entity, the entity's constructor, an enum member, and a property of
+    // an unrelated API response type.
+    //
+    // Every hit is real. The COUNT describes something that does not exist, and an agent
+    // sizing a change reads that count. The whole pitch of this tool is replacing grep's
+    // noise with compiler-exact answers, so a headline number that conflates four
+    // symbols is precisely the failure it exists to prevent.
+    //
+    // The fix is reporting and nothing else. The same rows come back in the same order:
+    // suppressing, ranking or scoring them would be the heuristic behaviour Constraint 1
+    // forbids. The answer simply says what it spans, and how to ask about one of them.
+    //
+    // And it must not cry wolf. A pattern resolving to one symbol prints no notice at
+    // all: a warning on every query is a warning nobody reads, which this project
+    // already learned once from the degraded-index banner.
+
+    [Fact]
+    public async Task Refs_WhenABareNameMatchesSeveralDistinctSymbols_NamesEachWithItsOwnCount_MostHitsFirst()
+    {
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousIndexFile(indexPath);
+
+        var result = await InvokeAsync("refs", "Perfume", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+
+        // Constraint 1: not one row fewer than before. This is a reporting change.
+        Assert.Equal(8, ReportedTotal(result.Output));
+
+        Assert.Contains("'Perfume' is ambiguous", result.Output, StringComparison.Ordinal);
+        Assert.Contains("4 distinct symbols", result.Output, StringComparison.Ordinal);
+
+        // Ordering is total and deterministic, and never left to SQLite: most hits
+        // first, ties broken by symbol name ordinally so the same index answers the
+        // same way on every machine whatever the current culture.
+        Assert.Equal(
+            new[]
+            {
+                (3, "App.Data.Entities.Perfume"),
+                (2, "App.Data.Enums.EntityType.Perfume"),
+                (2, "App.ServiceModel.Api.FragranticaPerfumeDetailResponse.Perfume"),
+                (1, "App.Data.Entities.Perfume.Perfume()")
+            },
+            AmbiguityRows(result.Output));
+    }
+
+    [Fact]
+    public async Task Refs_TheAmbiguityCountsAddUpToTheReportedTotal()
+    {
+        // The block exists to explain the total, so a reader has to be able to check it
+        // against the total. If the two ever disagree the block is worse than nothing:
+        // it would be a second confident number describing the same answer.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousIndexFile(indexPath);
+
+        var result = await InvokeAsync("refs", "Perfume", "--solution", solution);
+
+        var rows = AmbiguityRows(result.Output);
+        Assert.NotEmpty(rows);
+        Assert.Equal(ReportedTotal(result.Output), rows.Sum(r => r.Count));
+    }
+
+    [Fact]
+    public async Task Refs_WhenThePatternResolvesToOneSymbol_PrintsNoAmbiguityNotice()
+    {
+        // No crying wolf. Perfume.Status matches exactly one symbol, so the total IS a
+        // count of that symbol and there is nothing to warn about. A notice here would
+        // train the reader to skip the notice in the case that matters.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousIndexFile(indexPath);
+
+        var result = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, ReportedTotal(result.Output));
+        Assert.DoesNotContain("ambiguous", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("distinct symbols", result.Output, StringComparison.Ordinal);
+        Assert.Empty(AmbiguityRows(result.Output));
+    }
+
+    [Fact]
+    public async Task Refs_TheMoreQualifiedPatternItSuggests_ReallyResolvesToOneSymbol()
+    {
+        // Telling the reader the name is ambiguous without telling them what to type
+        // instead leaves them where they started. The suggestion is derived from the
+        // matched names, so this feeds it back through the real query and checks it
+        // does what the sentence promises.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousIndexFile(indexPath);
+
+        var ambiguous = await InvokeAsync("refs", "Perfume", "--solution", solution);
+        Assert.Contains("'Entities.Perfume'", ambiguous.Output, StringComparison.Ordinal);
+
+        var narrowed = await InvokeAsync("refs", "Entities.Perfume", "--solution", solution);
+
+        Assert.Equal(0, narrowed.ExitCode);
+        Assert.Equal(3, ReportedTotal(narrowed.Output));
+        Assert.DoesNotContain("ambiguous", narrowed.Output, StringComparison.Ordinal);
+        Assert.Empty(AmbiguityRows(narrowed.Output));
+    }
+
+    [Fact]
+    public async Task Def_AlsoReportsAWholeSegmentNameThatMatchesSeveralSymbols()
+    {
+        // def takes a symbol pattern too, and its hits are occurrences of that pattern,
+        // so it conflates in exactly the same way: `def Perfume` here answers with four
+        // declarations of four different things.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousIndexFile(indexPath);
+
+        var result = await InvokeAsync("def", "Perfume", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("'Perfume' is ambiguous", result.Output, StringComparison.Ordinal);
+
+        // Every count is 1 here, so the ordering is settled entirely by the ordinal
+        // symbol name: without that second key SQLite's row order would decide it.
+        Assert.Equal(
+            new[]
+            {
+                (1, "App.Data.Entities.Perfume"),
+                (1, "App.Data.Entities.Perfume.Perfume()"),
+                (1, "App.Data.Enums.EntityType.Perfume"),
+                (1, "App.ServiceModel.Api.FragranticaPerfumeDetailResponse.Perfume")
+            },
+            AmbiguityRows(result.Output));
+
+        Assert.Equal(ReportedTotal(result.Output), AmbiguityRows(result.Output).Sum(r => r.Count));
+    }
+
+    [Fact]
+    public async Task Outline_NeverReportsAmbiguity_BecauseItsArgumentIsAPathAndNotAName()
+    {
+        // outline takes a file path, and a file defines many symbols by definition. Its
+        // hits are not occurrences of the argument at all, so the notice would fire on
+        // every outline of every file that declares more than one thing: the loudest
+        // possible way of crying wolf.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousIndexFile(indexPath);
+
+        var result = await InvokeAsync("outline", "App/Data/Entities/Perfume.cs", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(5, ReportedTotal(result.Output));
+        Assert.DoesNotContain("ambiguous", result.Output, StringComparison.Ordinal);
+        Assert.Empty(AmbiguityRows(result.Output));
+    }
+
+    [Fact]
+    public async Task Impact_WhenABareNameMatchesSeveralSymbols_SaysTheCallersAreNotOneSymbolsBlastRadius()
+    {
+        // impact conflates as badly as refs and the consequence is worse, because a
+        // blast radius is what an agent sizes a change from. Its rows name the CALLERS
+        // rather than occurrences of the pattern, so the tally cannot be read off the
+        // answer: it has to name the symbols the pattern matched, and say plainly that
+        // the numbers are references searched rather than callers found.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousCallerIndexFile(indexPath);
+
+        var result = await InvokeAsync("impact", "Perfume", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(2, ReportedTotal(result.Output));
+
+        Assert.Contains("'Perfume' is ambiguous", result.Output, StringComparison.Ordinal);
+        Assert.Contains("2 distinct symbols", result.Output, StringComparison.Ordinal);
+        Assert.Contains("not how many callers it has", result.Output, StringComparison.Ordinal);
+
+        Assert.Equal(
+            new[]
+            {
+                (2, "App.Data.Entities.Perfume"),
+                (1, "App.Data.Enums.EntityType.Perfume")
+            },
+            AmbiguityRows(result.Output));
+    }
+
+    [Fact]
+    public async Task Impact_WhenThePatternResolvesToOneSymbol_PrintsNoAmbiguityNotice()
+    {
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousCallerIndexFile(indexPath);
+
+        var result = await InvokeAsync("impact", "Perfume.Status", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(1, ReportedTotal(result.Output));
+        Assert.DoesNotContain("ambiguous", result.Output, StringComparison.Ordinal);
+        Assert.Empty(AmbiguityRows(result.Output));
+    }
+
+    [Fact]
+    public async Task Refs_WhenTheNameMatchesFarTooManySymbolsToList_SummarisesTheTail_AndStillAddsUp()
+    {
+        // Measured on the real solution: `refs Name` matches 426 distinct symbols and
+        // `refs Id` matches 440. Listing all of them puts the header sentence hundreds of
+        // lines above the footer, so the one thing the reader needs - "this total is not
+        // one symbol" - scrolls off the end of the answer, and a caller reading the tail
+        // of the output sees a list of one-hit symbols and no explanation of what it is.
+        // A block nobody can read is the degraded-index banner's mistake made again.
+        //
+        // So the tail is summarised rather than dropped. The count on that line is the
+        // hits of every symbol not listed, which keeps the arithmetic exact: the block
+        // still adds up to the reported total, which is the property that lets a reader
+        // check it at all.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+
+        // 14 symbols, the nth with n hits, so 105 hits in total.
+        WriteManySymbolIndexFile(indexPath, symbols: 14);
+
+        var result = await InvokeAsync("refs", "Thing", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(105, ReportedTotal(result.Output));
+
+        // Nothing is understated: the header still says how many there really are.
+        Assert.Contains("14 distinct symbols", result.Output, StringComparison.Ordinal);
+
+        var rows = AmbiguityRows(result.Output);
+        Assert.Equal(11, rows.Count);
+        Assert.Equal((14, "App.N14.Thing"), rows[0]);
+        Assert.Equal((5, "App.N05.Thing"), rows[9]);
+        Assert.Equal((10, "(+4 further symbol(s))"), rows[10]);
+
+        Assert.Equal(ReportedTotal(result.Output), rows.Sum(row => row.Count));
+
+        // And the whole block, header and footer included, is short enough to survive
+        // being read from the end of the answer, which is how it is read.
+        var block = result.Output[result.Output.IndexOf("'Thing' is ambiguous", StringComparison.Ordinal)..];
+        Assert.True(block.Split('\n').Length <= 20, block);
+    }
+
+    /// <summary>
+    /// The count and symbol on each line of a rendered ambiguity block, read back out of
+    /// the output the caller actually sees. Hit lines cannot match: they carry a
+    /// "line:column" pair where this expects a bare count followed by two spaces.
+    /// </summary>
+    private static IReadOnlyList<(int Count, string Symbol)> AmbiguityRows(string output) =>
+        Regex.Matches(output, @"^ {2,}(\d+)  (\S.*?)\s*$", RegexOptions.Multiline)
+             .Select(m => (int.Parse(m.Groups[1].Value), m.Groups[2].Value))
+             .ToList();
+
+    /// <summary>The "N result(s)" line, which is the number the block has to explain.</summary>
+    private static int ReportedTotal(string output)
+    {
+        var match = Regex.Match(output, @"^(\d+) result\(s\)\s*$", RegexOptions.Multiline);
+        Assert.True(match.Success, "no result count in the output:\n" + output);
+        return int.Parse(match.Groups[1].Value);
+    }
+
     // ---- CLI wiring -------------------------------------------------------
     //
     // These exercise the built command tree end to end, because the thing that has
@@ -1399,6 +1728,124 @@ public class QueryTests
                 INSERT INTO symbol_fts(symbol) VALUES ('AspNetCore.Pages_Index.ViewData');
                 """;
             cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>
+    /// The ScentVerdict shape, in miniature: four distinct symbols whose last dotted
+    /// segment is Perfume - the entity, the entity's constructor, an enum member, and a
+    /// property of an unrelated API response type - plus one member, Perfume.Status,
+    /// that a qualified pattern resolves to on its own.
+    /// </summary>
+    private static void WriteAmbiguousIndexFile(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Data/Entities/Perfume.cs', 'csharp'),
+                    (2, 'App/Pages/Index.cshtml', 'razor');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Data.Entities.Perfume',            1,  4, 13,   40,    1),
+                    (1, 'App.Data.Entities.Perfume',            0, 12,  8, NULL, NULL),
+                    (2, 'App.Data.Entities.Perfume',            0,  3,  6, NULL, NULL),
+                    (1, 'App.Data.Entities.Perfume.Perfume()',  1,  6,  8,    8,    9),
+                    (1, 'App.Data.Enums.EntityType.Perfume',    1, 20,  8, NULL, NULL),
+                    (2, 'App.Data.Enums.EntityType.Perfume',    0,  9,  6, NULL, NULL),
+                    (1, 'App.ServiceModel.Api.FragranticaPerfumeDetailResponse.Perfume', 1, 24, 8, NULL, NULL),
+                    (2, 'App.ServiceModel.Api.FragranticaPerfumeDetailResponse.Perfume', 0, 10, 6, NULL, NULL),
+                    (1, 'App.Data.Entities.Perfume.Status',     1, 30,  8, NULL, NULL),
+                    (2, 'App.Data.Entities.Perfume.Status',     0, 11,  6, NULL, NULL);
+                INSERT INTO symbol_fts(symbol) VALUES
+                    ('App.Data.Entities.Perfume'),
+                    ('App.Data.Entities.Perfume.Perfume()'),
+                    ('App.Data.Enums.EntityType.Perfume'),
+                    ('App.ServiceModel.Api.FragranticaPerfumeDetailResponse.Perfume'),
+                    ('App.Data.Entities.Perfume.Status');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>
+    /// Two methods, between them referring to two different symbols called Perfume and
+    /// to Perfume.Status. impact's rows name the methods, so the symbols the pattern
+    /// matched appear nowhere in the answer unless the answer says so.
+    /// </summary>
+    private static void WriteAmbiguousCallerIndexFile(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Services/PerfumeService.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Services.PerfumeService.Publish()', 1, 30,  4,   40,    5),
+                    (1, 'App.Services.PerfumeService.Archive()', 1, 50,  4,   60,    5),
+                    (1, 'App.Data.Entities.Perfume',             0, 32, 12, NULL, NULL),
+                    (1, 'App.Data.Entities.Perfume',             0, 33, 12, NULL, NULL),
+                    (1, 'App.Data.Entities.Perfume.Status',      0, 34, 12, NULL, NULL),
+                    (1, 'App.Data.Enums.EntityType.Perfume',     0, 52, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>
+    /// An index in which a single bare name matches more distinct symbols than any block
+    /// could sensibly list, which on the real solution is the ordinary case rather than
+    /// the extreme one: `refs Name` matches 426 of them. The nth symbol carries n hits,
+    /// so every count differs and the ordering is settled by count alone.
+    /// </summary>
+    private static void WriteManySymbolIndexFile(string path, int symbols)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        Schema.Create(db);
+
+        using (var document = db.CreateCommand())
+        {
+            document.CommandText =
+                "INSERT INTO document(id, relative_path, language) VALUES (1, 'App/Thing.cs', 'csharp')";
+            document.ExecuteNonQuery();
+        }
+
+        var line = 0;
+        for (var n = 1; n <= symbols; n++)
+        {
+            for (var hit = 0; hit < n; hit++)
+            {
+                using var cmd = db.CreateCommand();
+                cmd.CommandText =
+                    "INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char) "
+                  + "VALUES (1, $s, 0, $l, 0)";
+                cmd.Parameters.AddWithValue("$s", $"App.N{n:D2}.Thing");
+                cmd.Parameters.AddWithValue("$l", line++);
+                cmd.ExecuteNonQuery();
+            }
         }
 
         IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));

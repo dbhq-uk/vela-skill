@@ -74,17 +74,20 @@ public static class Program
         root.Add(BuildFindCommand(solutionOption));
         root.Add(BuildHitCommand("def", "Where a symbol is defined",
             "symbol", symbolHelp,
-            solutionOption, (db, value, _) => DefQuery.Run(db, value), DefQuery.ExplainEmpty));
+            solutionOption, (db, value, _) => DefQuery.Run(db, value), DefQuery.ExplainEmpty,
+            hitsAreOccurrencesOfTheArgument: true));
         root.Add(BuildHitCommand("refs", "Every usage of a symbol",
             "symbol", symbolHelp,
-            solutionOption, RefsQuery.Run, RefsQuery.ExplainEmpty, RefsQuery.CountInGeneratedCode));
+            solutionOption, RefsQuery.Run, RefsQuery.ExplainEmpty, RefsQuery.CountInGeneratedCode,
+            hitsAreOccurrencesOfTheArgument: true));
         root.Add(BuildHitCommand("outline", "Symbols defined in a file",
             "file", "Path of the file, relative to the repository root (the solution directory "
                   + "when the solution is not in a repository).",
             solutionOption, (db, value, _) => OutlineQuery.Run(db, value), OutlineQuery.ExplainEmpty));
         root.Add(BuildHitCommand("impact", "Callers and blast radius",
             "symbol", symbolHelp,
-            solutionOption, ImpactQuery.Run, ImpactQuery.ExplainEmpty, ImpactQuery.CountInGeneratedCode));
+            solutionOption, ImpactQuery.Run, ImpactQuery.ExplainEmpty, ImpactQuery.CountInGeneratedCode,
+            matchedSymbols: ImpactQuery.MatchedSymbols));
 
         return root;
     }
@@ -101,13 +104,27 @@ public static class Program
     /// the size of what it left out, so a verb cannot start suppressing results without
     /// also gaining the sentence that says it did (Constraint 3).
     /// </param>
+    /// <param name="hitsAreOccurrencesOfTheArgument">
+    /// True for refs and def, whose rows are occurrences of the symbol asked about, so
+    /// the ambiguity block can be tallied straight off the answer and its counts add up
+    /// to the reported total. False for outline, whose argument is a file path: every
+    /// file defines several symbols, so a notice there would fire on every outline ever
+    /// run, which is the loudest possible way of crying wolf. False for impact too,
+    /// which supplies <paramref name="matchedSymbols"/> instead.
+    /// </param>
+    /// <param name="matchedSymbols">
+    /// Supplied by impact alone. Its rows name the CALLERS, so the symbols the pattern
+    /// matched appear nowhere in its answer and the tally has to come from the index.
+    /// </param>
     private static Command BuildHitCommand(
         string name, string description,
         string argumentName, string argumentDescription,
         Option<string> solutionOption,
         Func<SqliteConnection, string, bool, IReadOnlyList<Hit>> run,
         Func<SqliteConnection, string, string> explainEmpty,
-        Func<SqliteConnection, string, int>? countInGeneratedCode = null)
+        Func<SqliteConnection, string, int>? countInGeneratedCode = null,
+        bool hitsAreOccurrencesOfTheArgument = false,
+        Func<SqliteConnection, string, bool, IReadOnlyList<SymbolTally>>? matchedSymbols = null)
     {
         var argument = new Argument<string>(argumentName) { Description = argumentDescription };
         var command = new Command(name, description) { argument, solutionOption };
@@ -150,7 +167,15 @@ public static class Program
             // normal answer costs no extra query.
             var explanation = hits.Count == 0 ? explainEmpty(db, value) : null;
 
-            output.Write(OutputWriter.Render(hits, health, explanation));
+            output.Write(OutputWriter.Render(hits, health, explanation,
+                hitsAreOccurrencesOfTheArgument ? value : null));
+
+            // impact's own ambiguity block, which the renderer cannot produce because
+            // the answer it is rendering names the callers rather than the symbols the
+            // pattern matched. Nothing to narrow when there is nothing above it: an
+            // empty answer already explains itself.
+            if (matchedSymbols is not null && hits.Count > 0)
+                output.Write(Ambiguity.RenderCallers(value, matchedSymbols(db, value, includeGenerated)));
 
             if (countInGeneratedCode is not null && !includeGenerated)
             {

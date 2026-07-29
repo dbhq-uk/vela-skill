@@ -58,7 +58,7 @@ vela impact <symbol>          # callers and blast radius
 vela find   <pattern>         # symbol search by name
 ```
 
-Symbols can be given bare (`Status`) or qualified (`Perfume.Status`). `def`, `refs` and `impact` match a **whole dotted segment**, case-sensitively: `Status` matches `App.Models.Perfume.Status` and does **not** match `HttpStatus`, `OrderStatus` or `status`. So a bare name is safe to use, and qualifying only narrows further when several types really do declare the same member name - the answer will show you, because each hit prints its full symbol name.
+Symbols can be given bare (`Status`) or qualified (`Perfume.Status`). `def`, `refs` and `impact` match a **whole dotted segment**, case-sensitively: `Status` matches `App.Models.Perfume.Status` and does **not** match `HttpStatus`, `OrderStatus` or `status`. So a bare name is safe to use, and **vela will tell you when the name is ambiguous**: if several distinct symbols really do end in that segment, the answer names each one with its own count and suggests a longer name that picks one out.
 
 `find` is the exception: it searches name tokens with a trailing prefix, so `find Stat` finds `Status` where `refs Stat` finds nothing. Use `find` to discover a name and the other three to ask about it.
 
@@ -69,6 +69,23 @@ Results are grouped by file and shaped for a context window rather than a termin
 **Razor and Blazor hits are reported against the originating `.cshtml` or `.razor` file**, not the generated code, so the location is one you can open and edit.
 
 **Some locations are not on disk.** The Razor generator's output is compiled but never written out, so `refs` and `impact` leave it out by default and print a line saying how much they left out. Pass `--include-generated` if you need it. `def` and `outline` always include it, marked `(generated)` - for some Razor page members the generated code holds the only declaration there is, and the marker is there to tell you the path cannot be opened.
+
+**A total that spans several symbols says so.** Because matching is by whole dotted segment, `refs Perfume` on a real solution answered 3,104 results - the entity, the entity's constructor, an enum member called `Perfume`, and a property of an unrelated response type, all merged into one number. Every hit was real; the total counted nothing that exists. So when a pattern matches more than one distinct symbol, `def`, `refs` and `impact` print an ambiguity block after the results:
+
+```
+'Perfume' is ambiguous: it matches 25 distinct symbols, so the 3104 result(s) above are
+occurrences of 25 different things rather than of one. ...
+    1958  ScentVerdict.Data.Entities.Perfume
+     384  ScentVerdict.Data.Enums.EntityType.Perfume
+     ...
+     144  (+15 further symbol(s))
+To ask about one of them, give more of its name: 'Entities.Perfume' matches
+ScentVerdict.Data.Entities.Perfume and none of the others.
+```
+
+**Never size a change from a total that carries that block.** Ask again with the longer name it suggests, then use that answer. Nothing is filtered out to produce the block - the same results come back either way - it only says what they span. At most ten symbols are listed by name and the rest are summarised into one line, so the counts always add up to the reported total. `impact` labels its numbers differently, because its rows are the callers rather than the symbol you asked about.
+
+The absence of the block is a statement too: it means the pattern resolved to exactly one symbol, so the total is a count of that symbol and nothing else. `outline` never prints it, since its argument is a file path and a file defines many symbols by nature.
 
 ## The rule that matters most
 

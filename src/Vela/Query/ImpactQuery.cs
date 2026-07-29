@@ -56,6 +56,35 @@ public static class ImpactQuery
             Sql("AND d.generated = 1", "SELECT d.relative_path, ranked.symbol, ranked.start_line, ranked.start_char") +
             ")", symbolPattern);
 
+    /// <summary>
+    /// The distinct symbols the pattern matched, with the number of references to each
+    /// that impact went looking for callers of.
+    ///
+    /// impact answers with callers, so unlike refs and def it cannot tell the reader
+    /// the pattern was ambiguous by tallying its own rows: those rows name the calling
+    /// symbols, and the symbols asked about appear nowhere in the answer. The tally has
+    /// to be read from the index instead, and it counts the references the pattern
+    /// matched rather than the callers found. Those are different numbers on purpose. A
+    /// caller containing three references to the target is one row above, and a caller
+    /// that uses two of the matched symbols is still one row, so per-symbol caller counts
+    /// would not decompose the total and the block would fail the check that makes it
+    /// worth printing. <see cref="Ambiguity.RenderCallers"/> labels the number it prints.
+    ///
+    /// The document filter mirrors <see cref="Run"/> so the two describe the same view of
+    /// the index: a target is only reachable through a caller in the same document, so
+    /// suppressing generated callers suppresses exactly these references too.
+    /// </summary>
+    public static IReadOnlyList<SymbolTally> MatchedSymbols(
+        SqliteConnection db, string symbolPattern, bool includeGenerated = false)
+        => QueryHelper.Tally(db, $"""
+            SELECT o.symbol, COUNT(*)
+            FROM occurrence o JOIN document d ON d.id = o.document_id
+            WHERE o.is_definition = 0
+              AND {QueryHelper.SymbolMatches("o.symbol")}
+              {(includeGenerated ? "" : "AND d.generated = 0")}
+            GROUP BY o.symbol
+            """, symbolPattern);
+
     private static string Sql(string documentFilter, string projection)
         => $"""
             WITH target AS (
