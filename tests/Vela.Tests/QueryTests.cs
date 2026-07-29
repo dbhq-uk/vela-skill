@@ -481,6 +481,56 @@ public class QueryTests
     }
 
     [Fact]
+    public async Task Find_OnAPatternThatMatchesNothing_SaysWhyRatherThanPrintingNothing()
+    {
+        // The other four verbs explain an empty answer; find printed a bare
+        // "0 symbol(s)" and, before that, nothing at all. Under Constraint 3 that is
+        // the dangerous shape: find is the discovery verb, so it is what an agent
+        // reaches for before concluding a name does not exist in the codebase.
+        using var db = SeededDb();
+        const string pattern = "Zzzyzx";
+
+        Assert.Empty(FindQuery.Run(db, pattern));
+
+        var explanation = FindQuery.ExplainEmpty(db, pattern);
+        Assert.Contains(pattern, explanation, StringComparison.Ordinal);
+        Assert.Contains("not evidence", explanation, StringComparison.Ordinal);
+
+        // And it has to reach the caller, not just exist.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteIndexFile(indexPath, new HealthRecord(DateTime.UtcNow, null, false, null));
+
+        var result = await InvokeAsync("find", pattern, "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("0 symbol(s)", result.Output, StringComparison.Ordinal);
+        Assert.Contains("not evidence", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Find_WhenTheIndexHoldsNoSymbolsAtAll_SaysThatRatherThanBlamingThePattern()
+    {
+        // "nothing matched your pattern" and "there is nothing here to match" are two
+        // different answers, and only the first says anything about the code.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+
+        var explanation = FindQuery.ExplainEmpty(db, "Status");
+
+        Assert.Contains("no symbols at all", explanation, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Refs_OnASymbolThatIsNotInTheIndex_SaysTheSymbolIsNotIndexed()
     {
         using var db = SeededDb();

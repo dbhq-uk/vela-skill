@@ -140,6 +140,12 @@ public static class Program
             output.WriteLine();
             output.WriteLine($"{symbols.Count} symbol(s)");
 
+            // "0 symbol(s)" on its own reads as an authoritative "no such name exists".
+            // find is the discovery verb, so that is the sentence an agent acts on
+            // before deciding something is not in the codebase (Constraint 3).
+            if (symbols.Count == 0)
+                output.WriteLine(FindQuery.ExplainEmpty(db, parseResult.GetRequiredValue(argument)));
+
             return health.Degraded ? IndexHealth.ExitDegraded : 0;
         });
 
