@@ -84,7 +84,7 @@ public static class ScipEmitter
                     var name = SymbolIdentity.For(symbol);
 
                     int[]? enclosingRange = null;
-                    if (isDefinition)
+                    if (isDefinition && CanEnclose(symbol))
                     {
                         var enclosing = RazorMapper.MapToOriginal(harvested.Tree, node.Span.End);
                         if (Encloses(location, enclosing))
@@ -131,6 +131,37 @@ public static class ScipEmitter
 
         return index;
     }
+
+    /// <summary>
+    /// True when this kind of symbol may carry an enclosing range, which is the same
+    /// question as "may this be named as a caller".
+    ///
+    /// An enclosing range is the body of the thing being defined, and impact reads it
+    /// as a containment edge: the innermost definition whose range holds a reference is
+    /// reported as the caller. Roslyn's GetDeclaredSymbol succeeds on far more than
+    /// members, though. A VariableDeclaratorSyntax declares a local, and the local's
+    /// span covers its own initialiser, so `var status = perfume.Status;` produced a
+    /// range around the very reference it initialises from, and being the innermost one
+    /// it won. `impact Perfume.Status` then answered `status`: a local variable
+    /// presented in the same column, in the same shape, as a real calling method.
+    ///
+    /// Nothing distinguishes the two in the output, so the blast radius stops being
+    /// readable as a blast radius. The rule is therefore about what can be a caller,
+    /// not about what can be a definition: locals, parameters, range variables, labels
+    /// and type parameters are all still indexed and still findable by def and refs;
+    /// they simply have no body that other code can sit inside.
+    /// </summary>
+    private static bool CanEnclose(ISymbol symbol) => symbol.Kind switch
+    {
+        SymbolKind.Local => false,
+        SymbolKind.Parameter => false,
+        SymbolKind.RangeVariable => false,
+        SymbolKind.Label => false,
+        SymbolKind.TypeParameter => false,
+        SymbolKind.Discard => false,
+        SymbolKind.Alias => false,
+        _ => true
+    };
 
     /// <summary>
     /// The node that actually names the symbol a reference resolves to.

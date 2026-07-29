@@ -1,6 +1,9 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.Text;
+using Microsoft.Data.Sqlite;
 using Vela.Harvest;
+using Vela.Indexing;
+using Vela.Query;
 using Vela.Tests.Fixtures;
 using Xunit;
 
@@ -307,6 +310,65 @@ public class ScipEmitterTests
         // And the definition is still exactly one, still where it was.
         Assert.Single(occurrences.Where(o =>
             o.Symbol == "Helper.Do()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+    }
+
+    [Fact]
+    public async Task EmitAsync_DoesNotLetALocalVariableBecomeACaller()
+    {
+        // impact answers "who calls this", and it answers it from stored enclosing
+        // ranges: the innermost definition whose range contains the reference is the
+        // caller. GetDeclaredSymbol succeeds on a VariableDeclaratorSyntax, so a local
+        // was being recorded as a definition with a range of its own, and that range is
+        // the innermost one around the very reference that initialises it. The verified
+        // case is below: `impact Perfume.Status` named the local `status` as the caller
+        // of the property it is assigned from. A blast radius that mixes real callers
+        // with local-variable names cannot be told apart by the reader, and every name
+        // in it is a name an agent acts on.
+        var root = SyntheticRoot();
+        var file = Path.Combine(root, "App", "PerfumeService.cs");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 1 "{{Escape(file)}}"
+            public class Perfume
+            {
+                public string Status { get; set; } = "";
+            }
+
+            public class PerfumeService
+            {
+                public void Publish(Perfume perfume)
+                {
+                    var status = perfume.Status;
+                }
+            }
+            #line default
+            """);
+
+        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+        var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
+
+        // The local is still indexed - it is a real declaration and `def` should find
+        // it - but it carries no body range, so it can never enclose anything.
+        var local = Assert.Single(occurrences.Where(o =>
+            o.Symbol.EndsWith("status", StringComparison.Ordinal)
+            && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+        Assert.Empty(local.EnclosingRange);
+
+        // The parameter is the same shape of declaration and must be treated the same.
+        var parameter = Assert.Single(occurrences.Where(o =>
+            o.Symbol.EndsWith("perfume", StringComparison.Ordinal)
+            && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+        Assert.Empty(parameter.EnclosingRange);
+
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, index);
+
+        var hits = ImpactQuery.Run(db, "Perfume.Status");
+
+        var hit = Assert.Single(hits);
+        Assert.Equal("PerfumeService.Publish(Perfume)", hit.Symbol);
     }
 
     private static string SyntheticRoot() =>
