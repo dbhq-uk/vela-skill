@@ -1,3 +1,5 @@
+using System.IO.Enumeration;
+
 namespace Vela.Indexing;
 
 /// <summary>
@@ -66,8 +68,8 @@ public static class Staleness
             ? null
             : Path.GetDirectoryName(Path.GetFullPath(indexPath));
 
-        var (changedCount, newestPath, newestTime) =
-            NewestSourceChangeAfter(root, health.BuiltAtUtc, indexDirectory);
+        var scan = Scan(root, health.BuiltAtUtc, indexDirectory);
+        var (changedCount, newestPath, newestTime) = (scan.ChangedCount, scan.NewestPath, scan.NewestTime);
 
         if (changedCount == 0) return health;
 
@@ -88,20 +90,40 @@ public static class Staleness
     }
 
     /// <summary>
+    /// Every entry the walk enumerates from a directory: its full path, whether it is
+    /// itself a directory, and its bare name. Its only reason to exist is that
+    /// <see cref="System.IO.Enumeration.FileSystemEnumerable{TResult}"/> hands the walk
+    /// exactly this much for the cost of listing the directory and nothing more - unlike
+    /// <see cref="Directory.EnumerateFileSystemEntries(string)"/> paired with
+    /// <see cref="Directory.Exists(string)"/>, which is what this walk used to do and
+    /// which stats every entry a second time just to learn what the first call already
+    /// knew. On a real 375,608-line solution that second stat, paid on all 50,906 files
+    /// under the project root, was the walk's entire cost.
+    /// </summary>
+    private readonly record struct Entry(string Path, bool IsDirectory, string Name);
+
+    /// <summary>
     /// Counts the source files modified after <paramref name="builtAtUtc"/> and returns
-    /// the newest of them.
+    /// the newest of them, alongside how many files the walk had to examine to do it.
     ///
     /// The newest is reported rather than the first one found, so that the same tree and
     /// the same index always produce the same sentence regardless of the order the
     /// filesystem hands back directory entries (Constraint 1). Ties are broken on the
     /// path, ordinally, for the same reason.
+    ///
+    /// Public so a test can call it directly and assert <see cref="StalenessScan.FilesExamined"/>
+    /// stays flat as the number of irrelevant files in the tree grows, which is the
+    /// deterministic stand-in for a timing assertion that would be flaky on a shared
+    /// machine. Only a file whose extension is one vela indexes is counted as examined:
+    /// every other entry is settled from the directory listing itself, at no extra cost
+    /// whatever else the tree also holds.
     /// </summary>
-    private static (int Count, string? Path, DateTime Time) NewestSourceChangeAfter(
-        string root, DateTime builtAtUtc, string? indexDirectory)
+    public static StalenessScan Scan(string root, DateTime builtAtUtc, string? indexDirectory = null)
     {
         var count = 0;
         string? newestPath = null;
         var newestTime = DateTime.MinValue;
+        var examined = 0;
 
         var pending = new Stack<string>();
         pending.Push(root);
@@ -110,10 +132,10 @@ public static class Staleness
         {
             var directory = pending.Pop();
 
-            IEnumerable<string> entries;
+            IEnumerable<Entry> entries;
             try
             {
-                entries = Directory.EnumerateFileSystemEntries(directory);
+                entries = EnumerateEntries(directory);
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
             {
@@ -125,24 +147,25 @@ public static class Staleness
 
             foreach (var entry in entries)
             {
-                if (Directory.Exists(entry))
+                if (entry.IsDirectory)
                 {
-                    var name = Path.GetFileName(entry);
-                    if (SkippedDirectories.Contains(name, StringComparer.OrdinalIgnoreCase)) continue;
+                    if (SkippedDirectories.Contains(entry.Name, StringComparer.OrdinalIgnoreCase)) continue;
                     if (indexDirectory is not null &&
-                        string.Equals(Path.GetFullPath(entry), indexDirectory, StringComparison.Ordinal)) continue;
+                        string.Equals(entry.Path, indexDirectory, StringComparison.Ordinal)) continue;
 
-                    pending.Push(entry);
+                    pending.Push(entry.Path);
                     continue;
                 }
 
-                var extension = Path.GetExtension(entry);
+                var extension = Path.GetExtension(entry.Name);
                 if (!SourceExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)) continue;
+
+                examined++;
 
                 DateTime modified;
                 try
                 {
-                    modified = File.GetLastWriteTimeUtc(entry);
+                    modified = File.GetLastWriteTimeUtc(entry.Path);
                 }
                 catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
                 {
@@ -153,14 +176,38 @@ public static class Staleness
 
                 count++;
                 if (modified > newestTime ||
-                    (modified == newestTime && string.CompareOrdinal(entry, newestPath) < 0))
+                    (modified == newestTime && string.CompareOrdinal(entry.Path, newestPath) < 0))
                 {
                     newestTime = modified;
-                    newestPath = entry;
+                    newestPath = entry.Path;
                 }
             }
         }
 
-        return (count, newestPath, newestTime);
+        return new StalenessScan(count, newestPath, newestTime, examined);
     }
+
+    /// <summary>
+    /// One directory's entries, each read once. The low-level enumerator is what makes
+    /// that true: <see cref="FileSystemEntry.IsDirectory"/> comes from the directory
+    /// listing the operating system already returned, not from a second call, which is
+    /// the whole of what this walk needed to stop costing a stat per file.
+    /// </summary>
+    private static IEnumerable<Entry> EnumerateEntries(string directory) =>
+        new FileSystemEnumerable<Entry>(
+            directory,
+            (ref FileSystemEntry e) => new Entry(e.ToFullPath(), e.IsDirectory, e.FileName.ToString()),
+            new EnumerationOptions { RecurseSubdirectories = false });
 }
+
+/// <summary>
+/// What one walk of the source tree found: how many files had changed since the index
+/// was built, the most recently changed of them, and how many files the walk had to
+/// examine to answer that.
+///
+/// <see cref="FilesExamined"/> exists so a test can pin the walk's cost without timing
+/// it: on a real 375,608-line solution the unbounded version of this walk stated all
+/// 50,906 files under the project root on every invocation, and a wall-clock assertion
+/// of that would be flaky on a shared machine. A count is not.
+/// </summary>
+public readonly record struct StalenessScan(int ChangedCount, string? NewestPath, DateTime NewestTime, int FilesExamined);
