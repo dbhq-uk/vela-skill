@@ -82,6 +82,35 @@ public sealed class ScipMoniker
     // Ids do not restart per document. The spec only requires that an id be used within
     // one document, and a counter that runs across the index keeps every moniker in it
     // unique, which is what makes the moniker usable as a key.
+    //
+    // Which means the number a given local gets depends on how many locals the walk had
+    // already seen anywhere in the solution, so it is assigned in traversal order and
+    // not derived from the code. On the real solution that is 201,011 monikers, 21.5% of
+    // the index, whose value nothing guarantees will be the same on the next run.
+    //
+    // That is deliberate, and it is not the exposure the overload disambiguator had.
+    // A `+1` sits inside a GLOBAL moniker: another tool indexing the same source is
+    // expected to arrive at the same string independently and compare it for equality,
+    // so its value has to follow from the code and from nothing else, which is why it is
+    // ordered by signature rather than by declaration. A local id is the opposite by
+    // construction. scip.proto scopes it to one Document and forbids reaching it from
+    // outside, so there is nothing for it to agree with: no consumer may join on it, no
+    // second index can be correlated through it, and vela itself never reads it - every
+    // query matches on the display name column, and the display name is derived from the
+    // compiler with this counter nowhere in it. Constraint 1 asks that every ANSWER
+    // follow from the compiler, and every answer does.
+    //
+    // Both ways of making it deterministic cost more than they return. Restarting per
+    // document makes `local 0` name a different entity in each of the real solution's
+    // 2,512 documents, trading a property the index actually has for a value nobody is
+    // allowed to read. Encoding the document into the id keeps uniqueness but writes a
+    // path prefix into all 201,011 of them.
+    //
+    // So the honest statement of the limit: two runs over identical code can emit two
+    // .scip byte streams that differ in their local ids. If vela ever exports an index
+    // that is compared byte for byte, or walks projects in parallel, this is the first
+    // thing that has to change, and the change is to seed the counter per document from
+    // a stable encoding of the document path instead of from the walk.
     private int nextLocalId;
 
     /// <summary>
