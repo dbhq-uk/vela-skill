@@ -1,0 +1,21 @@
+{
+  "version": "3.0.0",
+  "query": "SCIP multi-language consumption, scip-dotnet Razor extension, vela config design",
+  "mode": "deep",
+  "started_at": "2026-07-29T09:29:14.468191+00:00",
+  "finished_at": null,
+  "assumptions": [],
+  "provider_config": {
+    "primary": "websearch",
+    "fallback": "brightdata",
+    "scholarly": null
+  },
+  "report_dir": "/home/devops/vela-skill/docs/research/SCIP_Multilanguage_Research_20260729",
+  "artifact_paths": {
+    "sources": "sources.jsonl",
+    "evidence": "evidence.jsonl",
+    "claims": "claims.jsonl",
+    "report": "report.md"
+  },
+  "continuation": null
+}
