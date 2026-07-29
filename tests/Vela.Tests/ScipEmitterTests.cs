@@ -582,6 +582,102 @@ public class ScipEmitterTests
         Assert.Equal(method.Range[1], method.EnclosingRange[1]);
     }
 
+    [Fact]
+    public async Task EmitAsync_FoldsAQualifiedVisualBasicCallIntoOneOccurrence()
+    {
+        // NamingNode matched Microsoft.CodeAnalysis.CSharp.Syntax types only, so in a
+        // VB project the invocation, the member access and the identifier were never
+        // folded and every qualified reference was counted roughly twice. README,
+        // AGENTS.md and the plugin manifest all advertise Visual Basic, so this was a
+        // wrong count in a language the tool claims to cover, in its most used verb.
+        //
+        // The VB syntax kinds mirror the C# ones exactly, which is why this is worth
+        // implementing rather than documenting away.
+        var root = SyntheticRoot();
+
+        var solution = SyntheticVisualBasicSolution(root, """
+            Public Module Helper
+                Public Sub DoIt()
+                End Sub
+            End Module
+
+            Public Class Caller
+                Public Sub Go()
+                    Helper.DoIt()
+                End Sub
+            End Class
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+        var occurrences = index.Documents.SelectMany(d => d.Occurrences).ToList();
+
+        var references = occurrences
+            .Where(o => o.Symbol == "Helper.DoIt()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0)
+            .Select(o => (Line: o.Range[0], Character: o.Range[1]))
+            .ToList();
+
+        // One call site, one reference. Zero-based: the call is on source line 7, and
+        // the canonical position is the identifier `DoIt` at column 15, not the
+        // receiver at column 8.
+        var reference = Assert.Single(references);
+        Assert.Equal((7, 15), reference);
+
+        // Folding a reference onto its name must not lose the receiver, which is a
+        // different symbol at a different position.
+        Assert.Contains(occurrences, o =>
+            o.Symbol == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) == 0);
+
+        // A VB declaration is two nodes, a block and the statement that opens it, and
+        // GetDeclaredSymbol answers on both. Exactly one definition, at the identifier:
+        // line 1, column 15 for `DoIt`, and line 0, column 14 for `Helper`.
+        var definition = Assert.Single(occurrences.Where(o =>
+            o.Symbol == "Helper.DoIt()" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+        Assert.Equal(1, definition.Range[0]);
+        Assert.Equal(15, definition.Range[1]);
+
+        var module = Assert.Single(occurrences.Where(o =>
+            o.Symbol == "Helper" && (o.SymbolRoles & (int)Scip.SymbolRole.Definition) != 0));
+        Assert.Equal(0, module.Range[0]);
+        Assert.Equal(14, module.Range[1]);
+    }
+
+    /// <summary>
+    /// An in-memory Visual Basic solution holding one file. VB has no #line directive,
+    /// so the document's own path is what positions map to, which is all this needs.
+    /// </summary>
+    private static Solution SyntheticVisualBasicSolution(string root, string source)
+    {
+        var workspace = new AdhocWorkspace();
+        var projectId = ProjectId.CreateNewId();
+        var documentId = DocumentId.CreateNewId(projectId);
+
+        var document = DocumentInfo.Create(
+            documentId,
+            "Caller.vb",
+            loader: TextLoader.From(TextAndVersion.Create(SourceText.From(source), VersionStamp.Default)),
+            filePath: Path.Combine(root, "App", "Caller.vb"));
+
+        var project = ProjectInfo.Create(
+            projectId,
+            VersionStamp.Default,
+            name: "SyntheticVb",
+            assemblyName: "SyntheticVb",
+            language: LanguageNames.VisualBasic,
+            filePath: Path.Combine(root, "App", "App.vbproj"),
+            documents: new[] { document },
+            metadataReferences: new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) })
+            .WithCompilationOptions(new Microsoft.CodeAnalysis.VisualBasic.VisualBasicCompilationOptions(
+                OutputKind.DynamicallyLinkedLibrary));
+
+        var solution = SolutionInfo.Create(
+            SolutionId.CreateNewId(),
+            VersionStamp.Default,
+            filePath: Path.Combine(root, "SyntheticVb.sln"),
+            projects: new[] { project });
+
+        return workspace.AddSolution(solution);
+    }
+
     private static string SyntheticRoot() =>
         Path.Combine(Path.GetTempPath(), "vela-synth-" + Guid.NewGuid().ToString("N")[..8]);
 

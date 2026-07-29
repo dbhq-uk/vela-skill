@@ -1,6 +1,10 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
+// Roslyn covers C# and Visual Basic, and the two syntax namespaces share most of their
+// type names, so VB is reached through an alias rather than a second using directive.
+using Vb = Microsoft.CodeAnalysis.VisualBasic.Syntax;
+
 using OccurrenceKey = (string Symbol, int Line, int Character, bool IsDefinition);
 
 namespace Vela.Harvest;
@@ -290,9 +294,36 @@ public static class ScipEmitter
         ParameterSyntax parameter => parameter.Identifier.SpanStart,
         TypeParameterSyntax typeParameter => typeParameter.Identifier.SpanStart,
         BaseNamespaceDeclarationSyntax ns => ns.Name.SpanStart,
-        // Anything else, including every VB declaration and anything C# grows later,
-        // keeps the position it had. A declaration recorded where it begins is a
-        // slightly blunt answer, never a false one.
+
+        // Visual Basic. A VB declaration is two nodes, a block and the statement that
+        // opens it, and GetDeclaredSymbol answers on both. They must therefore resolve
+        // to the SAME position or the per-document dedup cannot fold them and every VB
+        // declaration is recorded twice, so each block defers to its own statement.
+        Vb.MethodBlockBaseSyntax block => DeclarationAnchor(block.BlockStatement),
+        Vb.TypeBlockSyntax block => DeclarationAnchor(block.BlockStatement),
+        Vb.EnumBlockSyntax block => DeclarationAnchor(block.EnumStatement),
+        Vb.PropertyBlockSyntax block => DeclarationAnchor(block.PropertyStatement),
+        Vb.EventBlockSyntax block => DeclarationAnchor(block.EventStatement),
+        Vb.NamespaceBlockSyntax block => DeclarationAnchor(block.NamespaceStatement),
+
+        Vb.TypeStatementSyntax type => type.Identifier.SpanStart,
+        Vb.EnumStatementSyntax e => e.Identifier.SpanStart,
+        Vb.DelegateStatementSyntax d => d.Identifier.SpanStart,
+        Vb.MethodStatementSyntax method => method.Identifier.SpanStart,
+        Vb.SubNewStatementSyntax ctor => ctor.NewKeyword.SpanStart,
+        Vb.OperatorStatementSyntax op => op.OperatorToken.SpanStart,
+        Vb.PropertyStatementSyntax property => property.Identifier.SpanStart,
+        Vb.EventStatementSyntax e => e.Identifier.SpanStart,
+        Vb.AccessorStatementSyntax accessor => accessor.AccessorKeyword.SpanStart,
+        Vb.EnumMemberDeclarationSyntax member => member.Identifier.SpanStart,
+        Vb.NamespaceStatementSyntax ns => ns.Name.SpanStart,
+        Vb.ParameterSyntax parameter => parameter.Identifier.SpanStart,
+        Vb.TypeParameterSyntax typeParameter => typeParameter.Identifier.SpanStart,
+        // Locals, fields and parameters all name themselves through this node.
+        Vb.ModifiedIdentifierSyntax identifier => identifier.Identifier.SpanStart,
+
+        // Anything either language grows later keeps the position it had. A declaration
+        // recorded where it begins is a slightly blunt answer, never a false one.
         _ => node.SpanStart
     };
 
@@ -335,6 +366,19 @@ public static class ScipEmitter
         QualifiedNameSyntax qualified => qualified.Right,
         // global::App.Models and the like.
         AliasQualifiedNameSyntax alias => alias.Name,
+
+        // Visual Basic, whose syntax kinds mirror the C# ones. Without these the fold
+        // never happened in a VB project: the invocation, the member access and the
+        // identifier stayed three occurrences of one call, and refs roughly doubled its
+        // count for every qualified reference in the codebase.
+        Vb.InvocationExpressionSyntax invocation when invocation.Expression is not null
+            => NamingNode(invocation.Expression),
+        // Covers `x.Member` and, because VB spells the tail of a conditional access as a
+        // member access with no left-hand side, `x?.Member` as well.
+        Vb.MemberAccessExpressionSyntax access => access.Name,
+        Vb.ConditionalAccessExpressionSyntax conditional => NamingNode(conditional.WhenNotNull),
+        Vb.QualifiedNameSyntax qualified => qualified.Right,
+
         _ => node
     };
 
