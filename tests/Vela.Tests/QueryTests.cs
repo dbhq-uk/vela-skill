@@ -655,6 +655,64 @@ public class QueryTests
     }
 
     [Fact]
+    public async Task AnIndexOlderThanTheSourceItDescribes_ReportsDegraded()
+    {
+        // The index is built once and then answers from a file. Nothing invalidated it,
+        // so after any edit every verb kept answering at exit 0, with no banner, at line
+        // numbers that had moved. SKILL.md tells the agent to treat a stale index as
+        // incomplete, which made the agent's own safety check a no-op: the signal it
+        // was told to watch for could never fire.
+        //
+        // This is the cheap, honest mitigation, not incremental reindex: compare
+        // timestamps only, and say so loudly when the tree is newer than the index.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        var source = Path.Combine(repo.Path, "App", "Perfume.cs");
+        Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+        File.WriteAllText(source, "public class Perfume { }");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+
+        var builtAt = DateTime.UtcNow;
+        WriteIndexFile(indexPath, new HealthRecord(builtAt, null, false, null));
+
+        // Nothing has changed since the build, so nothing is claimed.
+        var fresh = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+        Assert.Equal(0, fresh.ExitCode);
+        Assert.DoesNotContain("INCOMPLETE", fresh.Output, StringComparison.Ordinal);
+
+        // Build output is not source and changes constantly; treating it as an edit
+        // would make every query degraded forever, which is a signal nobody reads.
+        var buildOutput = Path.Combine(repo.Path, "App", "obj", "Debug", "App.dll.cs");
+        Directory.CreateDirectory(Path.GetDirectoryName(buildOutput)!);
+        File.WriteAllText(buildOutput, "// generated");
+        File.SetLastWriteTimeUtc(buildOutput, builtAt.AddMinutes(5));
+
+        var stillFresh = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+        Assert.Equal(0, stillFresh.ExitCode);
+
+        // One edit to a real source file, and the answer can no longer be trusted.
+        File.SetLastWriteTimeUtc(source, builtAt.AddMinutes(5));
+
+        var stale = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
+        Assert.Equal(IndexHealth.ExitDegraded, stale.ExitCode);
+        Assert.Contains("INCOMPLETE", stale.Output, StringComparison.Ordinal);
+        Assert.Contains("stale", stale.Output, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("App/Perfume.cs", stale.Output, StringComparison.Ordinal);
+
+        // find answers from the same index, so it carries the same signal.
+        var staleFind = await InvokeAsync("find", "Status", "--solution", solution);
+        Assert.Equal(IndexHealth.ExitDegraded, staleFind.ExitCode);
+        Assert.Contains("stale", staleFind.Output, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task MissingIndex_ExitsNonZeroWithoutKillingTheProcess()
     {
         // The failure path here must return an exit code, never call

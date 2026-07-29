@@ -92,14 +92,15 @@ public static class Program
             var output = parseResult.InvocationConfiguration.Output;
             var error = parseResult.InvocationConfiguration.Error;
 
-            using var db = OpenIndex(parseResult.GetValue(solutionOption), error);
+            var solution = parseResult.GetValue(solutionOption);
+            using var db = OpenIndex(solution, error);
             if (db is null) return ExitCannotAnswer;
 
             // Deliberately not wrapped in a catch: IndexHealth.Read throws when the
             // health table is missing or its timestamp is unreadable, and both mean
             // the index cannot be vouched for. Swallowing that would report a clean
             // answer from an index nobody has checked.
-            var health = IndexHealth.Read(db);
+            var health = CheckStaleness(IndexHealth.Read(db), solution!);
             var value = parseResult.GetRequiredValue(argument);
             var hits = run(db, value);
 
@@ -124,10 +125,11 @@ public static class Program
             var output = parseResult.InvocationConfiguration.Output;
             var error = parseResult.InvocationConfiguration.Error;
 
-            using var db = OpenIndex(parseResult.GetValue(solutionOption), error);
+            var solution = parseResult.GetValue(solutionOption);
+            using var db = OpenIndex(solution, error);
             if (db is null) return ExitCannotAnswer;
 
-            var health = IndexHealth.Read(db);
+            var health = CheckStaleness(IndexHealth.Read(db), solution!);
             var symbols = FindQuery.Run(db, parseResult.GetRequiredValue(argument));
 
             // find answers with names rather than hits, but a degraded index makes
@@ -243,6 +245,28 @@ public static class Program
         return problems.Count > MaxDetailProblems
             ? $"{shown}; (+{problems.Count - MaxDetailProblems} more)"
             : shown;
+    }
+
+    /// <summary>
+    /// Folds staleness into the health record every verb reads, so an index that is
+    /// merely out of date reaches the caller through exactly the same banner and exit
+    /// code as one that failed to build.
+    ///
+    /// The walk is best effort by design. If the solution directory cannot be read at
+    /// all, the record is returned unchanged rather than thrown from: failing a query
+    /// because the freshness check could not run would be a worse outcome than the
+    /// answer it was checking.
+    /// </summary>
+    private static HealthRecord CheckStaleness(HealthRecord health, string solution)
+    {
+        try
+        {
+            return Staleness.Check(health, solution, IndexPaths.ForSolution(solution));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return health;
+        }
     }
 
     /// <summary>
