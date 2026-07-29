@@ -49,6 +49,35 @@ public class StalenessTests
     }
 
     [Fact]
+    public void Scan_StillSeesDotPrefixedFilesAndDirectories()
+    {
+        // The bounded walk replaced Directory.EnumerateFileSystemEntries, which asks
+        // for EnumerationOptions.Compatible and therefore AttributesToSkip = 0, with a
+        // FileSystemEnumerable whose default options skip Hidden and System. On Linux
+        // that is every dot-prefixed name; on Windows anything marked hidden. The skip
+        // list names the directories vela deliberately ignores, and a tooling directory
+        // that happens to begin with a dot is not on it: dropping those silently would
+        // narrow a Constraint 3 signal without saying so anywhere.
+        using var temp = new TempDirectory();
+        var builtAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var changed = builtAt.AddMinutes(5);
+
+        var generated = Path.Combine(temp.Path, ".generated");
+        Directory.CreateDirectory(generated);
+        WriteAt(Path.Combine(generated, "Foo.cs"), changed);
+
+        // A dot-prefixed file directly under the root, which is the same attribute in
+        // a different place.
+        WriteAt(Path.Combine(temp.Path, ".Hidden.cs"), builtAt);
+
+        var scan = Staleness.Scan(temp.Path, builtAt);
+
+        Assert.Equal(2, scan.FilesExamined);
+        Assert.Equal(1, scan.ChangedCount);
+        Assert.Equal(Path.GetFullPath(Path.Combine(generated, "Foo.cs")), scan.NewestPath);
+    }
+
+    [Fact]
     public void Scan_FilesExaminedDoesNotScaleWithIrrelevantFileCount()
     {
         using var small = new TempDirectory();

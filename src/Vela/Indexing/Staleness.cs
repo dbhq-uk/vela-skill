@@ -192,12 +192,33 @@ public static class Staleness
     /// that true: <see cref="FileSystemEntry.IsDirectory"/> comes from the directory
     /// listing the operating system already returned, not from a second call, which is
     /// the whole of what this walk needed to stop costing a stat per file.
+    ///
+    /// Both options are set deliberately, and neither is the default.
+    ///
+    /// <see cref="EnumerationOptions.AttributesToSkip"/> defaults to Hidden | System,
+    /// where the <see cref="Directory.EnumerateFileSystemEntries(string)"/> this
+    /// replaced asks for <see cref="EnumerationOptions.Compatible"/> and so skips
+    /// nothing. Leaving the default in place drops every dot-prefixed name on Linux and
+    /// macOS, and anything marked hidden on Windows, so a source file under a directory
+    /// like `.generated` would never be examined and an edit to it would leave every
+    /// verb answering exit 0 with no banner. What this walk ignores is the skip list
+    /// above, which is written down and explained; a silent second filter that nothing
+    /// documents is the Constraint 3 failure the whole check exists to prevent.
+    ///
+    /// <see cref="EnumerationOptions.IgnoreInaccessible"/> is true because the walk
+    /// must not throw on the query path. The catch around this call handles a directory
+    /// that cannot be opened at all; this handles an entry inside one that can.
     /// </summary>
     private static IEnumerable<Entry> EnumerateEntries(string directory) =>
         new FileSystemEnumerable<Entry>(
             directory,
             (ref FileSystemEntry e) => new Entry(e.ToFullPath(), e.IsDirectory, e.FileName.ToString()),
-            new EnumerationOptions { RecurseSubdirectories = false });
+            new EnumerationOptions
+            {
+                RecurseSubdirectories = false,
+                AttributesToSkip = 0,
+                IgnoreInaccessible = true
+            });
 }
 
 /// <summary>
