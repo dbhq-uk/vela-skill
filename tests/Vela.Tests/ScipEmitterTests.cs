@@ -223,55 +223,96 @@ public class ScipEmitterTests
     }
 
     [Fact]
-    public async Task EmitAsync_RecordsAFileOutsideTheRepositoryAsExternalRatherThanAsAGapInIt()
+    public async Task EmitAsync_KeepsAFirstPartyFileOutsideTheRepositoryAsALoudGap()
     {
-        // The defect, from a real 375,608 line solution. Microsoft.NET.Test.Sdk
-        // contributes a generated entry point that lives in the NuGet package cache,
-        // so SCIP cannot hold it (every document must sit under project_root) and vela
-        // correctly declined to emit it. Recording that as degradation made every query
-        // exit 3, permanently, on a stock .NET solution with nothing unusual about its
-        // layout. Nothing of the user's code was missing. A banner that fires when
-        // nothing is wrong teaches an agent to ignore the one signal Constraint 3
-        // depends on, so the two cases are now separate channels.
+        // Being outside the repository is not evidence that a file belongs to somebody
+        // else. `<Compile Include="..\..\Shared\Foo.cs" />` is an ordinary way to share
+        // source between two repositories, a .sln that references a project above its
+        // own root does the same thing a project at a time, and a submodule makes the
+        // parent repository's source "outside" because the innermost .git wins. All
+        // three are first-party code that is genuinely absent from the index, and
+        // demoting them to informational made a whole project vanish with health clean
+        // and exit 0, which is the exact failure Constraint 3 exists to forbid.
         using var repository = new TempDirectory();
         Directory.CreateDirectory(Path.Combine(repository.Path, ".git"));
 
         using var elsewhere = new TempDirectory();
-        var external = Path.Combine(elsewhere.Path, "microsoft.net.test.sdk", "18.4.0", "build", "Entry.cs");
+        var linked = Path.Combine(elsewhere.Path, "Shared", "Foo.cs");
 
         var solution = SyntheticSolution(repository.Path, $$"""
-            #line 1 "{{Escape(external)}}"
-            public class Entry { }
+            #line 1 "{{Escape(linked)}}"
+            public class Foo { }
             #line default
             """);
 
         var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
 
-        // Still recorded, and still named: the file is genuinely not in the index, and
-        // a reader asking why is owed the answer.
         Assert.Contains(index.Metadata.ToolInfo.Arguments,
-            a => a.StartsWith("external-document:", StringComparison.Ordinal) && a.Contains("Entry.cs"));
+            a => a.StartsWith("outside-project-root:", StringComparison.Ordinal) && a.Contains("Foo.cs"));
+        Assert.DoesNotContain(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("external-document:", StringComparison.Ordinal));
 
-        // But not through the channel that means "code of yours is missing".
+        var health = Program.BuildHealthRecord(index, Array.Empty<string>());
+        Assert.True(health.Degraded, "first-party code missing from the index is a gap in it");
+        Assert.Contains("Foo.cs", health.Detail);
+        Assert.Equal(0, Program.CountExternalDocuments(index));
+    }
+
+    [Fact]
+    public async Task EmitAsync_TreatsTheDotnetInstallationAsExternalRatherThanAsAGap()
+    {
+        // The other known location whose contents are nobody's first-party code: the
+        // shared runtime and the SDK vela is running on. Files from there are in the
+        // compilation, cannot sit under project_root, and are not a gap in anybody's
+        // repository, so they are named and counted rather than reported as missing.
+        using var repository = new TempDirectory();
+        Directory.CreateDirectory(Path.Combine(repository.Path, ".git"));
+
+        var runtime = new DirectoryInfo(System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory());
+        var shared = runtime.Parent?.Parent;
+
+        // A framework-dependent .NET lays the runtime out as
+        // <dotnet>/shared/<framework>/<version>, which is how the install root is
+        // found. Asserted rather than assumed, so an unexpected layout says so here
+        // instead of quietly testing nothing.
+        Assert.Equal("shared", shared?.Name);
+        var dotnetRoot = shared!.Parent!.FullName;
+
+        var fromRuntime = Path.Combine(runtime.FullName, "TheSharedFramework.cs");
+        var fromSdk = Path.Combine(dotnetRoot, "sdk", "10.0.100", "Sdks", "Microsoft.NET.Sdk", "Sdk.cs");
+
+        var solution = SyntheticSolution(repository.Path, $$"""
+            #line 1 "{{Escape(fromRuntime)}}"
+            public class FromRuntime { }
+            #line 1 "{{Escape(fromSdk)}}"
+            public class FromSdk { }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+
+        Assert.Contains(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("external-document:", StringComparison.Ordinal)
+                 && a.Contains("TheSharedFramework.cs"));
+        Assert.Contains(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("external-document:", StringComparison.Ordinal) && a.Contains("Sdk.cs"));
         Assert.DoesNotContain(index.Metadata.ToolInfo.Arguments,
             a => a.StartsWith("outside-project-root:", StringComparison.Ordinal));
 
         var health = Program.BuildHealthRecord(index, Array.Empty<string>());
         Assert.False(health.Degraded, health.Detail);
-        Assert.Null(health.Detail);
-
-        // Counted, so `vela index` can still say what it left out without a banner.
-        Assert.Equal(1, Program.CountExternalDocuments(index));
+        Assert.Equal(2, Program.CountExternalDocuments(index));
     }
 
     [Fact]
     public async Task EmitAsync_KeepsAFileItCannotProveIsSomebodyElsesAsALoudGap()
     {
-        // The other half of the split, and the half that must never soften. A solution
-        // that is not in a repository gives vela nothing to measure "outside" against,
-        // so a file it cannot place under project_root may well be the user's own code
-        // sitting one directory up. Recording that as informational would hide a real
-        // coverage gap, which is exactly the failure Constraint 3 exists to prevent.
+        // The other half of the split, and the half that must never soften. A file
+        // outside project_root that is in no package cache and no SDK may well be the
+        // user's own code sitting one directory up, and here there is not even a
+        // repository boundary to reason about. Recording that as informational would
+        // hide a real coverage gap, which is exactly what Constraint 3 exists to
+        // prevent.
         var root = SyntheticRoot();
         var outside = Path.Combine(SyntheticRoot(), "Lib", "External.cshtml");
 
@@ -894,10 +935,10 @@ public class ScipEmitterTests
 }
 
 /// <summary>
-/// The package cache half of the classification, which is the only thing that can tell
-/// a solution outside any repository that a file belongs to somebody else. These tests
-/// set NUGET_PACKAGES, which is process-wide, so they share the non-parallel collection
-/// with every other test that mutates the environment.
+/// The package cache half of the classification: one of the two locations that can show
+/// a file belongs to somebody else rather than being missing from the repository. These
+/// tests set NUGET_PACKAGES, which is process-wide, so they share the non-parallel
+/// collection with every other test that mutates the environment.
 /// </summary>
 [Collection(EnvironmentSensitive.Name)]
 public class ScipEmitterPackageCacheTests
@@ -932,6 +973,52 @@ public class ScipEmitterPackageCacheTests
         Assert.DoesNotContain(index.Metadata.ToolInfo.Arguments,
             a => a.StartsWith("outside-project-root:", StringComparison.Ordinal));
         Assert.False(Program.BuildHealthRecord(index, Array.Empty<string>()).Degraded);
+    }
+
+    [Fact]
+    public async Task EmitAsync_TreatsThePackageCacheAsExternalInsideARepositoryToo()
+    {
+        // The defect, in the shape it was found in: a 375,608 line solution at the root
+        // of its repository, and one file from the NuGet package cache. SCIP cannot
+        // hold it (every document must sit under project_root), so vela declined to
+        // emit it and recorded the omission through the one channel it had, which
+        // degrades the index. Nothing of the user's code was missing, and a banner that
+        // fires on a stock .NET solution on every query forever teaches an agent to
+        // ignore the one signal Constraint 3 depends on.
+        using var cache = new ScipEmitterTests.TempDirectory();
+        using var _ = new PackageCache(cache.Path);
+
+        using var repository = new ScipEmitterTests.TempDirectory();
+        Directory.CreateDirectory(Path.Combine(repository.Path, ".git"));
+
+        var external = Path.Combine(
+            cache.Path, "microsoft.net.test.sdk", "18.4.0", "build", "net8.0",
+            "Microsoft.NET.Test.Sdk.Program.cs");
+
+        var solution = ScipEmitterTests.SyntheticSolution(repository.Path, $$"""
+            #line 1 "{{ScipEmitterTests.Escape(external)}}"
+            public class AutoGeneratedProgram { }
+            #line default
+            """);
+
+        var index = (await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default)).Index;
+
+        // Still recorded, and still named: the file is genuinely not in the index, and
+        // a reader asking why is owed the answer.
+        Assert.Contains(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("external-document:", StringComparison.Ordinal)
+                 && a.Contains("Microsoft.NET.Test.Sdk.Program.cs"));
+
+        // But not through the channel that means "code of yours is missing".
+        Assert.DoesNotContain(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("outside-project-root:", StringComparison.Ordinal));
+
+        var health = Program.BuildHealthRecord(index, Array.Empty<string>());
+        Assert.False(health.Degraded, health.Detail);
+        Assert.Null(health.Detail);
+
+        // Counted, so `vela index` can still say what it left out without a banner.
+        Assert.Equal(1, Program.CountExternalDocuments(index));
     }
 
     [Fact]

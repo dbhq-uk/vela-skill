@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -498,18 +499,19 @@ public static class ScipEmitter
     }
 
     /// <summary>
-    /// A path that is outside the repository, and so is informational.
+    /// A path under a known package or SDK location, and so is informational.
     /// </summary>
     private const string ExternalDocumentPrefix = "external-document: ";
 
     /// <summary>
-    /// A path that is inside the repository, or that vela cannot show is outside it,
-    /// and outside project_root. A real coverage gap, and degrades the index.
+    /// A path outside project_root that vela cannot attribute to a package or the SDK.
+    /// A real coverage gap, and degrades the index.
     /// </summary>
     private const string OutsideProjectRootPrefix = "outside-project-root: ";
 
     /// <summary>
-    /// Where an index is rooted, and what vela can measure "outside" against.
+    /// Where an index is rooted, and which directories hold code that is nobody's
+    /// first-party source.
     ///
     /// project_root is the git repository root when the solution sits in a working
     /// tree, and the solution's own directory when it does not. The repository is the
@@ -518,38 +520,97 @@ public static class ScipEmitter
     /// linked file one directory up could not be a document at all and was reported as
     /// missing on every query.
     /// </summary>
-    private sealed record Roots(string ProjectRoot, string? RepositoryRoot, string? PackageCache)
+    private sealed record Roots(string ProjectRoot, IReadOnlyList<string> ExternalRoots)
     {
         public static Roots Resolve(string solutionDirectory)
         {
             var directory = Path.GetFullPath(solutionDirectory);
-            var repository = FindRepositoryRoot(directory);
-            return new Roots(repository ?? directory, repository, PackageCacheDirectory());
+            return new Roots(FindRepositoryRoot(directory) ?? directory, ExternalRootDirectories());
         }
 
         /// <summary>
         /// Whether a file vela could not place under project_root belongs to somebody
         /// else rather than being a gap in the repository being indexed.
         ///
-        /// Two things say so. The path is in the NuGet package cache, which NuGet owns
-        /// and nobody edits: the case that provoked all this is Microsoft.NET.Test.Sdk,
-        /// which contributes a generated entry point from the cache to every test
-        /// project. Or the solution is in a repository and the path is outside it,
-        /// which covers the package cache again and everything else besides.
+        /// A known package or SDK location is the only evidence of that: the NuGet
+        /// package cache, which NuGet owns and nobody edits (the case that provoked all
+        /// this is Microsoft.NET.Test.Sdk, which contributes a generated entry point
+        /// from the cache to every test project), or the .NET installation vela is
+        /// running on.
         ///
-        /// When there is no repository there is no boundary to be outside of, so
-        /// nothing but the package cache can be shown to be external and every other
-        /// path stays a loud gap. That is the conservative direction: a file one
-        /// directory up from a solution that is not in a repository may well be the
-        /// user's own code, and quietly demoting it would hide exactly what Constraint
-        /// 3 exists to surface.
+        /// Merely being outside the repository is NOT evidence, and reading it as such
+        /// swallowed first-party code. `&lt;Compile Include="..\..\Shared\Foo.cs" /&gt;`
+        /// is an ordinary way to share source between two repositories; a .sln can
+        /// reference a project above its own root, in which case every file of that
+        /// project is outside; and a submodule puts its parent repository outside,
+        /// because the innermost .git wins. All three are the user's own code, absent
+        /// from the index, and under Constraint 3 they have to stay loud.
         /// </summary>
-        public bool IsExternal(string path)
-        {
-            if (PackageCache is not null && RelativeWithinRoot(PackageCache, path) is not null)
-                return true;
+        public bool IsExternal(string path) =>
+            ExternalRoots.Any(root => RelativeWithinRoot(root, path) is not null);
 
-            return RepositoryRoot is not null && RelativeWithinRoot(RepositoryRoot, path) is null;
+        /// <summary>
+        /// The directories whose contents belong to a package manager or to the .NET
+        /// installation rather than to anybody's repository.
+        ///
+        /// The NuGet package cache is resolved the way NuGet itself resolves it:
+        /// NUGET_PACKAGES when it is set, ~/.nuget/packages otherwise. The .NET
+        /// installation is the one this process is running on, plus DOTNET_ROOT when it
+        /// names a different one. Anything that cannot be resolved is left out, and
+        /// files from it then stay loud: reporting a gap that is not one is recoverable,
+        /// silently dropping first-party code is not.
+        /// </summary>
+        private static IReadOnlyList<string> ExternalRootDirectories()
+        {
+            var roots = new List<string>();
+
+            var configuredCache = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
+            if (!string.IsNullOrWhiteSpace(configuredCache))
+            {
+                roots.Add(Path.GetFullPath(configuredCache));
+            }
+            else
+            {
+                var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                if (!string.IsNullOrEmpty(profile))
+                    roots.Add(Path.Combine(profile, ".nuget", "packages"));
+            }
+
+            var configuredDotnet = Environment.GetEnvironmentVariable("DOTNET_ROOT");
+            if (!string.IsNullOrWhiteSpace(configuredDotnet))
+                roots.Add(Path.GetFullPath(configuredDotnet));
+
+            var running = DotnetInstallDirectory();
+            if (running is not null) roots.Add(running);
+
+            return roots;
+        }
+
+        /// <summary>
+        /// The root of the .NET installation this process is running on.
+        ///
+        /// A framework-dependent .NET lays the runtime out as
+        /// &lt;dotnet&gt;/shared/&lt;framework&gt;/&lt;version&gt;, so the install root
+        /// is three directories above the runtime directory and the SDK, the targeting
+        /// packs and the shared framework all sit under it. The layout is checked
+        /// rather than assumed: on a host that does not match it (a self-contained
+        /// deployment, say) only the runtime directory itself is claimed, because
+        /// walking up from an arbitrary application directory could name a directory
+        /// holding the user's own code, which is the mistake this whole classification
+        /// exists to stop making.
+        /// </summary>
+        private static string? DotnetInstallDirectory()
+        {
+            var runtime = RuntimeEnvironment.GetRuntimeDirectory();
+            if (string.IsNullOrEmpty(runtime)) return null;
+
+            var version = new DirectoryInfo(runtime);
+            var shared = version.Parent?.Parent;
+
+            return shared?.Parent is not null
+                   && string.Equals(shared.Name, "shared", StringComparison.OrdinalIgnoreCase)
+                ? shared.Parent.FullName
+                : version.FullName;
         }
 
         /// <summary>
@@ -573,21 +634,6 @@ public static class ScipEmitter
             }
 
             return null;
-        }
-
-        /// <summary>
-        /// The NuGet package cache, resolved the way NuGet itself resolves it:
-        /// NUGET_PACKAGES when it is set, and ~/.nuget/packages otherwise. Null only
-        /// when there is no user profile to fall back to, in which case nothing is
-        /// recognised as cached and every out-of-root path stays loud.
-        /// </summary>
-        private static string? PackageCacheDirectory()
-        {
-            var configured = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
-            if (!string.IsNullOrWhiteSpace(configured)) return Path.GetFullPath(configured);
-
-            var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            return string.IsNullOrEmpty(profile) ? null : Path.Combine(profile, ".nuget", "packages");
         }
     }
 
