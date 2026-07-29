@@ -29,7 +29,9 @@ Use vela when:
 vela index
 ```
 
-Builds the index for the solution in the current directory. Takes tens of seconds on a large solution and is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once anything under the repository root is newer than it.
+Builds the index for the solution in the current directory. Takes tens of seconds on a large solution and is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once a watched file under the repository root is newer than it.
+
+**The watch is narrower than the index, so the absence of a banner is not proof the tree is unchanged.** What is watched is every `.cs`, `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`, `.slnx`, `.props` and `.targets` file under the repository root - the sources vela indexes, plus the project and solution files that decide what is compiled - and nothing under `bin`, `obj`, `.git`, `.vs`, `.idea`, `node_modules` or the index's own cache directory. A change anywhere else is invisible to the check: a checked-in generated artefact with another extension, a source file that only exists under an excluded directory, or a `Directory.Build.props` inside `obj`. If you have edited code yourself, or you know something ran that rewrites files, re-index rather than reading a quiet answer as confirmation the index is current.
 
 The index is rooted at the **repository root** - the working tree the solution sits in, or the solution's own directory when it is in no repository. So a `repo/src/App.sln` layout still covers `repo/tests/`, every path you are given is relative to that root, and that is the form `outline` expects back.
 

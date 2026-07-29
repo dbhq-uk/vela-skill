@@ -191,17 +191,35 @@ neither implements them nor, yet, imports them.
 ## Open questions
 
 - **Staleness policy.** Settled for now at the cheap end: the index records when it
-  was built, and every query compares that against the newest modification time under
-  the repository root the index was built against, skipping `bin`, `obj` and `.git`.
-  That root is the one place both the emitter and the check read it from, so the files
-  that can be in the index and the files that can make it stale are the same set: they
-  were not, and a `repo/src/App.sln` layout had everything under `repo/tests/` indexed
-  and unwatched. Anything newer degrades the answer, which means both the banner and
-  exit code 3. It is timestamps only - no file is read and nothing is hashed - so it is
-  coarse: it cannot say whether the symbol you asked about was the one that changed. A
-  git ref and per-file hashes would narrow that, and are worth doing only alongside
-  incremental reindex. The walk is also unbounded, which is the next thing to fix: it is
-  correct and it is paid on every verb.
+  was built, and every query compares that against the newest modification time of the
+  files it watches under the repository root the index was built against. Anything
+  newer degrades the answer, which means both the banner and exit code 3.
+
+  The root is the one place both the emitter and the check read from, so nothing can
+  be indexed from outside the tree the check walks: a `repo/src/App.sln` layout used
+  to have everything under `repo/tests/` indexed and unwatched, and that is fixed. The
+  watched *set* is a different matter, and it is a proper subset of the indexed set.
+  Only files vela could index or that decide what is compiled are examined - `.cs`,
+  `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`, `.slnx`, `.props`,
+  `.targets` - and `bin`, `obj`, `.git`, `.vs`, `.idea`, `node_modules` and the cache
+  directory are never descended into. On the real solution 365 indexed documents sit
+  under `bin` and `obj` alone, and a change to one of those does not degrade anything.
+  The exclusions are deliberate: build output changes on every build and `.git` on
+  every command, so watching them would leave every query permanently degraded, which
+  is a warning nobody reads. The cost of that narrowing is stated plainly in the
+  README and in SKILL.md, because an agent must not read the absence of a banner as
+  proof the tree is unchanged.
+
+  The walk used to be unbounded, and stating all 50,906 files under the project root
+  was what made a 1.0s `def` and a 3.4s `refs` out of a 0.12s process floor. It is
+  now bounded by exactly the rules above, and the per-query figures under *Why not
+  the alternatives* were measured after that fix.
+
+  It is timestamps only - no file is read and nothing is hashed - so it stays coarse:
+  it cannot say whether the symbol you asked about was the one that changed. A git ref
+  and per-file hashes would narrow that, and would also let the watched set be the
+  indexed set again rather than a cheaper approximation of it. Both are worth doing
+  only alongside incremental reindex.
 - **Incremental reindex.** Full index of a 10-project solution takes ~87s with
   `scip-dotnet` as a reference point. Whether per-project incremental work is worth
   the complexity is deferred until the full path is proven.

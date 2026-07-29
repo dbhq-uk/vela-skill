@@ -93,7 +93,7 @@ vela find   Repository
 
 Paths are relative to the **repository root** - the working tree the solution sits in, or the solution's own directory when it is in no repository. That is what the index is rooted at, so a `repo/src/App.sln` layout still covers `repo/tests/`, and it is what `outline` expects and what every answer prints.
 
-The index is a snapshot. If anything under that same root has changed since it was built, every verb says so and exits 3.
+The index is a snapshot. Every query compares its build time against the files under that same root that vela watches, and if one of them is newer, every verb says so and exits 3. The watched set is the sources vela indexes plus the files that decide what is compiled - `.cs`, `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`, `.slnx`, `.props` and `.targets` - and it skips `bin`, `obj`, `.git`, `.vs`, `.idea`, `node_modules` and the cache directory the index itself lives in. It is deliberately a subset of what is indexed, because walking everything cost more than the queries did. So a quiet answer means no watched file has changed; it is not proof that nothing has.
 
 `vela index` may also print a plain line saying that some documents were not indexed, for example `1 document(s) contributed by a NuGet package or the .NET SDK were not indexed`. That is information, not a warning: those files live in the package cache or the .NET installation, none of your code is missing, and the exit code stays 0. `vela index --stats` lists them by path. A file that vela cannot attribute to a package or the SDK is a different matter and is reported as a gap, with the banner and exit 3.
 
