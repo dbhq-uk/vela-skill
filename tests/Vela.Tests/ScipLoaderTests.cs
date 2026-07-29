@@ -139,6 +139,69 @@ public class ScipLoaderTests
         Assert.Contains("delete the file and re-index", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void ExternalDocumentPaths_RecoverWhichFilesWereSkipped_NotJustHowMany()
+    {
+        // A count with no way to see what it counted is not diagnosable. The paths
+        // existed only in the emitted index's tool arguments, which are never persisted
+        // and never written out as SCIP, so once `vela index` had printed "1
+        // document(s) ... were not indexed" nothing could say which one. If the
+        // classification is ever wrong about a file, that is the difference between a
+        // five-second check and a hole in the index nobody can explain.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ToolInfo = new Scip.ToolInfo { Name = "vela", Version = "0.0.0" } }
+        };
+
+        index.Metadata.ToolInfo.Arguments.Add("external-document: /cache/microsoft.net.test.sdk/Program.cs");
+        index.Metadata.ToolInfo.Arguments.Add("external-document: /dotnet/shared/Framework.cs");
+
+        // The degrading channel is a different question with a different answer, and it
+        // already reaches the reader through the banner.
+        index.Metadata.ToolInfo.Arguments.Add("outside-project-root: /elsewhere/Shared/Foo.cs");
+        index.Metadata.ToolInfo.Arguments.Add("load-failure: App.csproj did not load");
+
+        var paths = Program.ExternalDocumentPaths(index);
+
+        Assert.Equal(
+            new[] { "/cache/microsoft.net.test.sdk/Program.cs", "/dotnet/shared/Framework.cs" },
+            paths);
+
+        // The number `vela index` prints is derived from this same list, so the count
+        // and the list can never disagree.
+        Assert.Equal(paths.Count, Program.CountExternalDocuments(index));
+    }
+
+    [Fact]
+    public void ExternalDocuments_ArePersistedWithTheIndexAndNamedByStats()
+    {
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        // Nothing was skipped, so nothing is said. A stock solution's --stats output is
+        // exactly what it was, which is what AGENTS.md documents as the coverage check.
+        var quiet = IndexStatistics.Render(IndexStatistics.Read(db));
+        Assert.DoesNotContain("external", quiet, StringComparison.OrdinalIgnoreCase);
+
+        var skipped = new[]
+        {
+            "/home/dev/.nuget/packages/microsoft.net.test.sdk/18.4.0/build/net8.0/Microsoft.NET.Test.Sdk.Program.cs",
+            "/usr/share/dotnet/shared/Microsoft.NETCore.App/10.0.0/Generated.cs"
+        };
+
+        ExternalDocuments.Write(db, skipped);
+
+        // Persisted, so the answer outlives the process that worked it out.
+        var stats = IndexStatistics.Read(db);
+        Assert.Equal(skipped, stats.ExternalDocuments);
+
+        var rendered = IndexStatistics.Render(stats);
+        Assert.Contains("external documents", rendered, StringComparison.Ordinal);
+        foreach (var path in skipped)
+            Assert.Contains(path, rendered, StringComparison.Ordinal);
+    }
+
     private static Scip.Index MinimalIndex()
     {
         var index = new Scip.Index();

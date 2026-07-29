@@ -249,6 +249,9 @@ public static class Program
                 db.Open();
                 Schema.Create(db);
                 ScipLoader.Load(db, index, emitted.GeneratedDocuments);
+
+                var external = ExternalDocumentPaths(index);
+                ExternalDocuments.Write(db, external);
                 IndexHealth.Write(db, health);
 
                 output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
@@ -257,13 +260,20 @@ public static class Program
                 // number is worth knowing, but they were never this index's to hold, so
                 // saying it through the "!!" banner below would raise the exit code and
                 // teach the reader to ignore the banner (Constraint 3 cuts both ways).
-                var external = CountExternalDocuments(index);
-                if (external > 0)
+                //
+                // The sentence claims only what was checked. A document reaches this
+                // count by living under the NuGet package cache or under the .NET
+                // installation, and nothing else does: a file merely outside the
+                // repository is first-party code until shown otherwise and goes to the
+                // banner. So naming those two places is exact, where "from outside this
+                // repository" was a wider claim than the test behind it.
+                if (external.Count > 0)
                 {
-                    output.WriteLine($"{external} document(s) from outside this repository were not "
-                                   + "indexed, such as source the .NET SDK contributes from the NuGet "
-                                   + "package cache. None of this repository's code is missing because "
-                                   + "of them.");
+                    output.WriteLine($"{external.Count} document(s) contributed by a NuGet package or "
+                                   + "the .NET SDK were not indexed. They live in the package cache or "
+                                   + "the .NET installation, not in this repository, so none of your "
+                                   + "code is missing because of them. Run vela index --stats to list "
+                                   + "them.");
                 }
 
                 if (parseResult.GetValue(statsOption))
@@ -333,19 +343,32 @@ public static class Program
 
     /// <summary>
     /// How many documents were left out of an index because they belong to somebody
-    /// else: source contributed from the NuGet package cache, or anything else outside
-    /// the repository being indexed.
+    /// else: source contributed from the NuGet package cache or from the .NET
+    /// installation vela is running on.
     ///
     /// This is reported rather than warned about. The count is worth printing, because
     /// a number that is unexpectedly large is worth someone looking at, but it is not a
     /// reason to call the index incomplete and it must never raise the exit code.
     /// </summary>
-    public static int CountExternalDocuments(Scip.Index index)
+    public static int CountExternalDocuments(Scip.Index index) => ExternalDocumentPaths(index).Count;
+
+    /// <summary>
+    /// Which documents were left out, not merely how many.
+    ///
+    /// The count alone was not diagnosable. These paths live in the emitted index's tool
+    /// arguments, which are never persisted and never written out as SCIP, so `vela
+    /// index` printed a number and then destroyed the only record of what it had
+    /// counted. They are pulled out here and stored with the index instead.
+    /// </summary>
+    public static IReadOnlyList<string> ExternalDocumentPaths(Scip.Index index)
     {
         var arguments = index.Metadata?.ToolInfo?.Arguments;
-        if (arguments is null) return 0;
+        if (arguments is null) return Array.Empty<string>();
 
-        return arguments.Count(a => a.StartsWith(ExternalDocumentPrefix, StringComparison.Ordinal));
+        return arguments
+            .Where(a => a.StartsWith(ExternalDocumentPrefix, StringComparison.Ordinal))
+            .Select(a => a[ExternalDocumentPrefix.Length..].Trim())
+            .ToList();
     }
 
     private static string Summarise(IReadOnlyList<string> problems)

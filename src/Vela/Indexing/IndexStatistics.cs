@@ -4,7 +4,8 @@ using Microsoft.Data.Sqlite;
 namespace Vela.Indexing;
 
 /// <summary>
-/// What an index actually contains, counted rather than assumed.
+/// What an index actually contains, counted rather than assumed, and the one set of
+/// files it deliberately does not contain.
 /// </summary>
 public record IndexStats(
     int Documents,
@@ -12,7 +13,8 @@ public record IndexStats(
     int RazorDocuments,
     int Occurrences,
     int RazorOccurrences,
-    int Definitions);
+    int Definitions,
+    IReadOnlyList<string> ExternalDocuments);
 
 /// <summary>
 /// The numbers behind `vela index --stats`.
@@ -35,7 +37,8 @@ public static class IndexStatistics
             JOIN document d ON d.id = o.document_id
             WHERE d.language = 'razor'
             """),
-        Definitions: Count(db, "SELECT COUNT(*) FROM occurrence WHERE is_definition = 1"));
+        Definitions: Count(db, "SELECT COUNT(*) FROM occurrence WHERE is_definition = 1"),
+        ExternalDocuments: Vela.Indexing.ExternalDocuments.Read(db));
 
     public static string Render(IndexStats stats)
     {
@@ -46,6 +49,18 @@ public static class IndexStatistics
         sb.AppendLine($"occurrences          : {stats.Occurrences}");
         sb.AppendLine($"  in razor views     : {stats.RazorOccurrences}");
         sb.AppendLine($"  definitions        : {stats.Definitions}");
+
+        // Named, not just counted. This is the only place the skipped paths can be
+        // seen, and --stats is where somebody has already asked what is in the index,
+        // so the whole list is printed rather than a sample: a list with an unexplained
+        // tail is the problem this is fixing. The set is small by construction, because
+        // only a package or the SDK can put a file in it.
+        if (stats.ExternalDocuments.Count > 0)
+        {
+            sb.AppendLine($"external documents   : {stats.ExternalDocuments.Count}   "
+                        + "(from a NuGet package or the .NET SDK, not indexed)");
+            foreach (var path in stats.ExternalDocuments) sb.AppendLine("  " + path);
+        }
 
         // A zero here is the silent regression this whole option exists to catch, so it
         // is called out rather than left as a number among numbers.

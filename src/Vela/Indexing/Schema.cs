@@ -17,11 +17,11 @@ public static class Schema
     ///
     /// 0 is what an unstamped database reads, which is every index built before this
     /// existed, so it can never be a valid version. 1 was the schema without the
-    /// generated column. 2 adds it. A future change bumps this and nothing else: there
-    /// is no migration, because re-indexing takes seconds and rebuilds from the truth
-    /// rather than from a guess about what the old rows meant.
+    /// generated column. 2 adds it. 3 adds external_document. A future change bumps this
+    /// and nothing else: there is no migration, because re-indexing takes seconds and
+    /// rebuilds from the truth rather than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 2;
+    public const int Version = 3;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -67,6 +67,16 @@ public static class Schema
             CREATE INDEX IF NOT EXISTS ix_occurrence_document ON occurrence(document_id);
 
             CREATE VIRTUAL TABLE IF NOT EXISTS symbol_fts USING fts5(symbol);
+
+            -- The files this index deliberately does not hold: source contributed from
+            -- the NuGet package cache or from the .NET installation, which cannot sit
+            -- under project_root and is nobody's first-party code. Not a gap, so not in
+            -- index_health, but recorded rather than counted and discarded: `vela index`
+            -- printed a number and threw the paths away, leaving nothing to check if the
+            -- classification was ever wrong about a file.
+            CREATE TABLE IF NOT EXISTS external_document (
+                path TEXT NOT NULL
+            );
 
             -- Constraint 3: an index that could not be built completely says so.
             CREATE TABLE IF NOT EXISTS index_health (
