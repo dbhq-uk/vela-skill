@@ -131,6 +131,11 @@ public class ScipImportEndToEndTests
         Assert.Equal(4, report.UnspecifiedEncodingDocuments);
         Assert.Equal(0, report.UnconvertedDocuments);
 
+        // And no two of its 159 symbols arrive at one display name, so the collision
+        // report stays quiet on a real index. A notice printed on every import is a
+        // notice nobody reads by the time it matters.
+        Assert.Empty(report.CollidingDisplayNames);
+
         // Hazard 3: every path is rebased onto vela's root, so a hit can be opened from
         // the repository rather than from the directory the indexer happened to run in.
         Assert.Equal(

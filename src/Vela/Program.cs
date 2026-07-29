@@ -509,6 +509,25 @@ public static class Program
                                + "optional, and no name was invented for them.");
             }
 
+            // A name doing double duty, which nothing else in vela can see. The ambiguity
+            // block that would otherwise report over-answering groups by exactly this
+            // name, so it presents the two symbols as one and the count says nothing.
+            if (report.CollidingDisplayNames.Count > 0)
+            {
+                var names = string.Join(", ", report.CollidingDisplayNames.Take(MaxDetailProblems));
+                if (report.CollidingDisplayNames.Count > MaxDetailProblems)
+                    names += $", (+{report.CollidingDisplayNames.Count - MaxDetailProblems} more)";
+
+                output.WriteLine($"{report.CollidingDisplayNames.Count} name(s) in this import are reached "
+                               + "from more than one distinct SCIP symbol, so a query for one of them answers "
+                               + "for both and cannot say it did: " + names + ".");
+                output.WriteLine("A module descriptor loses its file extension and any dot still left in a "
+                               + "descriptor becomes an underscore, so a folder utils/ beside a file utils.ts, "
+                               + "or a module a.b.ts beside a module a_b.ts, arrive at one name - and so do "
+                               + "their members. Nothing was lost: each occurrence still carries the moniker "
+                               + "it came with, in occurrence.scip_symbol.");
+            }
+
             if (report.UnparsedMonikers > 0)
             {
                 output.WriteLine($"{report.UnparsedMonikers} occurrence(s) carry a symbol that does not fit "

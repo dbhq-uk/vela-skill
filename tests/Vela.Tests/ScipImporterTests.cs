@@ -557,6 +557,94 @@ public class ScipImporterTests
     }
 
     // ================================================================================
+    // Two symbols arriving at one display name
+    // ================================================================================
+
+    [Fact]
+    public void Import_ReportsADisplayNameReachedFromMoreThanOneDistinctScipSymbol()
+    {
+        // The derivation can make two symbols one name two ways: a module descriptor
+        // loses its file extension, so a folder `utils/` and a file `utils.ts` beside it
+        // both become `utils`, and any dot still left in a descriptor becomes an
+        // underscore, so a module `a.b.ts` and a module `a_b.ts` both become `a_b`.
+        //
+        // Neither was visible. The defence for the second was that over-answering "is
+        // visible in the ambiguity block", but Ambiguity groups by the display name, so
+        // the two symbols are presented as ONE, the impact count silently overstates and
+        // nothing anywhere says a name is doing double duty. The importer holds both
+        // sides at the moment it derives the name, so it is the only place that can tell.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+        };
+
+        var doc = new Scip.Document { RelativePath = "a.ts", Language = "typescript" };
+        foreach (var moniker in new[]
+                 {
+                     // A barrel file beside the folder it re-exports: src/utils.ts and
+                     // src/utils/one.ts. This is an ordinary TypeScript layout.
+                     "scip-x . . . src/`utils.ts`/one().",
+                     "scip-x . . . src/utils/one().",
+
+                     // A dot in a module name that no extension rule accounts for.
+                     "scip-x . . . `a.b.ts`/two().",
+                     "scip-x . . . `a_b.ts`/two()."
+                 })
+        {
+            doc.Occurrences.Add(new Scip.Occurrence { Symbol = moniker, Range = { 0, 0, 3 } });
+        }
+        index.Documents.Add(doc);
+
+        using var db = Fresh();
+        var report = ScipImporter.Import(db, index, "/repo");
+
+        Assert.Equal(new[] { "a_b.two", "src.utils.one" }, report.CollidingDisplayNames);
+
+        // Nothing is lost, which is why this is a report and not a refusal: the moniker
+        // each occurrence arrived with is still in the row beside the display name, so
+        // which is which is there to be read.
+        Assert.Equal(4, Convert.ToInt32(Scalar(db, "SELECT COUNT(DISTINCT scip_symbol) FROM occurrence")));
+        Assert.Equal(2, Convert.ToInt32(Scalar(db, "SELECT COUNT(DISTINCT symbol) FROM occurrence")));
+    }
+
+    [Fact]
+    public void Import_DoesNotReportTheMergesItDocumentsAsCollisions()
+    {
+        // The rule has to stay quiet on the merges the derivation documents, or it is the
+        // crying-wolf failure again: a method loses its signature, so two overloads share
+        // a name, and a .NET type loses its generic arity, so ILogger and ILogger`1 share
+        // one - both deliberate, both stated, and both present in any real .NET index.
+        // What is reported is two DIFFERENT descriptor names becoming one segment, which
+        // is the thing no rule intended.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+        };
+
+        var doc = new Scip.Document { RelativePath = "a.cs", Language = "csharp" };
+        foreach (var moniker in new[]
+                 {
+                     "scip-dotnet nuget App 1.0.0.0 App/Svc#Publish().",
+                     "scip-dotnet nuget App 1.0.0.0 App/Svc#Publish(+1).",
+                     "scip-dotnet nuget L 1.0.0.0 Microsoft/Extensions/Logging/ILogger#",
+                     "scip-dotnet nuget L 1.0.0.0 Microsoft/Extensions/Logging/`ILogger``1`#",
+
+                     // The package is dropped from the name too, so the same code indexed
+                     // under two package names is one symbol and not a collision.
+                     "scip-dotnet nuget App 2.0.0.0 App/Svc#Publish()."
+                 })
+        {
+            doc.Occurrences.Add(new Scip.Occurrence { Symbol = moniker, Range = { 0, 0, 3 } });
+        }
+        index.Documents.Add(doc);
+
+        using var db = Fresh();
+        var report = ScipImporter.Import(db, index, "/repo");
+
+        Assert.Empty(report.CollidingDisplayNames);
+    }
+
+    // ================================================================================
     // Importing the same .scip again: --replace
     // ================================================================================
 

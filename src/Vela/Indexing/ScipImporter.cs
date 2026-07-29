@@ -8,10 +8,10 @@ namespace Vela.Indexing;
 /// <summary>
 /// What one import actually did, so the caller can say it out loud.
 ///
-/// Every number here except <see cref="Documents"/> and <see cref="Occurrences"/> counts
+/// Every field here except <see cref="Documents"/> and <see cref="Occurrences"/> says
 /// something the reader would otherwise never learn: Constraint 3 is about an incomplete
-/// index looking like a complete one, and an import has four separate ways to be less
-/// than the file it read.
+/// index looking like a complete one, and an import has several separate ways of being
+/// less, or less exact, than the file it read.
 /// </summary>
 /// <param name="Problems">
 /// The ones that mean code is missing from the index: a document whose file lies outside
@@ -68,6 +68,13 @@ namespace Vela.Indexing;
 /// a symbol looks like, and it is also what a broken indexer run looks like. The two are
 /// indistinguishable from here, so both numbers are printed and neither is assumed.
 /// </param>
+/// <param name="CollidingDisplayNames">
+/// Display names this import reached from more than one distinct SCIP symbol, ordered
+/// ordinally. These are the names where a query over-answers: `refs` on one of them
+/// returns every occurrence of both symbols, and the ambiguity block cannot say so
+/// because it groups by exactly this name. Named rather than counted, because the fix is
+/// to look at the two monikers in occurrence.scip_symbol, which is where they still are.
+/// </param>
 public sealed record ImportReport(
     string Tool,
     int Documents,
@@ -79,6 +86,7 @@ public sealed record ImportReport(
     int ReplacedDocuments,
     int ReplacedOccurrences,
     int ReplacementOccurrences,
+    IReadOnlyList<string> CollidingDisplayNames,
     IReadOnlyList<string> Problems)
 {
     public bool Degraded => Problems.Count > 0;
@@ -255,6 +263,8 @@ public static class ScipImporter
         private readonly HashSet<string> takenPaths = new(StringComparer.Ordinal);
         private readonly HashSet<string> writtenPaths = new(StringComparer.Ordinal);
         private readonly HashSet<string> replacedNames = new(StringComparer.Ordinal);
+        private readonly Dictionary<string, string> nameKeys = new(StringComparer.Ordinal);
+        private readonly SortedSet<string> collidingNames = new(StringComparer.Ordinal);
         private readonly List<string> problems = new();
 
         private string foreignRoot = "";
@@ -459,6 +469,13 @@ public static class ScipImporter
                 var moniker = occurrence.Symbol;
 
                 string display;
+
+                // What the display name would be if neither rule that can turn two
+                // descriptor names into one segment had run. Two monikers whose display
+                // names match and whose keys do not were made one name by a rule rather
+                // than by being one name: see NoteName.
+                string key;
+
                 if (moniker.Length == 0)
                 {
                     // The contract for an occurrence the index gave no symbol: stored,
@@ -466,6 +483,7 @@ public static class ScipImporter
                     // because there is no name. No query that matches on a name can
                     // ever return it, and the count is reported.
                     display = "";
+                    key = "";
                     unnamed++;
                 }
                 else if (moniker.StartsWith(LocalPrefix, StringComparison.Ordinal))
@@ -474,13 +492,19 @@ public static class ScipImporter
                         .GroupBy(s => s.Symbol, StringComparer.Ordinal)
                         .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
-                    display = LocalName(path, moniker, described);
+                    (display, key) = LocalName(path, moniker, described);
                 }
                 else
                 {
                     display = MonikerName.For(moniker);
                     if (ReferenceEquals(display, moniker) || display == moniker) unparsed++;
+
+                    // A moniker that did not parse stands in for itself, so it is its own
+                    // key: nothing was collapsed, and two of them are two names.
+                    key = MonikerName.CollisionKeyFor(moniker) ?? moniker;
                 }
+
+                NoteName(display, key);
 
                 var range = RangeOf(occurrence);
                 var enclosing = EnclosingEndOf(occurrence);
@@ -619,6 +643,54 @@ public static class ScipImporter
         }
 
         /// <summary>
+        /// Notices when a display name is reached from two symbols that are not the same
+        /// symbol.
+        ///
+        /// The derivation can make two names one two ways: <see
+        /// cref="SourceFile.WithoutExtension"/> takes a file extension off a module
+        /// descriptor, so a folder `utils/` and a file `utils.ts` beside it both become
+        /// `utils`, and <see cref="MonikerName.OneSegment"/> turns any dot still left in a
+        /// descriptor into an underscore, so a module `a.b.ts` and a module `a_b.ts` both
+        /// become `a_b` - and so do all their members. Neither was visible anywhere. The
+        /// defence for the second was that over-answering shows up in the ambiguity block,
+        /// but <see cref="Query.Ambiguity"/> groups by the display name, so the two
+        /// symbols are presented as ONE, `impact` overstates by however many the other one
+        /// has, and nothing says a name is doing double duty.
+        ///
+        /// The importer is the only thing that can tell, because it holds the moniker and
+        /// the derived name at the same moment, so it counts them here rather than
+        /// changing the naming rule. Nothing is lost either way: occurrence.scip_symbol
+        /// holds each moniker exactly as it arrived.
+        ///
+        /// <b>It has to stay quiet about the merges the derivation documents</b>, or it is
+        /// the crying-wolf failure again. A method loses its signature, a .NET type loses
+        /// its generic arity and the package is dropped, so `Publish(+1).` and
+        /// `Publish().`, and ``ILogger`1`` and `ILogger`, are one name on purpose and are
+        /// in every real .NET index. The key is therefore the descriptor names with those
+        /// merges already applied and the two collapsing rules NOT applied: same names,
+        /// documented merge, silence; different names, collision, reported.
+        ///
+        /// <b>What it does not report.</b> The suffix is not part of the key, so a type
+        /// and a term of one name - `interface Foo` beside `const Foo`, which TypeScript's
+        /// declaration merging makes ordinary - are one display name and no notice. That
+        /// is inherent rather than incidental: vela's names have one namespace and SCIP's
+        /// have several, so there is nowhere to put the difference and no rule change would
+        /// help. Reporting it would fire on most TypeScript imports.
+        /// </summary>
+        private void NoteName(string display, string key)
+        {
+            if (display.Length == 0) return;
+
+            if (!nameKeys.TryGetValue(display, out var first))
+            {
+                nameKeys[display] = key;
+                return;
+            }
+
+            if (!string.Equals(first, key, StringComparison.Ordinal)) collidingNames.Add(display);
+        }
+
+        /// <summary>
         /// Notes a file this import could not place, in the same transaction as
         /// everything else, so a rollback takes the note with it.
         ///
@@ -640,7 +712,8 @@ public static class ScipImporter
             committed = true;
             return new ImportReport(
                 tool, documents, occurrences, unnamed, unconverted, unspecifiedEncoding, unparsed,
-                replacedDocuments, replacedOccurrences, replacementOccurrences, problems);
+                replacedDocuments, replacedOccurrences, replacementOccurrences,
+                collidingNames.ToList(), problems);
         }
 
         public void Dispose()
@@ -738,20 +811,34 @@ public static class ScipImporter
     /// dot, so no pattern anyone would type ever selected it: `local 2` failed on the
     /// '#' before it, and it looked nothing like the rest of the index besides.
     /// </summary>
-    private static string LocalName(
+    /// <returns>
+    /// The display name, and the key that says which of two equal display names were
+    /// really the same symbol. The key is the document's path as it arrived - before
+    /// <see cref="DottedPath"/>, which is where a local's name can collapse - and then
+    /// the same suffix the display name carries. So two documents whose dotted paths
+    /// collide give one display name and two keys, and two locals of one document that
+    /// genuinely share a name give one of each.
+    /// </returns>
+    private static (string Display, string Key) LocalName(
         string documentPath, string moniker, Dictionary<string, Scip.SymbolInformation> described)
     {
-        var document = DottedPath(documentPath);
-
+        string suffix;
         if (!described.TryGetValue(moniker, out var information) || information.DisplayName.Length == 0)
-            return document + ".local" + moniker[LocalPrefix.Length..];
+        {
+            suffix = "local" + moniker[LocalPrefix.Length..];
+        }
+        else
+        {
+            // A moniker that does not parse stands in for itself, spaces and all, and
+            // this is a name rather than a moniker, so it is the display name alone in
+            // that case.
+            var enclosingName = MonikerName.For(information.EnclosingSymbol);
+            var enclosing = enclosingName == information.EnclosingSymbol ? "" : enclosingName + ".";
 
-        // A moniker that does not parse stands in for itself, spaces and all, and this
-        // is a name rather than a moniker, so it is the display name alone in that case.
-        var enclosingName = MonikerName.For(information.EnclosingSymbol);
-        var enclosing = enclosingName == information.EnclosingSymbol ? "" : enclosingName + ".";
+            suffix = enclosing + MonikerName.OneSegment(information.DisplayName);
+        }
 
-        return document + "." + enclosing + MonikerName.OneSegment(information.DisplayName);
+        return (DottedPath(documentPath) + "." + suffix, documentPath + "\0" + suffix);
     }
 
     /// <summary>
@@ -1000,29 +1087,77 @@ public static class MonikerName
     /// </summary>
     public static string For(string moniker)
     {
-        if (moniker.Length == 0 || moniker.StartsWith("local ", StringComparison.Ordinal)) return moniker;
+        var descriptors = Parse(moniker);
+        if (descriptors is null) return moniker;
+
+        var name = new StringBuilder();
+        for (var i = 0; i < descriptors.Count; i++)
+        {
+            if (i > 0) name.Append('.');
+
+            // A namespace descriptor is what an indexer uses for a module, and a module's
+            // name is a file name in every language with no separate namespace of its
+            // own, so the file extension comes off there and nowhere else.
+            var descriptor = descriptors[i];
+            name.Append(OneSegment(descriptor.IsNamespace
+                ? SourceFile.WithoutExtension(descriptor.Name)
+                : descriptor.Name));
+        }
+
+        return name.ToString();
+    }
+
+    /// <summary>
+    /// The descriptor names of a moniker as they arrived, before either rule that can
+    /// turn two of them into one segment, or null when the moniker does not parse.
+    ///
+    /// This is what lets an importer tell a collision from a documented merge. Two
+    /// monikers that reach one display name AND have the same names here differ only by
+    /// something the derivation drops on purpose: the package, a method's disambiguator,
+    /// a .NET generic's arity. Two that reach one display name with DIFFERENT names here
+    /// were made one by <see cref="SourceFile.WithoutExtension"/> or by
+    /// <see cref="OneSegment"/>, which no rule intended and nothing else can see.
+    /// </summary>
+    internal static string? CollisionKeyFor(string moniker)
+    {
+        var descriptors = Parse(moniker);
+
+        // NUL-separated. A plain descriptor name is ASCII identifier characters only,
+        // but a backtick-escaped one is "any UTF-8", so nothing narrower is safe: an
+        // escaped identifier holding a NUL would have to have been written deliberately,
+        // and the whole cost of that would be one collision going unreported, because
+        // this key is never anything but compared with another key.
+        return descriptors is null ? null : string.Join('\0', descriptors.Select(d => d.Name));
+    }
+
+    /// <summary>
+    /// The moniker's descriptors, each with the name it carries and whether it is a
+    /// namespace, or null when what is there is not a moniker.
+    ///
+    /// One parse, read two ways, so the display name and the collision key can never
+    /// disagree about what the descriptors of a moniker are.
+    /// </summary>
+    private static List<(string Name, bool IsNamespace)>? Parse(string moniker)
+    {
+        if (moniker.Length == 0 || moniker.StartsWith("local ", StringComparison.Ordinal)) return null;
 
         var at = 0;
 
         // scheme, manager, package name, version. A space inside any of them is escaped
         // by doubling it, so this cannot be a split on ' '.
         for (var part = 0; part < 4; part++)
-            if (!SkipPart(moniker, ref at)) return moniker;
+            if (!SkipPart(moniker, ref at)) return null;
 
-        var name = new StringBuilder();
-        var descriptors = 0;
+        var descriptors = new List<(string Name, bool IsNamespace)>();
 
         while (at < moniker.Length)
         {
-            if (!ReadDescriptor(moniker, ref at, out var descriptor)) return moniker;
-
-            if (descriptors > 0) name.Append('.');
-            name.Append(OneSegment(descriptor));
-            descriptors++;
+            if (!ReadDescriptor(moniker, ref at, out var descriptor, out var isNamespace)) return null;
+            descriptors.Add((descriptor, isNamespace));
         }
 
         // The grammar requires at least one descriptor after the package.
-        return descriptors == 0 ? moniker : name.ToString();
+        return descriptors.Count == 0 ? null : descriptors;
     }
 
     /// <summary>
@@ -1059,9 +1194,10 @@ public static class MonikerName
     /// there is not a descriptor. Every suffix in the grammar is handled, including the
     /// two that bracket their name rather than following it.
     /// </summary>
-    private static bool ReadDescriptor(string moniker, ref int at, out string descriptor)
+    private static bool ReadDescriptor(string moniker, ref int at, out string descriptor, out bool isNamespace)
     {
         descriptor = "";
+        isNamespace = false;
 
         switch (moniker[at])
         {
@@ -1085,10 +1221,14 @@ public static class MonikerName
         {
             // namespace ::= name '/'. This is the descriptor an indexer uses for a
             // module, and a module's name is a file name in every language that has no
-            // separate namespace of its own, so the file extension comes off here.
+            // separate namespace of its own, so this is the one whose file extension
+            // comes off. The name itself is returned as it arrived and
+            // <see cref="For"/> strips it, so the pre-strip name is still available to
+            // <see cref="CollisionKeyFor"/>: taking it off here is what makes a folder
+            // `utils/` and a file `utils.ts` one name, and that has to stay visible.
             case '/':
                 at++;
-                descriptor = SourceFile.WithoutExtension(descriptor);
+                isNamespace = true;
                 return true;
 
             // meta and macro. A term's '.' is the same shape.
