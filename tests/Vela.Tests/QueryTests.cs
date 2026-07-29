@@ -704,6 +704,182 @@ public class QueryTests
         Assert.DoesNotContain("'PerfumeService>'", block, StringComparison.Ordinal);
     }
 
+    // ---- The ambiguity tally does not mistake constructions for symbols --------
+    //
+    // Recall for a generic symbol comes from matching a bare name through its type
+    // argument list (above), and the ambiguity block tallies its answer by the exact
+    // stored name. Put those two together and every construction of one generic type
+    // becomes its own row: on the real solution `refs ILogger` reported "271 distinct
+    // symbols" for 271 constructions of the one type ILogger<T>, with a "(+261 further
+    // symbol(s))" tail and a narrowing suggestion no trailing run of segments could
+    // satisfy, because there was no second symbol to narrow away from.
+    //
+    // So the tally is grouped a second time, by the stored name with only the
+    // declaring segment's own type argument list removed and any parameter list left
+    // exactly as it is. That merges ILogger<A> with ILogger<B>, and merges the two
+    // instantiations of one generic method, while Publish(Perfume) and Publish(Note)
+    // - genuine overloads sharing a name - stay apart, because neither carries a type
+    // argument list of its own to remove.
+
+    [Fact]
+    public void WithoutDeclaringTypeArguments_StripsOnlyTheOwnTypeArgumentsOfAGenericTypeOrMethod()
+    {
+        Assert.Equal("App.Logging.ILogger", QueryHelper.WithoutDeclaringTypeArguments(LoggerOfService));
+        Assert.Equal("App.Logging.ILogger", QueryHelper.WithoutDeclaringTypeArguments(LoggerOfList));
+
+        // A tuple type argument puts a comma and a matched pair of parentheses inside
+        // the angle brackets; the parameter list after them is untouched either way.
+        Assert.Equal(
+            "App.Auditing.AuditRunner.RunWithAuditAsync(System.String)",
+            QueryHelper.WithoutDeclaringTypeArguments(RunWithAudit));
+        Assert.Equal(
+            "App.Auditing.AuditRunner.RunWithAuditAsync(System.String)",
+            QueryHelper.WithoutDeclaringTypeArguments(RunWithAuditTuple));
+    }
+
+    [Fact]
+    public void WithoutDeclaringTypeArguments_LeavesTheParameterListVerbatim_EvenAGenericOne()
+    {
+        // The parameter list's own generic argument is not the declaring segment's, so
+        // it stays exactly as stored - the whole point being that merging constructions
+        // of a type or method must never merge genuinely different signatures.
+        const string method =
+            "App.Services.PerfumeRepository.Find(System.Collections.Generic.List<App.Models.Perfume>)";
+        Assert.Equal(method, QueryHelper.WithoutDeclaringTypeArguments(method));
+    }
+
+    [Fact]
+    public void WithoutDeclaringTypeArguments_KeepsGenuineOverloadsDistinct()
+    {
+        const string publishPerfume = "App.Services.PerfumeService.Publish(App.Models.Perfume)";
+        const string publishNote = "App.Services.PerfumeService.Publish(App.Models.Note)";
+
+        Assert.Equal(publishPerfume, QueryHelper.WithoutDeclaringTypeArguments(publishPerfume));
+        Assert.Equal(publishNote, QueryHelper.WithoutDeclaringTypeArguments(publishNote));
+    }
+
+    [Fact]
+    public void WithoutDeclaringTypeArguments_LeavesAnUnbalancedOperatorNameAlone()
+    {
+        // 'operator <' and 'operator >' contain an angle bracket that opens or closes
+        // nothing. Reading it as a type argument list would swallow the parameter list
+        // that follows, exactly as it would for WithoutTypeArguments.
+        Assert.Equal(LessThan, QueryHelper.WithoutDeclaringTypeArguments(LessThan));
+        Assert.Equal(GreaterThan, QueryHelper.WithoutDeclaringTypeArguments(GreaterThan));
+    }
+
+    [Fact]
+    public void WithoutDeclaringTypeArguments_LeavesAGenericEnclosingTypesArgumentsAlone()
+    {
+        // Handler<T> is not the declaring segment here - Invoke is, and Invoke has no
+        // type arguments of its own to remove. Only the rightmost segment's own
+        // construction is ever merged away.
+        Assert.Equal(HandlerInvoke, QueryHelper.WithoutDeclaringTypeArguments(HandlerInvoke));
+    }
+
+    [Fact]
+    public void Ambiguity_MergesConstructionsOfOneGenericTypeIntoOneRow()
+    {
+        // The motivating real case, built from the real fixture: ILogger, ILogger<T>
+        // and ILogger<List<T>> are one type, not three, whatever refs ILogger matches.
+        using var db = TypeArgumentDb();
+
+        var tally = Ambiguity.Of(RefsQuery.Run(db, "ILogger"));
+
+        var row = Assert.Single(tally);
+        Assert.Equal("App.Logging.ILogger", row.Symbol);
+        Assert.Equal(3, row.Count);
+        Assert.Equal(3, row.Constructions);
+    }
+
+    [Fact]
+    public void Ordered_MergesInstantiationsOfOneGenericMethodIntoOneRow()
+    {
+        var raw = new[]
+        {
+            new SymbolTally(RunWithAudit, 20),
+            new SymbolTally(RunWithAuditTuple, 13)
+        };
+
+        var merged = Ambiguity.Ordered(raw);
+
+        var row = Assert.Single(merged);
+        Assert.Equal("App.Auditing.AuditRunner.RunWithAuditAsync(System.String)", row.Symbol);
+        Assert.Equal(33, row.Count);
+        Assert.Equal(2, row.Constructions);
+    }
+
+    [Fact]
+    public void Ordered_KeepsGenuineOverloadsAsSeparateRows()
+    {
+        const string publishPerfume = "App.Services.PerfumeService.Publish(App.Models.Perfume)";
+        const string publishNote = "App.Services.PerfumeService.Publish(App.Models.Note)";
+
+        var raw = new[]
+        {
+            new SymbolTally(publishPerfume, 4),
+            new SymbolTally(publishNote, 1)
+        };
+
+        var merged = Ambiguity.Ordered(raw);
+
+        Assert.Equal(2, merged.Count);
+        Assert.All(merged, tally => Assert.Equal(1, tally.Constructions));
+        Assert.Contains(merged, t => t.Symbol == publishPerfume && t.Count == 4);
+        Assert.Contains(merged, t => t.Symbol == publishNote && t.Count == 1);
+    }
+
+    [Fact]
+    public void RenderOccurrences_ReportsConstructionsSeparatelyFromDistinctSymbols()
+    {
+        // Matches the example in the brief this fixes: several results spanning a
+        // handful of distinct symbols, some of which are several constructions of one
+        // generic type. Both numbers are reported, and neither one alone would do:
+        // the first without the second still looks like N different things, and the
+        // second alone would not decompose the reported total.
+        var tally = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally(LoggerOfService, 3),
+            new SymbolTally(LoggerOfList, 2),
+            new SymbolTally("App.Diagnostics.ILogger", 1)
+        });
+
+        var block = Ambiguity.RenderOccurrences("ILogger", tally);
+
+        Assert.Contains("2 distinct symbols across 3 construction(s)", block, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RenderOccurrences_OmitsTheConstructionsClause_WhenNothingWasMerged()
+    {
+        // No crying wolf: when every distinct symbol is exactly one construction,
+        // saying so adds nothing, so the reporting-only change must not print it.
+        var tally = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally("App.Models.Perfume.Status", 3),
+            new SymbolTally("App.Models.OrderStatus", 1)
+        });
+
+        var block = Ambiguity.RenderOccurrences("Status", tally);
+
+        Assert.DoesNotContain("construction", block, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RenderCallers_AlsoReportsConstructionsSeparatelyFromDistinctSymbols()
+    {
+        var tally = Ambiguity.Ordered(new[]
+        {
+            new SymbolTally(LoggerOfService, 3),
+            new SymbolTally(LoggerOfList, 2),
+            new SymbolTally("App.Diagnostics.ILogger", 1)
+        });
+
+        var block = Ambiguity.RenderCallers("ILogger", tally, anyCallers: true);
+
+        Assert.Contains("2 distinct symbols across 3 construction(s)", block, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void Def_MatchesAWholeDottedSegment_NotAnArbitrarySuffix()
     {

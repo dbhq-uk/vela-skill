@@ -231,6 +231,83 @@ public static class QueryHelper
     public static string PlainName(string symbol) => DottedName(WithoutTypeArguments(symbol));
 
     /// <summary>
+    /// The stored name with only the declaring segment's own type argument list
+    /// removed, and everything else - the parameter list included - kept exactly as
+    /// stored. This is the identity the ambiguity block tallies by, and it is not
+    /// <see cref="WithoutTypeArguments"/>, which strips every bracketed group wherever
+    /// it falls and is right for matching but wrong for counting.
+    ///
+    /// Matching a bare name through a type argument list is a recall fix: on the real
+    /// solution it took `refs ILogger` from 2 occurrences to 271. But the ambiguity
+    /// tally groups by the exact stored name, so those 271 became "271 distinct
+    /// symbols" - a "(+261 further symbol(s))" tail and a narrowing suggestion that
+    /// could never be satisfied, because 271 constructions of one generic type is not
+    /// 271 different things to narrow between.
+    ///
+    /// So the tally groups by this instead: the stored name with the type argument
+    /// list belonging to whichever segment declares the symbol - the type itself for
+    /// ILogger&lt;T&gt;, the method itself for a generic method - removed, and nothing
+    /// else touched. That merges ILogger&lt;A&gt; with ILogger&lt;B&gt;, and merges two
+    /// instantiations of one generic method, because both carry their own type
+    /// arguments in exactly that place. It does not merge across a parameter list: a
+    /// generic argument inside one, such as List&lt;Foo&gt; in a parameter's type, is
+    /// part of the signature that makes two overloads different, not a construction of
+    /// one symbol, so it is left alone. It does not merge across an earlier segment's
+    /// type arguments either - Handler&lt;T&gt;.Invoke is not touched by this function
+    /// at all, because Invoke, the declaring segment, has no type arguments of its own
+    /// to remove - which is a narrower rule than the brief needed to state, kept
+    /// narrow deliberately: reporting is the only thing this changes, and reporting
+    /// less than it safely could is the smaller mistake.
+    ///
+    /// The two guards are the same ones <see cref="WithoutTypeArguments"/> relies on
+    /// for the same reason: a name whose brackets do not pair, such as
+    /// 'operator &gt;(A, B)', is not a name this rule can read and is returned exactly
+    /// as it is; and a group is only removed when it is immediately followed by the
+    /// parameter list or the end of the name, or it is not the declaring segment's own.
+    /// </summary>
+    public static string WithoutDeclaringTypeArguments(string symbol)
+    {
+        if (symbol.IndexOf('<', StringComparison.Ordinal) < 0) return symbol;
+
+        // Where the declaring segment ends and its parameter list, if any, begins: the
+        // first '(' met with no type argument list open around it. A '(' inside one,
+        // such as a tuple type argument, is nested and is not this boundary.
+        var angleDepth = 0;
+        var boundary = symbol.Length;
+        for (var i = 0; i < symbol.Length; i++)
+        {
+            var c = symbol[i];
+            if (c == '<') { angleDepth++; continue; }
+            if (c == '>') { if (angleDepth > 0) angleDepth--; continue; }
+            if (c == '(' && angleDepth == 0) { boundary = i; break; }
+        }
+
+        // No type argument list sits immediately before that boundary, so there is
+        // nothing of the declaring segment's own to remove.
+        if (boundary == 0 || symbol[boundary - 1] != '>') return symbol;
+
+        // The '<' matching that '>', found by counting nested pairs backwards. A tuple
+        // type argument's parentheses do not change this count: only angle brackets
+        // mark a type argument list, and the parentheses inside one were already
+        // confirmed, above, not to be the boundary.
+        var depth = 0;
+        var open = -1;
+        for (var i = boundary - 1; i >= 0; i--)
+        {
+            if (symbol[i] == '>') depth++;
+            else if (symbol[i] == '<' && --depth == 0) { open = i; break; }
+        }
+
+        // Brackets that do not pair are not a type argument list this rule can read
+        // (an operator's stray '<' or '>'), and nothing precedes an identifier there
+        // means this is not one either (there is nothing for it to be the arguments of).
+        if (open <= 0 || !IdentifierCharacters.Contains(symbol[open - 1], StringComparison.Ordinal))
+            return symbol;
+
+        return symbol[..open] + symbol[boundary..];
+    }
+
+    /// <summary>
     /// Whether a stored symbol name matches a pattern. This is the rule: the SQL
     /// predicate in <see cref="SymbolMatches"/> calls this very function, and the
     /// ambiguity block calls it directly, so there is nothing for the two to disagree

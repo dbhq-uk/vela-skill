@@ -6,8 +6,15 @@ namespace Vela.Query;
 /// One distinct symbol that a pattern matched, and how many of something belong to it.
 /// What that something is depends on the verb, and the block that prints the tally says
 /// so outright rather than leaving the reader to infer it.
+///
+/// <see cref="Constructions"/> is how many raw, exact stored names <see cref="Ordered"/>
+/// merged to produce this row. It defaults to 1, which is what every tally is before
+/// merging: one exact stored name is one construction of itself. A generic type or
+/// method instantiated several times merges into a row whose Constructions is more than
+/// one, and that is the number the ambiguity block reports separately from the count of
+/// distinct symbols, so that 271 constructions of one type are never read as 271 things.
 /// </summary>
-public record SymbolTally(string Symbol, int Count);
+public record SymbolTally(string Symbol, int Count, int Constructions = 1);
 
 /// <summary>
 /// The block that says a pattern named more than one symbol.
@@ -62,16 +69,33 @@ public static class Ambiguity
                     .Select(group => new SymbolTally(group.Key, group.Count())));
 
     /// <summary>
-    /// Most hits first, ties broken by symbol name ordinally.
+    /// The tallies merged by <see cref="QueryHelper.WithoutDeclaringTypeArguments"/>,
+    /// with most hits first and ties broken by symbol name ordinally.
     ///
-    /// Both keys are needed for the ordering to be total, and it is applied here rather
-    /// than in SQL for the same reason every other ordering in vela is: an ORDER BY that
-    /// leaves ties unbroken is settled by whatever the query plan produced, so the same
-    /// index would answer the same question differently on two machines (Constraint 1).
-    /// Ordinal, not culture-aware, so the answer does not depend on the current locale.
+    /// The merge exists because a bare name matches a symbol through its type argument
+    /// list (<see cref="QueryHelper.Matches"/>), so a raw tally grouped by the exact
+    /// stored name has one row per construction of a generic type or method rather than
+    /// one row per symbol: on the real solution `refs ILogger` tallied 271 rows for 271
+    /// constructions of the one type ILogger&lt;T&gt;. Merging by the declaring
+    /// segment's own type arguments removed - and nothing else touched, so a parameter
+    /// list still tells two overloads apart - collapses those constructions back into
+    /// the symbols they actually are, and <see cref="SymbolTally.Constructions"/> keeps
+    /// the raw count so the block can still say how many there were.
+    ///
+    /// Both keys used for the final ordering are needed for it to be total, and it is
+    /// applied here rather than in SQL for the same reason every other ordering in vela
+    /// is: an ORDER BY that leaves ties unbroken is settled by whatever the query plan
+    /// produced, so the same index would answer the same question differently on two
+    /// machines (Constraint 1). Ordinal, not culture-aware, so the answer does not
+    /// depend on the current locale.
     /// </summary>
     public static IReadOnlyList<SymbolTally> Ordered(IEnumerable<SymbolTally> tallies) =>
-        tallies.OrderByDescending(tally => tally.Count)
+        tallies.GroupBy(tally => QueryHelper.WithoutDeclaringTypeArguments(tally.Symbol), StringComparer.Ordinal)
+               .Select(group => new SymbolTally(
+                   group.Key,
+                   group.Sum(tally => tally.Count),
+                   group.Sum(tally => tally.Constructions)))
+               .OrderByDescending(tally => tally.Count)
                .ThenBy(tally => tally.Symbol, StringComparer.Ordinal)
                .ToList();
 
@@ -92,7 +116,7 @@ public static class Ambiguity
     public static string RenderOccurrences(string pattern, IReadOnlyList<SymbolTally> tally) =>
         Render(tally,
             $"'{pattern}' is ambiguous: the {tally.Sum(entry => entry.Count)} result(s) above span "
-          + $"{tally.Count} distinct symbols:");
+          + $"{DistinctSymbolsSpan(tally)}:");
 
     /// <summary>
     /// The block for impact, whose results are the callers and not the symbol asked
@@ -116,10 +140,28 @@ public static class Ambiguity
         Render(tally,
             $"'{pattern}' is ambiguous: "
           + (anyCallers
-                ? $"the callers above are those of {tally.Count} distinct symbols together, not of one."
-                : $"the empty answer above is about {tally.Count} distinct symbols together, not about one.")
+                ? $"the callers above are those of {DistinctSymbolsSpan(tally)} together, not of one."
+                : $"the empty answer above is about {DistinctSymbolsSpan(tally)} together, not about one.")
           + " The number beside each symbol below is how many references to it vela searched for "
           + "callers of, not how many callers it has:");
+
+    /// <summary>
+    /// "N distinct symbols", with "across M construction(s)" appended when the tally
+    /// merged more than one raw stored name into at least one of its rows.
+    ///
+    /// The clause is left out otherwise (no-crying-wolf): most patterns are ambiguous
+    /// between symbols that were never constructed differently at all, and printing
+    /// "4 distinct symbols across 4 constructions" on every one of those would train
+    /// the reader to stop reading the clause by the time a pattern like `refs ILogger`
+    /// needed it to say 271 instead of 4.
+    /// </summary>
+    private static string DistinctSymbolsSpan(IReadOnlyList<SymbolTally> tally)
+    {
+        var constructions = tally.Sum(entry => entry.Constructions);
+        return constructions > tally.Count
+            ? $"{tally.Count} distinct symbols across {constructions} construction(s) of them"
+            : $"{tally.Count} distinct symbols";
+    }
 
     private static string Render(IReadOnlyList<SymbolTally> tally, string lead)
     {
