@@ -191,13 +191,30 @@ public static class ScipEmitter
                         // it would quietly shrink what impact can attribute.
                         if (already.EnclosingRange.Count == 0 && enclosingRange is not null)
                             already.EnclosingRange.AddRange(enclosingRange);
+
+                        // One arrival from an on-disk tree is enough to make the
+                        // position openable, exactly as it is for generatedOnly above.
+                        // Without this the two disagree whenever the openable arrival is
+                        // the one deduplication drops, and a consumer reading the roles
+                        // back would call a document generated that vela does not.
+                        if (!stayedInGeneratedCode)
+                            already.SymbolRoles &= ~(int)Scip.SymbolRole.Generated;
+
                         continue;
                     }
+
+                    // scip.proto has a role for this - "Generated: Is the symbol in
+                    // generated code?" - so the fact travels in the format rather than
+                    // only in vela's own generated column, which nothing outside vela
+                    // can read. It is what lets an index vela wrote be imported back
+                    // with refs and impact suppressing the same set of files.
+                    var roles = isDefinition ? (int)Scip.SymbolRole.Definition : 0;
+                    if (stayedInGeneratedCode) roles |= (int)Scip.SymbolRole.Generated;
 
                     var occurrence = new Scip.Occurrence
                     {
                         Symbol = moniker,
-                        SymbolRoles = isDefinition ? (int)Scip.SymbolRole.Definition : 0
+                        SymbolRoles = roles
                     };
                     occurrence.Range.AddRange(new[] { location.Line, location.Character, location.Character });
                     if (enclosingRange is not null) occurrence.EnclosingRange.AddRange(enclosingRange);

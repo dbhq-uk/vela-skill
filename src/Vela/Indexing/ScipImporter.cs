@@ -219,9 +219,10 @@ public static class ScipImporter
             insertDoc.Transaction = tx;
             insertDoc.CommandText =
                 "INSERT INTO document(relative_path, language, generated, position_encoding) "
-                + "VALUES ($p, $l, 0, $e) RETURNING id";
+                + "VALUES ($p, $l, $g, $e) RETURNING id";
             insertDoc.Parameters.Add("$p", SqliteType.Text);
             insertDoc.Parameters.Add("$l", SqliteType.Text);
+            insertDoc.Parameters.Add("$g", SqliteType.Integer);
             insertDoc.Parameters.Add("$e", SqliteType.Integer);
 
             insertOcc = db.CreateCommand();
@@ -280,6 +281,7 @@ public static class ScipImporter
 
             insertDoc.Parameters["$p"].Value = path;
             insertDoc.Parameters["$l"].Value = LanguageOf(document, path);
+            insertDoc.Parameters["$g"].Value = IsGenerated(document) ? 1 : 0;
             insertDoc.Parameters["$e"].Value = (int)document.PositionEncoding;
             var documentId = Convert.ToInt64(insertDoc.ExecuteScalar());
             documents++;
@@ -530,6 +532,23 @@ public static class ScipImporter
             _ => null
         };
     }
+
+    /// <summary>
+    /// Whether this document is one refs and impact must suppress: compiled but not on
+    /// disk, so its paths cannot be opened.
+    ///
+    /// scip.proto has the fact as a per-occurrence role - "Generated: Is the symbol in
+    /// generated code?" - and vela has it as a per-document column, so the two are joined
+    /// here the same way the emitter joins them: a document is generated when it holds
+    /// occurrences and every one of them is. One occurrence that is not is one position a
+    /// reader can open, and an openable document must never be suppressed.
+    ///
+    /// A document with no occurrences at all is not generated. An empty Razor view is
+    /// exactly that, and it must stay listed rather than disappear from a default answer.
+    /// </summary>
+    private static bool IsGenerated(Scip.Document document) =>
+        document.Occurrences.Count > 0
+        && document.Occurrences.All(o => (o.SymbolRoles & (int)Scip.SymbolRole.Generated) != 0);
 
     private static bool NeedsConversion(Scip.PositionEncoding encoding) =>
         encoding is Scip.PositionEncoding.Utf8CodeUnitOffsetFromLineStart

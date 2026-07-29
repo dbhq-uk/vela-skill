@@ -71,6 +71,7 @@ public static class Program
             + "for example Status or Perfume.Status.";
 
         root.Add(BuildIndexCommand(solutionOption));
+        root.Add(BuildImportCommand(solutionOption));
         root.Add(BuildFindCommand(solutionOption));
         root.Add(BuildHitCommand("def", "Where a symbol is defined",
             "symbol", symbolHelp,
@@ -324,6 +325,154 @@ public static class Program
 
         return command;
     }
+
+    /// <summary>
+    /// `vela import <file.scip>`: read an index another language's indexer produced into
+    /// the same database vela queries, so refs, def, outline and impact answer across
+    /// languages.
+    ///
+    /// It ADDS. `vela index` deletes the database and rebuilds it, because
+    /// ScipLoader.Load is a one-shot bulk load; import is the opposite by construction,
+    /// since the whole point is a second language beside the first. So the order is
+    /// `vela index` and then `vela import`, and re-running `vela index` throws the
+    /// imported languages away with everything else - which is right, because the C#
+    /// index it was merged into no longer exists either.
+    ///
+    /// Constraint 3 runs through the whole verb. A file that will not parse leaves the
+    /// index exactly as it was and says so; a document that cannot be placed under
+    /// vela's root is named and degrades the index; and every way the import came out
+    /// smaller than the file it read is counted out loud.
+    /// </summary>
+    private static Command BuildImportCommand(Option<string> solutionOption)
+    {
+        var argument = new Argument<string>("index")
+        {
+            Description = "Path to a .scip file produced by any language's SCIP indexer, "
+                        + "for example scip-typescript, scip-python or scip-go."
+        };
+
+        var command = new Command("import", "Add a .scip index from another language's indexer")
+        {
+            argument, solutionOption
+        };
+
+        command.SetAction(parseResult =>
+        {
+            var output = parseResult.InvocationConfiguration.Output;
+            var error = parseResult.InvocationConfiguration.Error;
+
+            var solution = parseResult.GetValue(solutionOption);
+            if (string.IsNullOrWhiteSpace(solution))
+            {
+                error.WriteLine(NoSolutionMessage);
+                return ExitCannotAnswer;
+            }
+
+            var scipPath = parseResult.GetRequiredValue(argument);
+            if (!File.Exists(scipPath))
+            {
+                error.WriteLine($"No such file: {scipPath}");
+                return ExitCannotAnswer;
+            }
+
+            var path = IndexPaths.ForSolution(solution);
+            IndexPaths.EnsureDirectoryExists(path);
+
+            // Importing into nothing is a legitimate thing to want: a repository with no
+            // .NET in it at all is still a repository vela can answer about, and
+            // requiring a `vela index` run first would mean requiring a solution that
+            // does not exist.
+            var isNew = !File.Exists(path);
+
+            using var db = new SqliteConnection(ConnectionStringFor(path));
+            db.Open();
+
+            if (isNew)
+            {
+                Schema.Create(db);
+            }
+            else
+            {
+                var version = Schema.ReadVersion(db);
+                if (version != Schema.Version)
+                {
+                    error.WriteLine($"The index at {path} was built against schema version {version}, and "
+                                  + $"this vela reads version {Schema.Version}. Importing into it would "
+                                  + "write rows a later read cannot trust.");
+                    error.WriteLine($"Run: vela index --solution {solution}");
+                    return ExitCannotAnswer;
+                }
+            }
+
+            ImportReport report;
+            try
+            {
+                report = ScipImporter.ImportFile(db, scipPath, ProjectRoot.ForSolution(solution));
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                error.WriteLine("The .scip file could not be read: " + ex.Message);
+                error.WriteLine("Nothing was imported, so the index is exactly as it was.");
+                return ExitCannotAnswer;
+            }
+
+            var tool = string.IsNullOrEmpty(report.Tool) ? "an unnamed indexer" : report.Tool;
+            output.WriteLine($"Imported {report.Documents} document(s) and {report.Occurrences} "
+                           + $"occurrence(s) from {scipPath}, produced by {tool}, into {path}");
+
+            // Said plainly and once, in the same voice `vela index` uses for the
+            // documents a NuGet package contributed: worth knowing, not a reason to call
+            // the index incomplete, and never a reason to raise the exit code.
+            if (report.UnconvertedDocuments > 0)
+            {
+                output.WriteLine($"{report.UnconvertedDocuments} document(s) count character offsets in "
+                               + "something other than UTF-16 code units and their text could not be found, "
+                               + "so their offsets were stored unconverted. Those are exact on any line of "
+                               + "pure ASCII and may be off on a line that is not.");
+            }
+
+            if (report.UnnamedOccurrences > 0)
+            {
+                output.WriteLine($"{report.UnnamedOccurrences} occurrence(s) carry no symbol at all, so they "
+                               + "are in the index and cannot be found by name. SCIP makes the symbol "
+                               + "optional, and no name was invented for them.");
+            }
+
+            if (report.UnparsedMonikers > 0)
+            {
+                output.WriteLine($"{report.UnparsedMonikers} occurrence(s) carry a symbol that does not fit "
+                               + "the grammar in scip.proto, so no dotted name could be derived and the "
+                               + "symbol itself is the name they are stored under.");
+            }
+
+            // Staleness is measured from built_at_utc, so an existing record's timestamp
+            // is kept: an import is not a rebuild, and refreshing it would tell a reader
+            // the C# half had been checked against the disk when it had not.
+            var existing = isNew
+                ? new HealthRecord(DateTime.UtcNow, null, Degraded: false, Detail: null)
+                : IndexHealth.Read(db);
+
+            var detail = report.Degraded ? Summarise(report.Problems) : null;
+            IndexHealth.Write(db, existing with
+            {
+                Degraded = existing.Degraded || report.Degraded,
+                Detail = Join(existing.Detail, detail)
+            });
+
+            if (!report.Degraded) return 0;
+
+            error.WriteLine("!! The imported index is INCOMPLETE. " + detail);
+            error.WriteLine("   Answers from it may be missing code. Do not treat an empty result as proof.");
+            return IndexHealth.ExitDegraded;
+        });
+
+        return command;
+    }
+
+    private static string? Join(string? first, string? second) =>
+        string.IsNullOrEmpty(first) ? second
+        : string.IsNullOrEmpty(second) ? first
+        : first + "; " + second;
 
     /// <summary>
     /// The health record for a freshly emitted index.

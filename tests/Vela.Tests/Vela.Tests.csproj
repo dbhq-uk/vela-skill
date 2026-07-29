@@ -15,4 +15,11 @@
   <ItemGroup>
     <ProjectReference Include="../../src/Vela/Vela.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- A .scip file scip-typescript 0.4.0 actually produced, trimmed to four
+         documents. Binary and read as bytes, so it is copied rather than embedded. -->
+    <None Include="Fixtures/*.scip" CopyToOutputDirectory="PreserveNewest"
+          LinkBase="Fixtures" />
+  </ItemGroup>
 </Project>
