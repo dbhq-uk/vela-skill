@@ -22,4 +22,4 @@ jobs:
       # a cold cache. That is expected: fixture scaffolding is test setup, not
       # the tool under test.
       - name: Assert Razor/Blazor generated-document coverage (the regression that would otherwise be silent)
-        run: dotnet test --filter DocumentEnumeratorTests -v normal
+        run: dotnet test --filter "DocumentEnumeratorTests|IndexWithStats_ReportsTheCoverageThatMustNotRegress" -v normal
