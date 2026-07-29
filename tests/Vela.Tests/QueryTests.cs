@@ -696,6 +696,24 @@ public class QueryTests
     }
 
     [Fact]
+    public void BuildHealthRecord_FoldsInAProjectThatProducedNoCompilationAtAll()
+    {
+        // ScipEmitter used to skip a null compilation with a bare `continue`, recording
+        // nothing. Every symbol in that project then failed to resolve, the project's
+        // whole contribution vanished from the index, and health said clean.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ToolInfo = new Scip.ToolInfo { Name = "vela", Version = "0.0.0" } }
+        };
+        index.Metadata.ToolInfo.Arguments.Add("no-compilation: App produced no compilation");
+
+        var health = Program.BuildHealthRecord(index, Array.Empty<string>());
+
+        Assert.True(health.Degraded);
+        Assert.Contains("no-compilation", health.Detail);
+    }
+
+    [Fact]
     public void BuildHealthRecord_IsCleanWhenNothingWentWrong()
     {
         var index = new Scip.Index

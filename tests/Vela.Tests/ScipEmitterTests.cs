@@ -1,4 +1,5 @@
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using Microsoft.Data.Sqlite;
 using Vela.Harvest;
@@ -444,6 +445,69 @@ public class ScipEmitterTests
         Assert.All(first, h => Assert.Equal("Counter.First().count", h.Symbol));
     }
 
+    [Fact]
+    public async Task EmitAsync_RecordsCompilationErrorsSoTheIndexCannotLookComplete()
+    {
+        // Constraint 3's exact failure mode, and the quietest one there is. A project
+        // that loads but does not compile - one unresolved reference, a restore that
+        // did not run - yields a null symbol for every node that touches the missing
+        // type. ScipEmitter skips null symbols, so those references simply are not in
+        // the index, no load failure was raised, and health reported clean. `refs` on
+        // an affected symbol then answers confidently and short.
+        var root = SyntheticRoot();
+        var file = Path.Combine(root, "App", "Broken.cs");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 1 "{{Escape(file)}}"
+            public class Broken
+            {
+                public Nonexistent Field;
+            }
+            #line default
+            """);
+
+        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+
+        // Recorded through the same visible channel as load-failure and
+        // outside-project-root, so there is one place a reader has to look.
+        Assert.Contains(index.Metadata.ToolInfo.Arguments,
+            a => a.StartsWith("compile-error:", StringComparison.Ordinal));
+
+        // And it has to reach the record the banner and the exit code are read from.
+        var health = Program.BuildHealthRecord(index, Array.Empty<string>());
+        Assert.True(health.Degraded);
+        Assert.NotNull(health.Detail);
+        Assert.Contains("compile-error:", health.Detail, StringComparison.Ordinal);
+        Assert.Contains("CS0246", health.Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EmitAsync_DoesNotReportCompilationErrorsForCodeThatCompiles()
+    {
+        // The other half: a degradation signal that fires on healthy solutions is a
+        // signal nobody reads, which is the same outcome as not having it.
+        var root = SyntheticRoot();
+        var file = Path.Combine(root, "App", "Fine.cs");
+
+        var solution = SyntheticSolution(root, $$"""
+            #line 1 "{{Escape(file)}}"
+            public class Fine
+            {
+                public int Value { get; set; }
+            }
+            #line default
+            """);
+
+        var index = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+
+        var reported = index.Metadata.ToolInfo.Arguments
+            .Where(a => a.StartsWith("compile-error:", StringComparison.Ordinal))
+            .ToList();
+
+        Assert.True(reported.Count == 0, string.Join("\n", reported));
+        Assert.False(Program.BuildHealthRecord(index, Array.Empty<string>()).Degraded);
+    }
+
     private static string SyntheticRoot() =>
         Path.Combine(Path.GetTempPath(), "vela-synth-" + Guid.NewGuid().ToString("N")[..8]);
 
@@ -473,7 +537,12 @@ public class ScipEmitterTests
             language: LanguageNames.CSharp,
             filePath: Path.Combine(root, "App", "App.csproj"),
             documents: new[] { document },
-            metadataReferences: new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) });
+            metadataReferences: new[] { MetadataReference.CreateFromFile(typeof(object).Assembly.Location) })
+            // A library, not a console application. Without this the project defaults
+            // to OutputKind.ConsoleApplication and every one of these fixtures carries
+            // a CS5001 "no static Main" error that belongs to the fixture rather than
+            // to the code under test.
+            .WithCompilationOptions(new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         var solution = SolutionInfo.Create(
             SolutionId.CreateNewId(),

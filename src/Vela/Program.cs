@@ -20,8 +20,23 @@ public static class Program
     /// </summary>
     private const int MaxDetailProblems = 10;
 
+    /// <summary>
+    /// Every prefix ScipEmitter uses to record, into the emitted index, a reason that
+    /// index is missing code. One list, so a new kind of problem reaches the health
+    /// record by being recorded rather than by also being remembered here.
+    /// </summary>
+    private static readonly string[] ProblemPrefixes =
+    {
+        LoadFailurePrefix,
+        OutsideProjectRootPrefix,
+        CompileErrorPrefix,
+        NoCompilationPrefix
+    };
+
     private const string LoadFailurePrefix = "load-failure:";
     private const string OutsideProjectRootPrefix = "outside-project-root:";
+    private const string CompileErrorPrefix = "compile-error:";
+    private const string NoCompilationPrefix = "no-compilation:";
 
     private const string NoSolutionMessage =
         "No single .sln found in the current directory. Pass --solution <path to the .sln>.";
@@ -183,13 +198,15 @@ public static class Program
     /// <summary>
     /// The health record for a freshly emitted index.
     ///
-    /// There are two independent ways for a build to come out incomplete, and both
-    /// have to reach this record. WorkspaceLoader reports projects that failed to
-    /// load. ScipEmitter separately records, into the emitted index's tool
-    /// arguments, every document it could not represent because the file lies
-    /// outside the project root. A build can hit the second without the first, so
-    /// reading only the loader's failures would stamp "healthy" on an index that is
-    /// missing whole files.
+    /// There are four independent ways for a build to come out incomplete, and all of
+    /// them have to reach this record. WorkspaceLoader reports projects that failed to
+    /// load. ScipEmitter separately records, into the emitted index's tool arguments,
+    /// every document it could not represent because the file lies outside the project
+    /// root, every project that produced no compilation at all, and every project that
+    /// compiled with errors. A build can hit any of the last three without the first,
+    /// so reading only the loader's failures would stamp "healthy" on an index that is
+    /// missing whole files, whole projects, or every reference that depended on a type
+    /// the compiler could not resolve.
     /// </summary>
     public static HealthRecord BuildHealthRecord(Scip.Index index, IReadOnlyList<string> failures)
     {
@@ -200,11 +217,8 @@ public static class Program
         {
             foreach (var argument in arguments)
             {
-                if (argument.StartsWith(LoadFailurePrefix, StringComparison.Ordinal) ||
-                    argument.StartsWith(OutsideProjectRootPrefix, StringComparison.Ordinal))
-                {
+                if (ProblemPrefixes.Any(prefix => argument.StartsWith(prefix, StringComparison.Ordinal)))
                     problems.Add(argument);
-                }
             }
         }
 

@@ -46,7 +46,19 @@ public static class ScipEmitter
         foreach (var project in solution.Projects)
         {
             var compilation = await project.GetCompilationAsync(ct);
-            if (compilation is null) continue;
+            if (compilation is null)
+            {
+                // Constraint 3: a project with no compilation contributes nothing at
+                // all to this index. Skipping it silently, which is what a bare
+                // `continue` did, produced an index missing a whole project and a
+                // health record that said everything was fine.
+                index.Metadata.ToolInfo.Arguments.Add(
+                    $"no-compilation: project '{project.Name}' produced no compilation, "
+                    + "so none of its code is in this index");
+                continue;
+            }
+
+            RecordCompilationErrors(index, project, compilation, ct);
 
             await foreach (var harvested in DocumentEnumerator.EnumerateAsync(project, ct))
             {
@@ -131,6 +143,45 @@ public static class ScipEmitter
 
         return index;
     }
+
+    /// <summary>
+    /// Records, into the index, that a project did not compile cleanly.
+    ///
+    /// This is the quietest way an index can be wrong. Every reference vela stores comes
+    /// from a resolved symbol, and a compilation error makes the symbol null for every
+    /// node that depends on it, so those references are not skipped loudly, they are
+    /// simply absent. One unresolved using directive can remove most of a file's
+    /// references while the project still loads, no load failure is raised, and health
+    /// reports clean: exactly the shape Constraint 3 exists to forbid, because the
+    /// answer that comes back is short rather than obviously broken.
+    ///
+    /// A count and a small sample, not the whole list: the detail is printed above every
+    /// answer from this index, and a wall of compiler output stops being read. Errors are
+    /// ordered before sampling so the same solution produces the same sample on every run
+    /// and every machine (Constraint 1), rather than whatever order the binder finished in.
+    /// </summary>
+    private static void RecordCompilationErrors(
+        Scip.Index index, Project project, Compilation compilation, CancellationToken ct)
+    {
+        var errors = compilation.GetDiagnostics(ct)
+            .Where(d => d.Severity == DiagnosticSeverity.Error)
+            .OrderBy(d => d.Location.SourceTree?.FilePath ?? string.Empty, StringComparer.Ordinal)
+            .ThenBy(d => d.Location.SourceSpan.Start)
+            .ThenBy(d => d.Id, StringComparer.Ordinal)
+            .ToList();
+
+        if (errors.Count == 0) return;
+
+        var sample = string.Join(" | ", errors
+            .Take(CompileErrorSampleSize)
+            .Select(d => d.Id + " " + d.GetMessage(System.Globalization.CultureInfo.InvariantCulture)));
+
+        index.Metadata.ToolInfo.Arguments.Add(
+            $"compile-error: project '{project.Name}' has {errors.Count} compilation error(s), "
+            + $"so references that depend on them are missing from this index. For example: {sample}");
+    }
+
+    private const int CompileErrorSampleSize = 3;
 
     /// <summary>
     /// True when this kind of symbol may carry an enclosing range, which is the same
