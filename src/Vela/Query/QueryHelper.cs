@@ -2,15 +2,61 @@ using Microsoft.Data.Sqlite;
 
 namespace Vela.Query;
 
-internal static class QueryHelper
+public static class QueryHelper
 {
     /// <summary>
-    /// The ESCAPE character used by every LIKE in this namespace. It must be spelled
-    /// the same way in the SQL text and in <see cref="EscapeLike"/>, so both read it
-    /// from here. Backslash cannot appear in a .NET symbol name, so escaping it costs
-    /// nothing in practice, and it is escaped anyway for correctness.
+    /// The SQL predicate matching a stored symbol name against a user's pattern, for
+    /// the symbol column named by <paramref name="symbolColumn"/>. The pattern is
+    /// always bound as $s.
+    ///
+    /// A match is a whole dotted segment, and it is case-sensitive.
+    ///
+    /// Both halves of that sentence were wrong before, and SQLite will confirm it:
+    /// 'App.Models.HttpStatus' LIKE '%Status' is 1, 'Guid' LIKE '%Id' is 1, and
+    /// 'App.Perfume.Name' LIKE '%name' is 1, because SQLite's LIKE is unanchored where
+    /// you put a '%' and case-insensitive for ASCII whatever you do. So `refs Status`
+    /// merged Perfume.Status with HttpStatus and OrderStatus, `def Name` returned
+    /// FirstName and LastName as one answer, and `impact Id` attributed every caller
+    /// that touched a Guid. Name, Status, Value, Id and Update are precisely the
+    /// identifiers vela exists to disambiguate, so this put back the noise the tool is
+    /// for, in the place it is least expected.
+    ///
+    /// LIKE is therefore not used at all. Case sensitivity cannot be recovered from it
+    /// (COLLATE does not reach the like() function; only the process-wide
+    /// case_sensitive_like pragma does), and '=' on TEXT uses SQLite's default BINARY
+    /// collation, which is exactly the comparison .NET identifiers need. Dropping LIKE
+    /// also removes the wildcard-escaping problem at the source rather than papering
+    /// over it: '%' and '_' in a pattern are now ordinary characters because there is
+    /// no pattern language left for them to mean anything in.
+    ///
+    /// Four ways to match, all exact:
+    ///   1. the pattern is the whole stored symbol
+    ///   2. the stored symbol ends with '.' followed by the pattern, so the match
+    ///      begins at a segment boundary and 'Status' cannot match 'HttpStatus'
+    ///   3 and 4. the same two tests against the stored symbol with its parameter list
+    ///      removed, which is what lets 'PerfumeService.Publish' still match
+    ///      'App.Services.PerfumeService.Publish(App.Models.Perfume)'
+    ///
+    /// No index can serve this, but no index could serve a leading-'%' LIKE either, so
+    /// nothing is lost: both are a scan of the symbol column.
     /// </summary>
-    public const char LikeEscape = '\\';
+    public static string SymbolMatches(string symbolColumn)
+    {
+        // The stored name with any parameter list removed. instr returns 0 when there
+        // is no '(' at all, and substr with a length of -1 would then return the empty
+        // string, so the no-parameter case is spelled out rather than relied upon.
+        var head =
+            $"(CASE WHEN instr({symbolColumn}, '(') > 0 " +
+            $"THEN substr({symbolColumn}, 1, instr({symbolColumn}, '(') - 1) " +
+            $"ELSE {symbolColumn} END)";
+
+        return $"""
+            ({symbolColumn} = $s
+             OR substr({symbolColumn}, -(length($s) + 1)) = '.' || $s
+             OR {head} = $s
+             OR substr({head}, -(length($s) + 1)) = '.' || $s)
+            """;
+    }
 
     /// <summary>
     /// Runs a hit query whose $s is an exact value, for example a document path.
@@ -30,33 +76,25 @@ internal static class QueryHelper
     }
 
     /// <summary>
-    /// Runs a hit query whose $s is a symbol suffix pattern matched with LIKE. The
-    /// wildcards belong to Vela's own SQL, never to the user's input, so the input
-    /// is escaped on the way in.
-    /// </summary>
-    public static IReadOnlyList<Hit> SelectBySymbolSuffix(SqliteConnection db, string sql, string symbolPattern)
-        => Select(db, sql, EscapeLike(symbolPattern));
-
-    /// <summary>
     /// True when the index holds any occurrence of a symbol matching the pattern,
     /// definitions included. Used to tell "there is nothing to report" apart from
     /// "this symbol was never indexed", which print identically otherwise.
     /// </summary>
     public static bool AnySymbolOccurrence(SqliteConnection db, string symbolPattern)
-        => Exists(db, """
+        => Exists(db, $"""
             SELECT 1 FROM occurrence
-            WHERE symbol LIKE '%' || $s ESCAPE '\' OR symbol LIKE '%' || $s || '(%' ESCAPE '\'
+            WHERE {SymbolMatches("symbol")}
             LIMIT 1
-            """, EscapeLike(symbolPattern));
+            """, symbolPattern);
 
     /// <summary>True when the index holds a non-definition occurrence of the symbol.</summary>
     public static bool AnySymbolReference(SqliteConnection db, string symbolPattern)
-        => Exists(db, """
+        => Exists(db, $"""
             SELECT 1 FROM occurrence
             WHERE is_definition = 0
-              AND (symbol LIKE '%' || $s ESCAPE '\' OR symbol LIKE '%' || $s || '(%' ESCAPE '\')
+              AND {SymbolMatches("symbol")}
             LIMIT 1
-            """, EscapeLike(symbolPattern));
+            """, symbolPattern);
 
     /// <summary>True when the index holds a document at exactly this relative path.</summary>
     public static bool DocumentExists(SqliteConnection db, string relativePath)
@@ -71,7 +109,9 @@ internal static class QueryHelper
     public static string NoSuchSymbol(string symbolPattern) =>
         $"No symbol matching '{symbolPattern}' is in the index. That is a statement about the index, "
         + "not about the code: nothing of that name was indexed, so this empty result is not evidence "
-        + "that the symbol is unused. Check the spelling, and check the index covers the project that declares it.";
+        + "that the symbol is unused. Names are matched a whole dotted segment at a time, and matching "
+        + "is case-sensitive, so 'Status' does not match 'HttpStatus' and 'status' does not match "
+        + "'Status'. Check the spelling, and check the index covers the project that declares it.";
 
     private static bool Exists(SqliteConnection db, string sql, string parameter)
     {
@@ -82,15 +122,4 @@ internal static class QueryHelper
         using var reader = cmd.ExecuteReader();
         return reader.Read();
     }
-
-    /// <summary>
-    /// Escapes the two characters SQL LIKE treats as wildcards, so a search for
-    /// Foo_Bar cannot also answer for FooXBar. Underscores are ordinary in .NET
-    /// identifiers, and an unasked-for extra hit is indistinguishable from a real
-    /// one once it reaches the caller.
-    /// </summary>
-    public static string EscapeLike(string value) => value
-        .Replace($"{LikeEscape}", $"{LikeEscape}{LikeEscape}", StringComparison.Ordinal)
-        .Replace("%", $"{LikeEscape}%", StringComparison.Ordinal)
-        .Replace("_", $"{LikeEscape}_", StringComparison.Ordinal);
 }

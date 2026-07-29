@@ -39,12 +39,12 @@ public static class ImpactQuery
     /// stored value; nothing here is scored, ranked or guessed.
     /// </summary>
     public static IReadOnlyList<Hit> Run(SqliteConnection db, string symbolPattern)
-        => QueryHelper.SelectBySymbolSuffix(db, """
+        => QueryHelper.Select(db, $"""
             WITH target AS (
                 SELECT o.id, o.document_id, o.start_line, o.start_char
                 FROM occurrence o
                 WHERE o.is_definition = 0
-                  AND (o.symbol LIKE '%' || $s ESCAPE '\' OR o.symbol LIKE '%' || $s || '(%' ESCAPE '\')
+                  AND {QueryHelper.SymbolMatches("o.symbol")}
             ),
             ranked AS (
                 SELECT target.id AS target_id,

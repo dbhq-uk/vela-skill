@@ -162,6 +162,150 @@ public class QueryTests
         Assert.Empty(FindQuery.Run(db, "tatus"));
     }
 
+    // ---- A match must be a whole dotted segment ---------------------------
+    //
+    // The suffix match was unanchored and, because SQLite's LIKE is
+    // case-insensitive for ASCII, case-blind as well. SQLite agrees:
+    // 'App.Models.HttpStatus' LIKE '%Status' is 1, 'Guid' LIKE '%Id' is 1, and
+    // 'App.Perfume.Name' LIKE '%name' is 1. So `refs Status` merged Perfume.Status
+    // with HttpStatus and OrderStatus, `def Name` answered FirstName and LastName as
+    // one result, and `impact Id` attributed callers of Guid. Those are exactly the
+    // identifiers - Name, Status, Value, Id, Update - vela exists to disambiguate, so
+    // this reintroduced the noise the tool is for.
+
+    /// <summary>
+    /// Symbols chosen so that every unanchored or case-blind match has somewhere
+    /// wrong to land: HttpStatus ends with Status, Guid ends with Id, FirstName ends
+    /// with Name, and Publish carries a parameter list after its name.
+    /// </summary>
+    private static SqliteConnection SegmentDb()
+    {
+        var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO document(id, relative_path, language) VALUES
+                (1, 'App/Models/Perfume.cs', 'csharp');
+            INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                (1, 'App.Models.Perfume.Status',  1,  1, 4, NULL, NULL),
+                (1, 'App.Models.HttpStatus',      1,  2, 4, NULL, NULL),
+                (1, 'App.Models.OrderStatus',     1,  3, 4, NULL, NULL),
+                (1, 'App.Models.Perfume.Name',    1,  4, 4, NULL, NULL),
+                (1, 'App.Models.Person.FirstName',1,  5, 4, NULL, NULL),
+                (1, 'App.Models.Person.LastName', 1,  6, 4, NULL, NULL),
+                (1, 'System.Guid',                1,  7, 4, NULL, NULL),
+                (1, 'App.Models.Perfume.Id',      1,  8, 4, NULL, NULL),
+                (1, 'App.Services.PerfumeService.Publish(App.Models.Perfume)', 1, 9, 4, NULL, NULL);
+            """;
+        cmd.ExecuteNonQuery();
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+        return db;
+    }
+
+    [Fact]
+    public void Refs_MatchesAWholeDottedSegment_NotAnArbitrarySuffix()
+    {
+        using var db = SegmentDb();
+
+        var symbols = RefsQuery.Run(db, "Status").Select(h => h.Symbol).ToList();
+
+        Assert.Contains("App.Models.Perfume.Status", symbols);
+        Assert.DoesNotContain("App.Models.HttpStatus", symbols);
+        Assert.DoesNotContain("App.Models.OrderStatus", symbols);
+    }
+
+    [Fact]
+    public void Refs_MatchesAQualifiedSuffixAndTheWholeName()
+    {
+        using var db = SegmentDb();
+
+        Assert.Contains("App.Models.Perfume.Status",
+            RefsQuery.Run(db, "Perfume.Status").Select(h => h.Symbol));
+        Assert.Contains("App.Models.Perfume.Status",
+            RefsQuery.Run(db, "App.Models.Perfume.Status").Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Refs_IsCaseSensitive()
+    {
+        // SQLite's LIKE is case-insensitive for ASCII, so 'App.Perfume.Name' LIKE
+        // '%name' is 1. .NET identifiers are case-sensitive and Name and name are two
+        // different members, so a case-blind answer is a wrong answer, not a lenient one.
+        using var db = SegmentDb();
+
+        Assert.Empty(RefsQuery.Run(db, "status"));
+        Assert.Empty(RefsQuery.Run(db, "perfume.Status"));
+        Assert.NotEmpty(RefsQuery.Run(db, "Perfume.Status"));
+    }
+
+    [Fact]
+    public void Refs_StillMatchesAMethodByItsNameWithoutTheParameterList()
+    {
+        // Method identities carry a parameter list, so the bare name is not a suffix of
+        // the stored symbol. Both the name alone and the fully stored form must match.
+        using var db = SegmentDb();
+
+        Assert.Contains("App.Services.PerfumeService.Publish(App.Models.Perfume)",
+            RefsQuery.Run(db, "Publish").Select(h => h.Symbol));
+        Assert.Contains("App.Services.PerfumeService.Publish(App.Models.Perfume)",
+            RefsQuery.Run(db, "PerfumeService.Publish").Select(h => h.Symbol));
+        Assert.Contains("App.Services.PerfumeService.Publish(App.Models.Perfume)",
+            RefsQuery.Run(db, "App.Services.PerfumeService.Publish(App.Models.Perfume)").Select(h => h.Symbol));
+    }
+
+    [Fact]
+    public void Def_MatchesAWholeDottedSegment_NotAnArbitrarySuffix()
+    {
+        using var db = SegmentDb();
+
+        var symbols = DefQuery.Run(db, "Name").Select(h => h.Symbol).ToList();
+
+        Assert.Contains("App.Models.Perfume.Name", symbols);
+        Assert.DoesNotContain("App.Models.Person.FirstName", symbols);
+        Assert.DoesNotContain("App.Models.Person.LastName", symbols);
+    }
+
+    [Fact]
+    public void ExplainEmpty_UsesTheSameSegmentMatchingAsTheQueryItself()
+    {
+        // The "why is this empty" helpers run their own LIKE. If they stayed
+        // unanchored, `def Status` on an index holding only HttpStatus would report
+        // "occurs in the index but is not defined here", which is a confident claim
+        // about a symbol that is not in the index at all.
+        using var db = SegmentDb();
+
+        Assert.False(QueryHelper.AnySymbolOccurrence(db, "ttpStatus"));
+        Assert.True(QueryHelper.AnySymbolOccurrence(db, "HttpStatus"));
+        Assert.False(QueryHelper.AnySymbolOccurrence(db, "httpstatus"));
+    }
+
+    [Fact]
+    public void Impact_DoesNotAttributeCallersOfADifferentSymbolThatMerelyEndsTheSame()
+    {
+        // 'Guid' LIKE '%Id' is 1, so `impact Id` reported every caller that touches a
+        // Guid as a caller of Perfume.Id.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Services/PerfumeService.cs', 'csharp');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Services.PerfumeService.UsesGuid()', 1, 30, 4, 40, 5),
+                    (1, 'System.Guid', 0, 32, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        Assert.Empty(ImpactQuery.Run(db, "Id"));
+        Assert.NotEmpty(ImpactQuery.Run(db, "Guid"));
+    }
+
     [Fact]
     public void Impact_ReturnsTheDefinitionEnclosingEachReference()
     {
