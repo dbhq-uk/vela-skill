@@ -60,6 +60,8 @@ vela find   <pattern>         # symbol search by name
 
 Symbols can be given bare (`Status`) or qualified (`Perfume.Status`). `def`, `refs` and `impact` match a **whole dotted segment**, case-sensitively: `Status` matches `App.Models.Perfume.Status` and does **not** match `HttpStatus`, `OrderStatus` or `status`. So a bare name is safe to use, and **vela will tell you when the name is ambiguous**: if several distinct symbols really do end in that segment, the answer names each one with its own count and suggests a longer name that picks one out.
 
+A method matches with or without its parameter list (`Publish` or `PerfumeService.Publish`), and a local or a parameter matches by its own name rather than by the name of the method or type it is declared in: `refs PerfumeService` finds the type and its constructor, not the variables that constructor is handed, and `refs Get` finds the methods rather than every local declared inside one.
+
 `find` is the exception: it searches name tokens with a trailing prefix, so `find Stat` finds `Status` where `refs Stat` finds nothing. Use `find` to discover a name and the other three to ask about it.
 
 ## Reading the output
@@ -73,8 +75,7 @@ Results are grouped by file and shaped for a context window rather than a termin
 **A total that spans several symbols says so.** Because matching is by whole dotted segment, `refs Perfume` on a real solution answered 3,104 results - the entity, the entity's constructor, an enum member called `Perfume`, and a property of an unrelated response type, all merged into one number. Every hit was real; the total counted nothing that exists. So when a pattern matches more than one distinct symbol, `def`, `refs` and `impact` print an ambiguity block after the results:
 
 ```
-'Perfume' is ambiguous: it matches 25 distinct symbols, so the 3104 result(s) above are
-occurrences of 25 different things rather than of one. ...
+'Perfume' is ambiguous: the 3104 result(s) above span 25 distinct symbols:
     1958  ScentVerdict.Data.Entities.Perfume
      384  ScentVerdict.Data.Enums.EntityType.Perfume
      ...
@@ -85,7 +86,7 @@ ScentVerdict.Data.Entities.Perfume and none of the others.
 
 **Never size a change from a total that carries that block.** Ask again with the longer name it suggests, then use that answer. Nothing is filtered out to produce the block - the same results come back either way - it only says what they span. At most ten symbols are listed by name and the rest are summarised into one line, so the counts always add up to the reported total. `impact` labels its numbers differently, because its rows are the callers rather than the symbol you asked about.
 
-The absence of the block is a statement too: it means the pattern resolved to exactly one symbol, so the total is a count of that symbol and nothing else. `outline` never prints it, since its argument is a file path and a file defines many symbols by nature.
+The block describes the answer above it, not the index: the count is of the symbols these results span, and `refs` and `impact` leave generated code out by default. So its absence means the results above are all occurrences of one symbol - which is a statement about this answer. If the answer also reports further results in generated code, a second symbol of that name may be living there, uncounted; ask again with `--include-generated` before treating the name as resolved. `outline` never prints the block, since its argument is a file path and a file defines many symbols by nature.
 
 ## The rule that matters most
 
