@@ -96,6 +96,21 @@ public static class QueryHelper
             LIMIT 1
             """, symbolPattern);
 
+    /// <summary>
+    /// True when the index holds an occurrence of the symbol in a document that is on
+    /// disk. Its negative is the case this exists for: a symbol vela indexed perfectly
+    /// well whose every occurrence sits in the Razor generator's output, so that refs
+    /// and impact suppress the lot and answer "0 result(s)".
+    /// </summary>
+    public static bool AnySymbolOccurrenceOnDisk(SqliteConnection db, string symbolPattern)
+        => Exists(db, $"""
+            SELECT 1
+            FROM occurrence o JOIN document d ON d.id = o.document_id
+            WHERE d.generated = 0
+              AND {SymbolMatches("o.symbol")}
+            LIMIT 1
+            """, symbolPattern);
+
     /// <summary>True when the index holds a non-definition occurrence of the symbol.</summary>
     public static bool AnySymbolReference(SqliteConnection db, string symbolPattern)
         => Exists(db, $"""
@@ -121,6 +136,26 @@ public static class QueryHelper
         + "that the symbol is unused. Names are matched a whole dotted segment at a time, and matching "
         + "is case-sensitive, so 'Status' does not match 'HttpStatus' and 'status' does not match "
         + "'Status'. Check the spelling, and check the index covers the project that declares it.";
+
+    /// <summary>
+    /// The one wording for "vela knows this symbol, and everything it knows about it
+    /// is in generated code", shared by refs and impact for the same reason
+    /// <see cref="NoSuchSymbol"/> is shared.
+    ///
+    /// This is the sentence that used to be missing, and its absence produced a
+    /// self-contradicting answer: "nothing of that name was indexed" printed directly
+    /// above "3 further result(s) in generated code". Both cannot be true, and the one
+    /// an agent acts on is the first, so it would conclude a Razor page member does not
+    /// exist and delete the code that uses it. Saying which absence this is costs one
+    /// query on a path that has nothing to report anyway (Constraint 3).
+    /// </summary>
+    public static string OnlyInGeneratedCode(string symbolPattern) =>
+        $"'{symbolPattern}' is in the index: something of that name was indexed, so this is not a "
+        + "statement that the symbol does not exist. Every occurrence of it that vela recorded is in "
+        + "source-generated code, which the compiler builds from Razor and never writes to disk, and "
+        + "which refs and impact leave out of their default answer because the paths cannot be opened. "
+        + "This empty result is therefore not evidence that the symbol is unused. Pass "
+        + "--include-generated to see those occurrences.";
 
     private static bool Exists(SqliteConnection db, string sql, string parameter)
     {

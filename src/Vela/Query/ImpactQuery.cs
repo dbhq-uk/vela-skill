@@ -102,16 +102,39 @@ public static class ImpactQuery
             """;
 
     /// <summary>
-    /// Why impact came back empty. Three different absences print the same
-    /// "0 result(s)": a symbol that was never indexed, a symbol nothing refers to,
-    /// and references that sit where no enclosing definition was recorded, which is
-    /// the normal case for top level statements and Razor views. Only the middle one
-    /// is anything like "nothing calls it".
+    /// Why impact came back empty. Five different absences print the same
+    /// "0 result(s)": every caller was suppressed for living in generated code, the
+    /// symbol was never indexed, the symbol is known only from generated code, nothing
+    /// refers to it, and references that sit where no enclosing definition was recorded,
+    /// which is the normal case for top level statements and Razor views. Only the
+    /// fourth is anything like "nothing calls it".
+    ///
+    /// The first two of those are new here. This used to reason over unfiltered
+    /// occurrences and references while the answer itself was filtered, so a symbol
+    /// whose whole existence is in the Razor generator's output was reported as
+    /// "nothing of that name was indexed" directly above "1 further result(s) in
+    /// generated code", and a symbol whose callers were all generated was blamed on
+    /// missing body ranges. The order matters: the generated-caller test comes first
+    /// because it is the strongest thing that can be said, and it is driven by
+    /// <see cref="CountInGeneratedCode"/>, the same number the caller prints in the
+    /// footer, so the two cannot disagree.
     /// </summary>
     public static string ExplainEmpty(SqliteConnection db, string symbolPattern)
     {
+        if (CountInGeneratedCode(db, symbolPattern) > 0)
+            return $"Every caller of '{symbolPattern}' that vela can name is in source-generated code, "
+                 + "which the compiler builds from Razor and never writes to disk, so the default answer "
+                 + "left all of them out. The symbol is in the index and it does have callers: this empty "
+                 + "result is not evidence that nothing calls it. Pass --include-generated to see them.";
+
         if (!QueryHelper.AnySymbolOccurrence(db, symbolPattern))
             return QueryHelper.NoSuchSymbol(symbolPattern);
+
+        // Reached when the symbol exists but nothing about it is on disk, so the
+        // remaining explanations, which are all about what impact could see, would be
+        // reasoning from a filtered view while claiming to describe the whole index.
+        if (!QueryHelper.AnySymbolOccurrenceOnDisk(db, symbolPattern))
+            return QueryHelper.OnlyInGeneratedCode(symbolPattern);
 
         if (!QueryHelper.AnySymbolReference(db, symbolPattern))
             return $"'{symbolPattern}' is in the index, and no reference to it is recorded, so there is no "

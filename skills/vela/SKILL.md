@@ -70,7 +70,7 @@ Results are grouped by file and shaped for a context window rather than a termin
 
 If vela reports that a project failed to load, that a project did not compile, or that the index is stale relative to the working tree, treat the answer as incomplete and say so. All three print a banner above the results and exit 3. Do not delete or rename a symbol on the strength of an empty reference list from a degraded index. vela is built to report its own gaps loudly; honour that signal rather than reading past it.
 
-Every verb also explains an empty answer rather than printing a bare zero, and the explanation distinguishes "nothing of that name is indexed" from "it is indexed and there is nothing to report". Read it: the two mean opposite things.
+Every verb also explains an empty answer rather than printing a bare zero, and the explanation distinguishes "nothing of that name is indexed" from "it is indexed and there is nothing to report" and from "it is indexed and every occurrence is in generated code". Read it: they mean different things, and only the first is about a name the codebase does not have.
 
 ## What it does not do
 

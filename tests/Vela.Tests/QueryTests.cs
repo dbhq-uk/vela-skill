@@ -571,6 +571,184 @@ public class QueryTests
         Assert.Contains("(generated)", OutputWriter.Render(hits, IndexHealth.Read(db)), StringComparison.Ordinal);
     }
 
+    // ---- An empty answer must not contradict the suppression footer -------
+    //
+    // refs and impact suppress generated documents and then print "N further result(s)
+    // in generated code". When every hit was suppressed, the answer read
+    //
+    //     No symbol matching 'X' is in the index ... nothing of that name was indexed
+    //     3 further result(s) in generated code.
+    //
+    // Both sentences cannot be true, and the one an agent acts on is the first: it
+    // concludes the symbol does not exist and deletes it. This is reachable on the
+    // flagship case, a Razor page member whose only declaration is in generated code.
+
+    /// <summary>
+    /// A Razor page whose members exist only in the generator's output: ViewData is
+    /// defined and used there and nowhere openable, Title is defined there and used
+    /// nowhere at all, and the one occurrence on disk is of an unrelated symbol.
+    /// </summary>
+    private static SqliteConnection GeneratedOnlyDb()
+    {
+        var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO document(id, relative_path, language, generated) VALUES
+                (1, 'App/Pages/Index.cshtml', 'razor', 0),
+                (2, 'App/obj/Debug/net10.0/generated/Pages_Index_cshtml.g.cs', 'csharp', 1);
+            INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                (2, 'AspNetCore.Pages_Index.ExecuteAsync()', 1,  5, 8,   30,    9),
+                (2, 'AspNetCore.Pages_Index.ViewData',       1,  6, 8,    6,   20),
+                (2, 'AspNetCore.Pages_Index.ViewData',       0,  9, 8, NULL, NULL),
+                (2, 'AspNetCore.Pages_Index.ViewData',       0, 11, 8, NULL, NULL),
+                (2, 'AspNetCore.Pages_Index.Title',          1,  7, 8,    7,   18),
+                (1, 'App.Models.Perfume.Status',             0,  2, 4, NULL, NULL);
+            INSERT INTO symbol_fts(symbol) VALUES
+                ('AspNetCore.Pages_Index.ViewData'), ('AspNetCore.Pages_Index.Title');
+            """;
+        cmd.ExecuteNonQuery();
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+        return db;
+    }
+
+    [Fact]
+    public void Refs_WhenEveryOccurrenceWasSuppressedAsGenerated_SaysTheSymbolIsIndexedRatherThanAbsent()
+    {
+        using var db = GeneratedOnlyDb();
+        const string pattern = "ViewData";
+
+        Assert.Empty(RefsQuery.Run(db, pattern));
+        Assert.Equal(3, RefsQuery.CountInGeneratedCode(db, pattern));
+
+        var explanation = RefsQuery.ExplainEmpty(db, pattern);
+
+        // The sentence that does the damage, said of a symbol that is in the index.
+        Assert.DoesNotContain("nothing of that name was indexed", explanation, StringComparison.Ordinal);
+        Assert.DoesNotContain("No symbol matching", explanation, StringComparison.Ordinal);
+
+        Assert.Contains(pattern, explanation, StringComparison.Ordinal);
+        Assert.Contains("is in the index", explanation, StringComparison.Ordinal);
+        Assert.Contains("generated", explanation, StringComparison.Ordinal);
+        Assert.Contains("--include-generated", explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Refs_OnAnIndexWithGeneratedCode_StillCallsAGenuinelyAbsentSymbolAbsent()
+    {
+        // The other half: the suppression branch must not swallow the real absence.
+        using var db = GeneratedOnlyDb();
+        const string pattern = "Zzzyzx";
+
+        Assert.Empty(RefsQuery.Run(db, pattern));
+        Assert.Equal(0, RefsQuery.CountInGeneratedCode(db, pattern));
+
+        var explanation = RefsQuery.ExplainEmpty(db, pattern);
+
+        Assert.Contains("No symbol matching", explanation, StringComparison.Ordinal);
+        Assert.Contains("nothing of that name was indexed", explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Impact_WhenEveryCallerWasSuppressedAsGenerated_SaysSoRatherThanClaimingTheSymbolIsAbsent()
+    {
+        using var db = GeneratedOnlyDb();
+        const string pattern = "ViewData";
+
+        Assert.Empty(ImpactQuery.Run(db, pattern));
+        Assert.Equal(1, ImpactQuery.CountInGeneratedCode(db, pattern));
+
+        var explanation = ImpactQuery.ExplainEmpty(db, pattern);
+
+        Assert.DoesNotContain("nothing of that name was indexed", explanation, StringComparison.Ordinal);
+        Assert.DoesNotContain("No symbol matching", explanation, StringComparison.Ordinal);
+        Assert.Contains("generated", explanation, StringComparison.Ordinal);
+        Assert.Contains("--include-generated", explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Impact_WhenEveryOccurrenceIsGenerated_SaysSoRatherThanBlamingAMissingBodyRange()
+    {
+        // Title is defined in the generator's output and referred to nowhere. Reasoning
+        // over unfiltered occurrences reached "references are in the index but none
+        // falls inside a recorded body range", which names the wrong reason, and
+        // reasoning over none of them at all would have claimed the symbol is absent.
+        using var db = GeneratedOnlyDb();
+        const string pattern = "Title";
+
+        Assert.Empty(ImpactQuery.Run(db, pattern));
+        Assert.Equal(0, ImpactQuery.CountInGeneratedCode(db, pattern));
+
+        var explanation = ImpactQuery.ExplainEmpty(db, pattern);
+
+        Assert.DoesNotContain("nothing of that name was indexed", explanation, StringComparison.Ordinal);
+        Assert.DoesNotContain("No symbol matching", explanation, StringComparison.Ordinal);
+        Assert.Contains("is in the index", explanation, StringComparison.Ordinal);
+        Assert.Contains("--include-generated", explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Impact_OnAnIndexWithGeneratedCode_StillCallsAGenuinelyAbsentSymbolAbsent()
+    {
+        using var db = GeneratedOnlyDb();
+
+        var explanation = ImpactQuery.ExplainEmpty(db, "Zzzyzx");
+
+        Assert.Contains("No symbol matching", explanation, StringComparison.Ordinal);
+        Assert.Contains("nothing of that name was indexed", explanation, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DefAndOutline_SuppressNothing_SoTheirEmptyExplanationsAreUnchanged()
+    {
+        // Confirmed rather than assumed: def and outline always include generated
+        // documents, so they can never reach the state this fix is about. They answer
+        // for the generated-only member instead of explaining an empty result, and
+        // when they are empty it is for the reasons they already gave.
+        using var db = GeneratedOnlyDb();
+
+        Assert.NotEmpty(DefQuery.Run(db, "ViewData"));
+        Assert.NotEmpty(OutlineQuery.Run(db, "App/obj/Debug/net10.0/generated/Pages_Index_cshtml.g.cs"));
+
+        Assert.Contains("No symbol matching", DefQuery.ExplainEmpty(db, "Zzzyzx"), StringComparison.Ordinal);
+        Assert.Contains("No document with the path",
+            OutlineQuery.ExplainEmpty(db, "App/Pages/Missing.cshtml"), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RefsFromTheCommandLine_WhenEverythingWasSuppressed_DoesNotContradictItsOwnFooter()
+    {
+        // The two statements are printed by different code paths, so the only place the
+        // contradiction is visible is the whole rendered answer.
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteIndexFileWhollyGenerated(indexPath);
+
+        var result = await InvokeAsync("refs", "ViewData", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("0 result(s)", result.Output, StringComparison.Ordinal);
+        Assert.Contains("3 further result(s) in generated code", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("nothing of that name was indexed", result.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("No symbol matching", result.Output, StringComparison.Ordinal);
+        Assert.Contains("is in the index", result.Output, StringComparison.Ordinal);
+        Assert.Contains("--include-generated", result.Output, StringComparison.Ordinal);
+
+        // And asking for them produces the hits the explanation promised.
+        var included = await InvokeAsync("refs", "ViewData", "--include-generated", "--solution", solution);
+        Assert.Equal(0, included.ExitCode);
+        Assert.Contains("3 result(s)", included.Output, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task RefsFromTheCommandLine_DeclaresWhatItSuppressed_AndCanBeAskedForIt()
     {
@@ -1056,6 +1234,38 @@ public class QueryTests
                     (2, 'AspNetCore.Pages_Index.ViewData', 0, 9, 8, NULL, NULL),
                     (2, 'AspNetCore.Pages_Index.ViewData', 0, 11, 8, NULL, NULL),
                     (1, 'AspNetCore.Pages_Index.ViewData', 0, 2, 4, NULL, NULL);
+                INSERT INTO symbol_fts(symbol) VALUES ('AspNetCore.Pages_Index.ViewData');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>
+    /// An on-disk index in which every occurrence of ViewData is in the generator's
+    /// output, which is what a Razor page member looks like.
+    /// </summary>
+    private static void WriteIndexFileWhollyGenerated(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language, generated) VALUES
+                    (1, 'App/Pages/Index.cshtml', 'razor', 0),
+                    (2, 'App/obj/Debug/net10.0/generated/Pages_Index_cshtml.g.cs', 'csharp', 1);
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (2, 'AspNetCore.Pages_Index.ViewData', 1,  5, 8,    6,    9),
+                    (2, 'AspNetCore.Pages_Index.ViewData', 0,  9, 8, NULL, NULL),
+                    (2, 'AspNetCore.Pages_Index.ViewData', 0, 11, 8, NULL, NULL),
+                    (1, 'App.Models.Perfume.Status',       0,  2, 4, NULL, NULL);
                 INSERT INTO symbol_fts(symbol) VALUES ('AspNetCore.Pages_Index.ViewData');
                 """;
             cmd.ExecuteNonQuery();

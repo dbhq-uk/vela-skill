@@ -39,10 +39,26 @@ public static class RefsQuery
             """, symbolPattern);
 
     /// <summary>
-    /// Why refs came back empty. refs matches occurrences directly, so no hits means
-    /// no occurrence of that name was indexed at all, and the honest answer names
-    /// the index rather than the code.
+    /// Why refs came back empty. refs matches occurrences directly, so two absences
+    /// print the same "0 result(s)": no occurrence of that name was indexed at all, and
+    /// every occurrence of it was suppressed for living in generated code.
+    ///
+    /// The second used to print the first, which put two contradictory sentences in one
+    /// answer: "nothing of that name was indexed" above "3 further result(s) in
+    /// generated code". It is reachable on the case vela exists for, a Razor page member
+    /// whose only declaration is in the generator's output, and the reader acts on the
+    /// first sentence.
+    ///
+    /// The test is <see cref="CountInGeneratedCode"/> itself, the same number the
+    /// caller prints in the footer, so the explanation and the footer cannot disagree
+    /// however either of them changes. It is exact rather than approximate: an empty
+    /// default answer means no occurrence outside generated code exists, so a non-zero
+    /// count here means every occurrence there is was suppressed. With
+    /// --include-generated nothing is suppressed, so an empty answer scores zero here
+    /// and correctly reports a symbol that is genuinely absent.
     /// </summary>
     public static string ExplainEmpty(SqliteConnection db, string symbolPattern)
-        => QueryHelper.NoSuchSymbol(symbolPattern);
+        => CountInGeneratedCode(db, symbolPattern) > 0
+            ? QueryHelper.OnlyInGeneratedCode(symbolPattern)
+            : QueryHelper.NoSuchSymbol(symbolPattern);
 }
