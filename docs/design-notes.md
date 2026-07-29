@@ -25,9 +25,12 @@ of service on the context window.
 
 Beyond noise, there are questions grep cannot answer at any precision: which
 occurrence is the definition, whether `@Model.Perfume` in a `.cshtml` binds to a
-particular property on a particular type, what implements an interface, where an
-inherited or extension member called as `x.Foo()` is actually defined, which
-overload is meant, and what `using Foo = Bar` aliases.
+particular property on a particular type, where an inherited or extension member
+called as `x.Foo()` is actually defined, which overload is meant, and what
+`using Foo = Bar` aliases.
+
+(Interface implementations are a SCIP `Relationship`, which vela does not emit yet
+and no verb answers. They are not in the list above for that reason.)
 
 ## The gap nothing else fills
 
@@ -99,8 +102,11 @@ Both are upstreamable to `scip-dotnet`; we carry them until they land.
 
 **2. SCIP as the interchange format.** SCIP is the standardised, mature format for
 exactly this - language-server-grade intelligence harvested once and persisted.
-Emitting it means vela consumes indexes produced by anyone: `scip-typescript`,
-`scip-python`, and the rest work unmodified. .NET is the flagship, not the limit.
+Emitting it is what would let vela consume indexes produced by anyone -
+`scip-typescript`, `scip-python`, and the rest - so that .NET is the flagship rather
+than the limit. That is the reason for the choice, not a feature that exists: there
+is no `.scip` import path today, and everything in the index is harvested from
+Roslyn.
 
 **3. SQLite.** Documents, symbols, occurrences and relationships, plus FTS5 for
 name search. One portable file. Nothing resident between queries.
@@ -157,8 +163,12 @@ those compilations - which is where Razor Pages, MVC views and Blazor components
 arrive. `LanguageNames` carries an `FSharp` constant but there is no Roslyn F#
 implementation, so F# is out of scope.
 
-Other languages are reachable by consuming their existing SCIP indexers. vela does
-not implement them.
+Both languages are handled in the harvester. Razor Pages, MVC views and Blazor
+components arrive as generated **C#** whatever the host project's language, so the
+Razor family is C#-side either way.
+
+Other languages would be reachable by consuming their existing SCIP indexers. vela
+neither implements them nor, yet, imports them.
 
 ## Non-goals
 
@@ -171,9 +181,13 @@ not implement them.
 
 ## Open questions
 
-- **Staleness policy.** Index records a git ref and per-file hashes; queries touching
-  changed files must warn rather than answer from stale data. Whether that is a
-  banner, an exit code, or both is not yet settled.
+- **Staleness policy.** Settled for now at the cheap end: the index records when it
+  was built, and every query compares that against the newest modification time under
+  the solution directory, skipping `bin`, `obj` and `.git`. Anything newer degrades the
+  answer, which means both the banner and exit code 3. It is timestamps only - no file
+  is read and nothing is hashed - so it is coarse: it cannot say whether the symbol you
+  asked about was the one that changed. A git ref and per-file hashes would narrow that,
+  and are worth doing only alongside incremental reindex.
 - **Incremental reindex.** Full index of a 10-project solution takes ~87s with
   `scip-dotnet` as a reference point. Whether per-project incremental work is worth
   the complexity is deferred until the full path is proven.

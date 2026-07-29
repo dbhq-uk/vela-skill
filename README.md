@@ -28,7 +28,7 @@ vela builds a compiler-exact index of a .NET solution and answers questions abou
 
 **It tells you when it does not know.** A code-intelligence tool that silently returns partial results is worse than grep, because you believe it. If a project fails to load, every query that touches it says so and the exit code reflects it. Absence of results is never reported as evidence of absence.
 
-**It does not replace grep.** For a distinctive identifier, `grep` returns twenty-four lines and needs no index at all. vela earns its keep on the ordinary names - `Name`, `Status`, `Value`, `Id`, `Update` - where grep is 88 to 98% noise, and on the questions grep cannot answer at any precision: which occurrence is the definition, what implements this interface, which overload was meant, and where an inherited member called as `x.Foo()` actually lives.
+**It does not replace grep.** For a distinctive identifier, `grep` returns twenty-four lines and needs no index at all. vela earns its keep on the ordinary names - `Name`, `Status`, `Value`, `Id`, `Update` - where grep is 88 to 98% noise, and on the questions grep cannot answer at any precision: which occurrence is the definition, which overload was meant, whether `@Model.Perfume` in a `.cshtml` binds to a particular property on a particular type, and where an inherited or extension member called as `x.Foo()` actually lives.
 
 ## Measured
 
@@ -65,18 +65,25 @@ Requires the .NET SDK, and the solution you are indexing must build.
 
 ```bash
 vela index                        # build the index once
+vela index --stats                # ... and report what is in it
 vela outline Services/PerfumeService.cs
 vela def    Perfume.Status
 vela refs   Perfume.Status        # includes .cshtml and .razor
 vela impact PerfumeService
-vela find   "*Repository"
+vela find   Repository
 ```
+
+`def`, `refs` and `impact` match a **whole dotted segment**, case-sensitively: `Status` finds `Perfume.Status` and does not find `HttpStatus` or `OrderStatus`. `find` is the discovery verb and matches name tokens and a trailing prefix instead, so `find Stat` finds `Status`.
+
+`refs` and `impact` leave out source-generated code by default, because the Razor generator's output is compiled but never written to disk and those paths cannot be opened. They always say how much they left out, and `--include-generated` brings it back. `def` and `outline` always include it, marked `(generated)`.
+
+The index is a snapshot. If anything under the solution directory has changed since it was built, every verb says so and exits 3.
 
 ## Scope
 
-Roslyn covers **C# and Visual Basic**, plus anything a source generator emits into those compilations - which is how Razor Pages, MVC views and Blazor components arrive. F# has its own compiler and is out of scope.
+Roslyn covers **C# and Visual Basic**, plus anything a source generator emits into those compilations - which is how Razor Pages, MVC views and Blazor components arrive. Those all arrive as generated C# whatever the host project's language. F# has its own compiler and is out of scope.
 
-vela emits [SCIP](https://github.com/scip-code/scip), so it can also read indexes produced by other languages' indexers - `scip-typescript`, `scip-python` and friends work unmodified. .NET is the flagship, not the limit.
+vela emits [SCIP](https://github.com/scip-code/scip). Reading indexes produced by other languages' indexers - `scip-typescript`, `scip-python` and friends - is the reason for that choice, but it is a design intent rather than a shipped feature: there is no `.scip` import path yet, and today the index is built from Roslyn only.
 
 ## Documentation
 

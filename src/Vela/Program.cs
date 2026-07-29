@@ -194,7 +194,17 @@ public static class Program
 
     private static Command BuildIndexCommand(Option<string> solutionOption)
     {
-        var command = new Command("index", "Build the index for a solution") { solutionOption };
+        // The coverage this option reports is the one property of vela that regresses
+        // silently: lose the source-generated documents and the index still builds,
+        // every query still answers, and Razor and Blazor are simply not in it. A count
+        // is the only thing that shows it, so validating a change means running this.
+        var statsOption = new Option<bool>("--stats")
+        {
+            Description = "After indexing, print document, generated-document, Razor, occurrence "
+                        + "and definition counts."
+        };
+
+        var command = new Command("index", "Build the index for a solution") { solutionOption, statsOption };
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -227,9 +237,12 @@ public static class Program
                 Schema.Create(db);
                 ScipLoader.Load(db, index, emitted.GeneratedDocuments);
                 IndexHealth.Write(db, health);
-            }
 
-            output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
+                output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
+
+                if (parseResult.GetValue(statsOption))
+                    output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
+            }
 
             if (health.Degraded)
             {

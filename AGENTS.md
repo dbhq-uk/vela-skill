@@ -39,14 +39,27 @@ If you are changing the harvester, this is the property to protect. A regression
 ## Conventions
 
 - House style: **British English, plain hyphens** (no em or en dashes).
-- The tool emits [SCIP](https://github.com/scip-code/scip). Deviating from the format costs interoperability with every other language's indexer, so extend it rather than fork it.
-- Roslyn covers C# and Visual Basic only. `LanguageNames` carries an `FSharp` constant with no implementation behind it - do not be misled by it.
-- Tests are hermetic: no network, and they build throwaway solutions in temp directories rather than touching anything real.
+- The tool emits [SCIP](https://github.com/scip-code/scip). Deviating from the format costs interoperability with every other language's indexer, so extend it rather than fork it. Consuming indexes produced by other languages' SCIP indexers is a design intent, not a feature: there is no `.scip` import path today.
+- Roslyn covers C# and Visual Basic only. `LanguageNames` carries an `FSharp` constant with no implementation behind it - do not be misled by it. Both languages are handled in the harvester (reference folding and declaration anchoring), and the VB path is exercised against a synthetic VB compilation rather than a full MSBuild-loaded `.vbproj`. Razor Pages, MVC views and Blazor components arrive as generated **C#** whatever the host project's language.
+- **The tool** makes no network calls: no model calls, no telemetry, nothing resident. **The test fixtures** are a different matter - they run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore` to scaffold real projects in temp directories, so a cold NuGet cache means the first run needs network access. Nothing outside the temp directory is touched.
 
 ## Validating a change
 
 Coverage assertions that must hold on the fixture solution:
 
 ```bash
-vela index --stats     # generated-document count must be non-zero for Razor projects
+vela index --stats
 ```
+
+On a scaffolded Razor Pages app (`dotnet new webapp`) that prints:
+
+```
+documents            : 23
+  generated          : 8   (compiled, not on disk)
+  razor views        : 7   (.cshtml and .razor)
+occurrences          : 2670
+  in razor views     : 22
+  definitions        : 182
+```
+
+The `razor views` count must equal the number of `.cshtml` files on disk, and `in razor views` must be non-zero - seven empty Razor documents would satisfy the first count and mean the mapping has collapsed. `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count.
