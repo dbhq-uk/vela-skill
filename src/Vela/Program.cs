@@ -445,19 +445,27 @@ public static class Program
                                + "symbol itself is the name they are stored under.");
             }
 
-            // Staleness is measured from built_at_utc, so an existing record's timestamp
-            // is kept: an import is not a rebuild, and refreshing it would tell a reader
-            // the C# half had been checked against the disk when it had not.
-            var existing = isNew
-                ? new HealthRecord(DateTime.UtcNow, null, Degraded: false, Detail: null)
-                : IndexHealth.Read(db);
+            // An import into nothing needs an indexing-pass record to exist, or every
+            // later query reads "index has no health record" and refuses to vouch for an
+            // index that is in fact exactly what was asked for. An import into an
+            // existing index writes no such record at all: staleness is measured from
+            // built_at_utc, and refreshing it would tell a reader the C# half had been
+            // compared against the disk when it had not.
+            if (isNew) IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, Degraded: false, null));
 
+            // This import's own verdict, under this import's own name, replacing
+            // whatever this same file contributed last time. The verb used to OR its
+            // degradation into the shared record and append its detail to the text
+            // already there, so a lost document degraded every answer forever and every
+            // run made the banner longer: a real cache sat at degraded=1 with four
+            // duplicate-document entries from an import that had since succeeded. Scoped
+            // by source, a cleared problem clears, and this import cannot clear anybody
+            // else's.
+            //
+            // The source is the full path, so the same file named two ways from two
+            // directories is one contribution rather than two.
             var detail = report.Degraded ? Summarise(report.Problems) : null;
-            IndexHealth.Write(db, existing with
-            {
-                Degraded = existing.Degraded || report.Degraded,
-                Detail = Join(existing.Detail, detail)
-            });
+            IndexHealth.WriteImport(db, Path.GetFullPath(scipPath), detail);
 
             if (!report.Degraded) return 0;
 
@@ -468,11 +476,6 @@ public static class Program
 
         return command;
     }
-
-    private static string? Join(string? first, string? second) =>
-        string.IsNullOrEmpty(first) ? second
-        : string.IsNullOrEmpty(second) ? first
-        : first + "; " + second;
 
     /// <summary>
     /// The health record for a freshly emitted index.

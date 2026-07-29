@@ -390,6 +390,74 @@ public class ScipImportEndToEndTests
         Assert.Contains(".cshtml", csharp.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The failure a real user hit: a degraded health record was sticky, so an import
+    /// that lost documents left every later query printing the "!! INCOMPLETE" banner
+    /// even after the very same .scip had been imported successfully. Crying wolf on a
+    /// healthy index is a failure this project has already paid for once.
+    ///
+    /// The whole cycle, through the CLI, on one index: index, a bad import, the banner,
+    /// the indexer re-run properly, the same file imported again, and no banner.
+    /// </summary>
+    [Fact]
+    public async Task Import_ThroughTheCli_ClearsTheDegradedRecordWhenTheSameSourceImportsCleanly()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        // The indexer was run in the wrong place, so its document cannot be placed under
+        // vela's root at all and the import is honestly degraded.
+        var scip = Path.Combine(fx.Root, "mobile.scip");
+        File.WriteAllBytes(scip, ForeignIndex("/elsewhere", "Shared/Thing.ts").ToByteArray());
+
+        var failed = await InvokeAsync("import", scip, "--solution", fx.SolutionPath);
+        Assert.Equal(IndexHealth.ExitDegraded, failed.ExitCode);
+
+        var banner = await InvokeAsync("refs", "ViewData", "--solution", fx.SolutionPath);
+        Assert.Equal(IndexHealth.ExitDegraded, banner.ExitCode);
+        Assert.Contains("INCOMPLETE", banner.Output, StringComparison.Ordinal);
+
+        // The indexer is re-run from the right root and the same file imported again.
+        File.WriteAllBytes(
+            scip,
+            ForeignIndex(fx.Root, "App/wwwroot/js/site.ts").ToByteArray());
+
+        var repaired = await InvokeAsync("import", scip, "--solution", fx.SolutionPath);
+        Assert.Equal(0, repaired.ExitCode);
+
+        // The problem is gone, so the banner is gone. It is the same index, the same
+        // source and the same command: only the contribution was replaced.
+        var clean = await InvokeAsync("refs", "ViewData", "--solution", fx.SolutionPath);
+        Assert.Equal(0, clean.ExitCode);
+        Assert.DoesNotContain("INCOMPLETE", clean.Output, StringComparison.Ordinal);
+        Assert.Contains(".cshtml", clean.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>One document, one occurrence, rooted where the caller says.</summary>
+    private static Scip.Index ForeignIndex(string root, string relativePath)
+    {
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata
+            {
+                ProjectRoot = new Uri(root + Path.DirectorySeparatorChar).AbsoluteUri,
+                ToolInfo = new Scip.ToolInfo { Name = "scip-typescript", Version = "0.4.0" }
+            }
+        };
+
+        var doc = new Scip.Document { RelativePath = relativePath, Language = "typescript" };
+        doc.Occurrences.Add(new Scip.Occurrence
+        {
+            Symbol = "scip-typescript npm app 1.0.0 `site.ts`/greet().",
+            SymbolRoles = (int)Scip.SymbolRole.Definition,
+            SingleLineRange = new Scip.SingleLineRange { Line = 3, StartCharacter = 9, EndCharacter = 14 }
+        });
+        index.Documents.Add(doc);
+        return index;
+    }
+
     private const string PositionsSql = """
         SELECT d.relative_path, o.start_line, o.start_char, o.is_definition,
                IFNULL(o.enc_end_line, -1), IFNULL(o.enc_end_char, -1)

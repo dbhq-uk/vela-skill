@@ -31,7 +31,91 @@ public static class IndexHealth
         tx.Commit();
     }
 
+    /// <summary>
+    /// One imported .scip's contribution to the health of the index, replacing whatever
+    /// that same source contributed last time. A null <paramref name="detail"/> means
+    /// the import lost nothing, so the source's contribution is removed entirely.
+    ///
+    /// This is what makes a cleared problem clear. The verb used to fold its verdict
+    /// into the single index_health row with `existing.Degraded || report.Degraded` and
+    /// concatenate its detail onto the existing text, which is unclearable by
+    /// construction: no later run of anything could distinguish the part of that row it
+    /// was entitled to withdraw. Keyed by source, an import owns exactly one row, and
+    /// re-importing the same file overwrites it - including overwriting it with nothing.
+    ///
+    /// It deliberately does not touch index_health. An import is not a rebuild, so
+    /// refreshing built_at_utc would tell a reader the C# half had been compared against
+    /// the disk when it had not, and an import cannot un-know that a project failed to
+    /// load either.
+    /// </summary>
+    public static void WriteImport(SqliteConnection db, string source, string? detail)
+    {
+        using var tx = db.BeginTransaction();
+
+        using (var delete = db.CreateCommand())
+        {
+            delete.Transaction = tx;
+            delete.CommandText = "DELETE FROM import_health WHERE source = $s";
+            delete.Parameters.AddWithValue("$s", source);
+            delete.ExecuteNonQuery();
+        }
+
+        if (!string.IsNullOrEmpty(detail))
+        {
+            using var insert = db.CreateCommand();
+            insert.Transaction = tx;
+            insert.CommandText =
+                "INSERT INTO import_health(source, imported_at_utc, detail) VALUES ($s, $t, $d)";
+            insert.Parameters.AddWithValue("$s", source);
+            insert.Parameters.AddWithValue("$t", DateTime.UtcNow.ToString("O"));
+            insert.Parameters.AddWithValue("$d", detail);
+            insert.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// The health of the whole index: the indexing pass's verdict on itself, with every
+    /// imported source's live problems folded in.
+    ///
+    /// Folded here rather than at each call site so that a verb cannot read one half and
+    /// miss the other. Every verb already calls this, and there is one banner and one
+    /// exit code, so there is one place the two records meet.
+    /// </summary>
     public static HealthRecord Read(SqliteConnection db)
+    {
+        var record = ReadIndexingPass(db);
+        var imports = ReadImportProblems(db);
+
+        return imports.Count == 0
+            ? record
+            : record with
+            {
+                Degraded = true,
+                Detail = string.IsNullOrEmpty(record.Detail)
+                    ? string.Join("; ", imports)
+                    : record.Detail + "; " + string.Join("; ", imports)
+            };
+    }
+
+    /// <summary>
+    /// Each imported source's live problems, named by the file to re-import to clear
+    /// them, ordered by source so the same index renders the same banner on every run
+    /// and every machine (Constraint 1).
+    /// </summary>
+    private static List<string> ReadImportProblems(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT source, detail FROM import_health ORDER BY source";
+        using var reader = cmd.ExecuteReader();
+
+        var problems = new List<string>();
+        while (reader.Read()) problems.Add($"imported from {reader.GetString(0)}: {reader.GetString(1)}");
+        return problems;
+    }
+
+    private static HealthRecord ReadIndexingPass(SqliteConnection db)
     {
         // Write leaves exactly zero or one row, but the schema has no primary key,
         // UNIQUE or CHECK constraint enforcing that singleton (adding one would

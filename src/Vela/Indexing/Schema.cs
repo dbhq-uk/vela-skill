@@ -19,11 +19,11 @@ public static class Schema
     /// existed, so it can never be a valid version. 1 was the schema without the
     /// generated column. 2 adds it. 3 adds external_document. 4 adds
     /// occurrence.scip_symbol. 5 adds document.position_encoding and an index on
-    /// occurrence.scip_symbol. A future change bumps this and nothing else: there is no
-    /// migration, because re-indexing takes seconds and rebuilds from the truth rather
-    /// than from a guess about what the old rows meant.
+    /// occurrence.scip_symbol. 6 adds import_health. A future change bumps this and
+    /// nothing else: there is no migration, because re-indexing takes seconds and
+    /// rebuilds from the truth rather than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 5;
+    public const int Version = 6;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -147,12 +147,39 @@ public static class Schema
                 path TEXT NOT NULL
             );
 
-            -- Constraint 3: an index that could not be built completely says so.
+            -- Constraint 3: an index that could not be built completely says so. This
+            -- row is the INDEXING PASS's verdict on itself and nobody else's: it is
+            -- written by `vela index` and never touched by an import, so built_at_utc
+            -- keeps meaning "when this code was last compared against the disk", which
+            -- is what the freshness check measures from.
             CREATE TABLE IF NOT EXISTS index_health (
                 built_at_utc TEXT NOT NULL,
                 git_ref      TEXT,
                 degraded     INTEGER NOT NULL,
                 detail       TEXT
+            );
+
+            -- One row per imported .scip whose LAST import left code out of the index,
+            -- keyed by the file it came from. Presence is the degradation: a source
+            -- imported cleanly has no row here.
+            --
+            -- Health is contributed by source because it was not, and a real user paid
+            -- for it. `vela import` used to write `degraded = existing.degraded OR
+            -- mine` into index_health and append its detail to whatever was there, so
+            -- nothing could ever clear it and every import made the banner longer. A
+            -- cache in the wild sat at degraded=1 with four duplicate-document entries
+            -- from an import that had since succeeded, and printed "!! The index is
+            -- INCOMPLETE" above every answer it gave. Crying wolf is the failure
+            -- Constraint 3 cuts both ways on: a banner that is wrong is a banner nobody
+            -- reads by the time it is right.
+            --
+            -- source is the PRIMARY KEY, so importing the same file again REPLACES its
+            -- contribution rather than adding a second one, and there is no state in
+            -- which two rows describe one source and nobody can say which is current.
+            CREATE TABLE IF NOT EXISTS import_health (
+                source          TEXT NOT NULL PRIMARY KEY,
+                imported_at_utc TEXT NOT NULL,
+                detail          TEXT NOT NULL
             );
             """;
         cmd.ExecuteNonQuery();
