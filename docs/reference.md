@@ -172,16 +172,34 @@ is a stricter test than the modification-time comparison the freshness check mak
 
 What that does not cover is a watched file that is an input of no project: a `.cs` excluded
 from compilation, anything belonging to a project that failed to load, a `.props` under a
-name the walk above does not look for. Those are outside the ledger, and a full index moves
-the same timestamp without reading them either, so the two modes are equally blind here and
-neither is more blind than the other.
+name the walk above does not look for. Those are outside the ledger, so nothing in it moves
+when one of them does, and both modes reset the timestamp without having compared them.
+
+**The two modes are not equally blind about those files, though, and incremental is the
+blinder one.** Where the file is one the compiler never sees at all, a `.cs` excluded from
+compilation, the modes really are the same: it is in neither index and no rebuild will put
+it there. Where the file is one MSBuild reads but the walk does not hash, a `.props` under a
+name of your own, they differ. A full rebuild loads every project again, so the edit is
+applied and the new index reflects it. An incremental run keeps the rows the reused projects
+were built from **before** the edit and moves `built_at_utc` anyway, which clears the
+modification time [Freshness](#freshness) would otherwise have raised on your behalf. So
+that is the one case where the flag can leave the index quietly describing a build
+configuration that has changed, and it is why the paragraph on the build-file walk above
+says to index without the flag after editing one.
 
 #### What `--incremental` actually saves
 
-Measured on the ten-project, 375,608-line solution vela is developed against, on
-30 July 2026. Each figure is a wall clock, and after each one the load-bearing counts were
-unchanged: 307 of 307 Razor views with 50,355 occurrences in them, `refs Perfume.Status` 24,
-`refs ILogger` 563, `refs Count` 2,573.
+Measured on ScentVerdict, the ten-project solution vela is developed against, on
+30 July 2026, when it stood at 375,608 lines of C# and 307 Razor views. Each figure is a
+wall clock, and after each one the load-bearing counts were unchanged from the full index
+in the first row: 307 of 307 Razor views with 50,355 occurrences in them,
+`refs Entities.Perfume.Status` 24, `refs ILogger` 563, `refs Count` 2,573.
+
+**Those counts are what the benchmark checked did not move, not figures you can reproduce
+now.** That repository merged a feature branch later the same day, and on the index built
+after it the same four queries answer 334 of 334 views with 52,445 occurrences, 24, 619 and
+2,613. What the table below is evidence for is the *ratio* between the modes, and that is a
+property of the dependency graph rather than of the line count.
 
 | What changed | Wall clock | What it rebuilt |
 |---|---|---|
@@ -335,12 +353,13 @@ measured. See [How we know it is right](architecture.md#how-we-know-it-is-right)
 
 ### The ambiguity block
 
-A bare name can still name more than one thing, and vela says so when it does.
+A bare name can still name more than one thing, and vela says so when it does. This is
+`refs Perfume` on ScentVerdict on 30 July 2026, abridged:
 
 ```
-'Perfume' is ambiguous: the 3104 result(s) above span 25 distinct symbols:
-    1958  ScentVerdict.Data.Entities.Perfume
-     384  ScentVerdict.Data.Enums.EntityType.Perfume
+'Perfume' is ambiguous: the 3156 result(s) above span 25 distinct symbols:
+    1977  ScentVerdict.Data.Entities.Perfume
+     381  ScentVerdict.Data.Enums.EntityType.Perfume
      ...
      144  (+15 further symbol(s))
 To ask about one of them, give more of its name: 'Entities.Perfume' matches

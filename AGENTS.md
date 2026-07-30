@@ -12,7 +12,7 @@ Guidance for AI agents (and people) working in this repository.
 .claude-plugin/plugin.json     # plugin manifest
 skills/vela/SKILL.md           # the skill (agent-facing instructions)
 src/Vela/                      # the CLI: Config, Harvest, Indexing, Query, Scip
-tests/Vela.Tests/              # 293 tests, hermetic
+tests/Vela.Tests/              # 355 tests, hermetic
 install.sh / install-codex.sh  # local installers (Claude / Codex)
 docs/                          # see docs/README.md for the index
 ```
@@ -75,5 +75,5 @@ The `razor views` count must equal the number of `.cshtml` files on disk, and `i
 And the suite, which must stay green:
 
 ```bash
-dotnet test          # 293 passed, 0 failed
+dotnet test          # 355 passed, 0 failed
 ```

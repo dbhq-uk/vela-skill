@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for looking. vela works: the CLI is built, 293 tests pass, and it is measured on a
-real 375,608-line solution. The design is written up in
+Thanks for looking. vela works: the CLI is built, 355 tests pass, and it is measured on a
+real ten-project solution of 388,323 lines of C#. The design is written up in
 [docs/design-notes.md](docs/design-notes.md), which is now a historical record;
 [docs/architecture.md](docs/architecture.md) is the current picture.
 

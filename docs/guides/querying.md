@@ -3,8 +3,16 @@
 **A how-to guide.** Four questions you actually have about a codebase, and the command for
 each.
 
-Every example below was run on 30 July 2026 against a real 375,608-line C# solution with
-307 Razor views. The numbers are what came back.
+Every example below was run on 30 July 2026 against ScentVerdict, a real ten-project
+solution of 388,323 lines of C# with 334 Razor views. The numbers are what came back that
+day. It is a live repository and it grows, so treat the counts as a worked example rather
+than as constants: the commands are all here, and running them is the point.
+
+The outputs below are shown without the `!!` banner, which is a trimming and worth saying
+out loud. On the day these were taken, two of that solution's projects would not compile
+against the packages available on the machine, so every one of these commands also printed
+the incomplete-index banner and exited 3. See
+[when not to trust the answer](#when-not-to-trust-the-answer), which is about exactly that.
 
 - [Is this used anywhere?](#is-this-used-anywhere)
 - [Who calls this?](#who-calls-this)
@@ -33,18 +41,18 @@ src/ScentVerdict.ServiceInterface/Api/Admin/PerfumeListService.cs
 
 Twenty-four occurrences, one of which is the definition.
 
-`grep -rw --include='*.cs' --include='*.cshtml' Status .` over the same tree returns 2,267
-lines. You cannot read 2,267 lines, and if you feed them to an agent you have spent the
+`grep -rw --include='*.cs' --include='*.cshtml' Status .` over the same tree returns 2,257
+lines. You cannot read 2,257 lines, and if you feed them to an agent you have spent the
 context window rather than answered the question.
 
-The gap for the ordinary names, measured on that solution, `grep -w` counting lines and
-vela counting occurrences over the same `.cs` and `.cshtml` files:
+The gap for the ordinary names, measured on that solution on 30 July 2026, `grep -w`
+counting lines and vela counting occurrences over the same `.cs` and `.cshtml` files:
 
 | Question | vela | `grep -w` | Precision |
 |---|---|---|---|
-| `refs Entities.Perfume.Status` | 24 | 2,267 for `Status` | 1.1% |
-| `refs Entities.Perfume.Name` | 244 | 3,653 for `Name` | 6.7% |
-| `refs Brand.Name` | 325 | 3,653 for `Name` | 8.9% |
+| `refs Entities.Perfume.Status` | 24 | 2,257 for `Status` | 1.1% |
+| `refs Entities.Perfume.Name` | 248 | 3,780 for `Name` | 6.6% |
+| `refs Brand.Name` | 326 | 3,780 for `Name` | 8.6% |
 
 **An empty answer is not proof.** vela never prints a bare zero: it tells you which absence
 this is. "Nothing of that name is indexed" and "it is indexed and every occurrence is in
@@ -140,7 +148,7 @@ src/ScentVerdict.Data/Entities/Perfume.cs
 ...
 ```
 
-That file is 343 lines. The outline is the shape of it, and it costs no file read.
+That file is 361 lines. The outline is the shape of it, and it costs no file read.
 
 **Do this before pulling content.** Outline to find the member, `def` to get its exact
 location, then read only the lines you need. Reading a 900-line source file to discover
@@ -166,23 +174,26 @@ Use `find` to get the name, then use `def`, `refs` or `impact` to ask about it.
 A bare name can name more than one thing. Ask about `Status` on that solution:
 
 ```
-2088 result(s)
+2073 result(s)
 
-'Status' is ambiguous: the 2088 result(s) above span 154 distinct symbols across
-155 construction(s) of them:
-     738  ScentVerdict.Data.Entities.TaskInstance.Status
+'Status' is ambiguous: the 2073 result(s) above span 154 distinct symbols:
+     724  ScentVerdict.Data.Entities.TaskInstance.Status
      216  ScentVerdict.Data.Entities.Note.Status
      142  ScentVerdict.Data.Entities.Accord.Status
-      ...
+      56  ScentVerdict.Data.Entities.PipelineTriggerRequest.Status
+      51  ScentVerdict.Data.Entities.Article.Status
+      33  ScentVerdict.Data.Entities.WorkBatch.Status
+      27  ScentVerdict.ServiceModel.Api.TriggerRequestRow.Status
+      25  ScentVerdict.ServiceModel.Admin.EntityTaskItem.Status
       24  ScentVerdict.Data.Entities.Perfume.Status
-      ...
-     754  (+144 further symbol(s))
+      22  ScentVerdict.Data.Entities.DirectoryEntry.Status
+     753  (+144 further symbol(s))
 To ask about one of them, give more of its name: 'Entities.TaskInstance.Status' matches
 ScentVerdict.Data.Entities.TaskInstance.Status and none of the others.
 ```
 
-Every one of those 2,088 hits is a real occurrence of a real symbol. The number at the
-bottom is still the size of nothing: no single thing in that codebase has 2,088 references.
+Every one of those 2,073 hits is a real occurrence of a real symbol. The number at the
+bottom is still the size of nothing: no single thing in that codebase has 2,073 references.
 
 **Do exactly what the block says.** Lengthen the name until one symbol is left, then use
 that answer. `Entities.Perfume.Status` gets you 24, and 24 is the number you can act on.
@@ -204,7 +215,7 @@ For a distinctive identifier, grep wins on zero setup.
 grep -rw --include='*.cs' --include='*.cshtml' PerfumeService .
 ```
 
-Thirty-two lines on that solution, most of them documentation comments mentioning the
+Thirty-three lines on that solution, most of them documentation comments mentioning the
 class, all of them readable in one screen. vela's answer is 7, and it is the more correct
 one, but you did not need it.
 

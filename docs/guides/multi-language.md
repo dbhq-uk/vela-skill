@@ -218,13 +218,13 @@ fact and assumes neither.
 The other half of `vela.json` is the exclude list, and on a real repository it is the half
 that matters more.
 
-Measured on the 375,608-line solution vela is developed against, on 30 July 2026:
+Measured on ScentVerdict, the solution vela is developed against, on 30 July 2026:
 
-- A naive count by extension reports **5,776 Python files**. 5,695 of them are vendored
-  `venv` and `site-packages`. Eighty-one are the repository's own.
+- A naive count by extension reports **12,036 Python files**. 11,950 of them are vendored
+  `venv` and `site-packages`. Eighty-six are the repository's own.
 - One directory, `src/ScentVerdict.Web/wwwroot/app/`, is **gitignored build output** of the
   mobile app: minified bundles, hash-named chunks, a service worker. It holds 66 of the
-  205 JavaScript files that survive the default excludes.
+  208 JavaScript files that survive the default excludes.
 
 Indexing that directory would index the same code twice, once as readable source and once
 as bundles nobody can open, and a directory that appears and disappears between builds would
@@ -232,16 +232,16 @@ make the index non-deterministic.
 
 So vela ships opinionated default excludes, and the config is how a repository overrides
 them. With the defaults plus that one directory, the honest first-party picture of that
-repository is:
+repository on that day was:
 
 ```
-csharp 1866, razor 307, javascript 139, python 86, sql 40, vue 36, typescript 30, java 3
+csharp 1975, razor 334, javascript 142, python 86, vue 48, sql 40, typescript 39, java 3
 ```
 
 `vela index` prints what the exclude list kept out and which languages no job covers, so the
-numbers can be checked rather than trusted. The census reaches 86 Python files rather than
-81 because that repository's `.agents/skills` is a symlink to `.claude/skills`, and the walk
-follows it and counts those five twice.
+numbers can be checked rather than trusted, and they should be: that repository is live and
+every one of these moves. Five of the 86 Python files are the same five counted twice,
+because `.agents/skills` there is a symlink to `.claude/skills` and the walk follows it.
 
 ### Exclude syntax
 

@@ -29,7 +29,7 @@ Use vela when:
 vela index
 ```
 
-Builds the index for the solution in the current directory. It costs about what a build costs: roughly 8 seconds on a scaffolded Razor Pages app, and 2 minutes 12 seconds at 1.5GB peak on a real 375,608-line, ten-project solution. It is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once a watched file under the repository root is newer than it.
+Builds the index for the solution in the current directory. It costs about what a build costs: roughly 8 seconds on a scaffolded Razor Pages app, and about five minutes at 2.1GB peak on ScentVerdict, a real ten-project solution of 388,323 lines of C# with 334 Razor views, measured 30 July 2026. Expect it to scale with the solution rather than to match that figure. It is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once a watched file under the repository root is newer than it.
 
 **The watch is narrower than the index, so the absence of a banner is not proof the tree is unchanged.** What is watched is every `.cs`, `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`, `.slnx`, `.props` and `.targets` file under the repository root - the sources vela indexes, plus the project and solution files that decide what is compiled - and nothing under `bin`, `obj`, `.git`, `.vs`, `.idea`, `node_modules` or the index's own cache directory. A change anywhere else is invisible to the check: a checked-in generated artefact with another extension, a source file that only exists under an excluded directory, or a `Directory.Build.props` inside `obj`. If you have edited code yourself, or you know something ran that rewrites files, re-index rather than reading a quiet answer as confirmation the index is current.
 
@@ -82,12 +82,12 @@ Results are grouped by file and shaped for a context window rather than a termin
 
 **Some locations are not on disk.** The Razor generator's output is compiled but never written out, so `refs` and `impact` leave it out by default and print a line saying how much they left out. Pass `--include-generated` if you need it. `def` and `outline` always include it, marked `(generated)` - for some Razor page members the generated code holds the only declaration there is, and the marker is there to tell you the path cannot be opened.
 
-**A total that spans several symbols says so.** Because matching is by whole dotted segment, `refs Perfume` on a real solution answered 3,104 results - the entity, the entity's constructor, an enum member called `Perfume`, and a property of an unrelated response type, all merged into one number. Every hit was real; the total counted nothing that exists. So when a pattern matches more than one distinct symbol, `def`, `refs` and `impact` print an ambiguity block after the results:
+**A total that spans several symbols says so.** Because matching is by whole dotted segment, `refs Perfume` on a real solution answered 3,156 results on 30 July 2026 - the entity, the entity's constructor, an enum member called `Perfume`, and a property of an unrelated response type, all merged into one number. Every hit was real; the total counted nothing that exists. So when a pattern matches more than one distinct symbol, `def`, `refs` and `impact` print an ambiguity block after the results:
 
 ```
-'Perfume' is ambiguous: the 3104 result(s) above span 25 distinct symbols:
-    1958  ScentVerdict.Data.Entities.Perfume
-     384  ScentVerdict.Data.Enums.EntityType.Perfume
+'Perfume' is ambiguous: the 3156 result(s) above span 25 distinct symbols:
+    1977  ScentVerdict.Data.Entities.Perfume
+     381  ScentVerdict.Data.Enums.EntityType.Perfume
      ...
      144  (+15 further symbol(s))
 To ask about one of them, give more of its name: 'Entities.Perfume' matches

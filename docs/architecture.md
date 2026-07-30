@@ -39,8 +39,9 @@ limit.
 
 That is no longer only an intention. `vela import` reads a `.scip` from any indexer, and it
 has been proved against a real `scip-typescript` 0.4.0 index: four TypeScript files from a
-Vue mobile app sit beside 2,205 C# documents and 307 Razor views in one database, and both
-halves answer to the same verbs.
+Vue mobile app sit beside the C# and Razor halves in one database, and all of them answer to
+the same verbs. On ScentVerdict, the solution vela is developed against, that was 2,341 C#
+documents and 334 Razor views on 30 July 2026.
 
 The format is also a safer bet than it was. SCIP moved out of Sourcegraph's ownership into
 independent governance on 25 March 2026, with a steering committee drawn from Meta, Uber and
@@ -70,10 +71,10 @@ vela's own cost on the same solution, measured on 30 July 2026 once the index is
 | | Results | Time |
 |---|---|---|
 | process floor (`vela --version`) | | 0.08 to 0.09s |
-| `find Perfume` | 14,552 symbols | about 0.40s |
+| `find Perfume` | 14,917 symbols | about 0.40s |
 | `def Perfume.Status` | 2 | about 0.57s |
 | `refs Entities.Perfume.Status` | 24 | about 1.05s |
-| `refs Perfume` | 3,104 | about 1.3s |
+| `refs Perfume` | 3,156 | about 1.3s |
 | `impact PerfumeService` | 4 | about 1.2 to 1.5s |
 
 Not milliseconds, and this documentation used to say it was. The comparison is still the
@@ -110,13 +111,13 @@ For `scip-dotnet` the cause is one line, `ScipProjectIndexer.cs:110`:
 foreach (var document in project.Documents)
 ```
 
-Measured on the same solution's web project:
+Measured on the same solution's web project, on 30 July 2026:
 
 ```
-on-disk documents : 146
-syntax trees      : 454
-generated trees   : 308
-  of which Razor  : 307   (against 307 .cshtml on disk)
+on-disk documents : 174
+syntax trees      : 509
+generated trees   : 335
+  of which Razor  : 334   (against 334 .cshtml on disk)
 #line mapping     : YES
 ```
 
@@ -348,7 +349,10 @@ no job covers, because vela was never going to index it. Only a real gap gets th
 
 Two changes to the matching rule are the clearest evidence, because both were silent
 mis-answers on a real solution and both were verified over every symbol in the index rather
-than on the example that found them. Both are re-derivable today from the same index.
+than on the example that found them. **Every count in this section is from the ScentVerdict
+index as it stood on 29 July 2026, when the two bugs were found and fixed.** They are a
+record of what the fixes recovered, not figures today's index reproduces: that repository
+has grown since, and the same queries now return larger numbers.
 
 **Parameter lists were being read as part of a name.** Cutting a stored name at its first
 `(` also threw away every segment after the closing `)`, and a local or a parameter is
@@ -360,7 +364,7 @@ App.Services.PerfumeService.PerfumeService(ILogger<...>, IImageService).logger
 
 Cut at the first `(`, its last segment reads `PerfumeService`. So `refs PerfumeService`
 answered with the constructor's parameters as though they were the type, and `refs Get`
-answered **9,613** occurrences where 423 are real.
+answered **9,613** occurrences where 423 were real.
 
 Reading the parameter list correctly removes 2,318 symbols and 9,190 rows from that answer.
 Checked over all 135,555 distinct symbols in the index: **not one of the removed symbols is
@@ -375,7 +379,9 @@ Microsoft.Extensions.Logging.ILogger<ScentVerdict.Web.Pages.IndexModel>
 ScentVerdict.Ai.Auditing.AuditRunner.RunWithAuditAsync<(int, int)>(System.String)
 ```
 
-so no bare name reached either of them. `refs ILogger` answered **24** where **563** exist.
+so no bare name reached either of them. `refs ILogger` answered **24** where **563** existed
+that day. The same query answers 619 on 30 July 2026, which is the count that has moved and
+not the bug.
 
 Folding the type arguments out recovers 269 symbols and 539 rows. Every one of them really
 is named `ILogger`, and **not one row was lost** to the change. 20,281 of the index's 135,555
@@ -411,7 +417,7 @@ occurrences          : 2670
 `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count,
 and CI runs it as a separate named step so a failure says what broke.
 
-293 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
+355 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
 The fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
 NuGet cache needs network for test setup.
 

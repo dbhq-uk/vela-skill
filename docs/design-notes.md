@@ -81,6 +81,13 @@ generated trees   : 308
 #line mapping     : YES
 ```
 
+> **Since then.** That is the ScentVerdict web project as it was when this was written.
+> Re-measured on 30 July 2026, after the repository grew, the same counts are 174 on-disk
+> documents, 509 syntax trees, 335 generated trees, 334 of them Razor against 334 `.cshtml`
+> on disk, and the `#line` mapping still resolves. The shape of the argument is what
+> matters and it has not moved: the generated trees outnumber the files on disk, and
+> `project.Documents` reaches none of them.
+
 `SymbolFinder.FindReferencesAsync` returns hits inside them, attributed to the
 right view:
 
@@ -131,8 +138,9 @@ is no `.scip` import path today, and everything in the index is harvested from
 Roslyn.
 
 > **Since then.** `vela import` exists and is proven. A real `scip-typescript` 0.4.0
-> index over four TypeScript files sits beside 2,205 C# documents and 307 Razor views in
-> one database, and both halves answer to the same verbs. `vela.json` declares which
+> index over four TypeScript files sits beside the C# and Razor halves in one database, and
+> all of them answer to the same verbs; on 30 July 2026 that was 2,341 C# documents and 334
+> Razor views. `vela.json` declares which
 > indexers a repository expects, and a job that has not been imported degrades the index
 > until it is. See [the multi-language guide](guides/multi-language.md).
 >
@@ -324,13 +332,14 @@ Three things have been settled since this list was written, and are worth record
 because none of them was foreseen here.
 
 - **The matching rule needed two corrections, both silent.** Reading a parameter list as
-  part of a name made `refs Get` answer 9,613 where 423 are real; not folding generic type
-  arguments made `refs ILogger` answer 24 where 563 exist. Both were verified over every
-  symbol in the index, and both are written up in
+  part of a name made `refs Get` answer 9,613 where 423 were real; not folding generic type
+  arguments made `refs ILogger` answer 24 where 563 existed. Both counts are from the index
+  as it stood on 29 July 2026, when the bugs were found. Both were verified over every
+  symbol in that index, and both are written up in
   [architecture.md](architecture.md#how-we-know-it-is-right).
 - **An ambiguity block was needed.** Whole-segment matching means a bare name can span
   several real symbols, and a single total across them is the size of nothing. `refs
-  Status` on the real solution spans 154 distinct symbols.
+  Status` on ScentVerdict spanned 154 distinct symbols on 30 July 2026.
 - **An import has to survive a rebuild.** `vela index` deletes the database, so the first
   version of the import path lost every imported language on the next routine re-index,
   silently, at exit 0. The rebuild now replays what it replaced.
