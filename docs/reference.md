@@ -208,7 +208,7 @@ wall clock, and after each one the load-bearing counts were unchanged from the f
 in the first row: 307 of 307 Razor views with 50,355 occurrences in them,
 `refs Entities.Perfume.Status` 24, `refs ILogger` 563, `refs Count` 2,573.
 
-**Those counts are what the benchmark checked did not move, not figures you can reproduce
+**Those counts are the invariant the benchmark checked, not figures you can reproduce
 now.** That repository merged a feature branch later the same day, and on the index built
 after it the same four queries answer 334 of 334 views with 52,445 occurrences, 24, 619 and
 2,613. What the table below is evidence for is the *ratio* between the modes, and that is a

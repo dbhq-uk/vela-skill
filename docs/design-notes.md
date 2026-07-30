@@ -31,10 +31,13 @@ Measured on a 375,608-line C# solution with 307 Razor views:
 
 > **Since then.** Those grep counts were taken with
 > `grep -rw --include='*.cs' --include='*.cshtml' <name> src`, over `src/` alone. Re-measured
-> on 30 July 2026 over the whole repository, the real reference counts are 24, 244 and 325,
-> and `grep -w` returns 2,267 lines for `Status` and 3,653 for `Name`. The ratios are of the
-> same order and the conclusion is unchanged. The current table, with the exact commands,
-> is in [the querying guide](guides/querying.md#is-this-used-anywhere).
+> on the morning of 30 July 2026 over the whole repository, the real reference counts were
+> 24, 244 and 325, and `grep -w` returned 2,267 lines for `Status` and 3,653 for `Name`.
+> That repository merged a feature branch the same afternoon and every one of those numbers
+> moved, which is the ordinary fate of a measurement of a live tree; the ratios stayed of
+> the same order and the conclusion is unchanged. **For the current table, with the exact
+> commands and the date it was taken, see
+> [the querying guide](guides/querying.md#is-this-used-anywhere).**
 
 The names where grep collapses - `Name`, `Status`, `Value`, `Id`, `Update` - are
 exactly the ones you most need answered. 2,760 hits is not context; it is a denial
