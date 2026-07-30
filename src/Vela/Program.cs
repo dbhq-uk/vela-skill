@@ -18,8 +18,12 @@ public static class Program
     /// Detail lines beyond this many are summarised rather than listed. The banner
     /// is printed above every answer from a degraded index, and a wall of text stops
     /// being read.
+    ///
+    /// One number, shared with <see cref="IndexHealth"/>, which builds the other half of
+    /// the same banner. Two constants meant the same index rendered a bounded detail from
+    /// one path and an unbounded one from the other.
     /// </summary>
-    private const int MaxDetailProblems = 10;
+    private const int MaxDetailProblems = IndexHealth.MaxDetailProblems;
 
     /// <summary>
     /// Every prefix ScipEmitter uses to record, into the emitted index, a reason that

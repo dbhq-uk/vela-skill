@@ -136,6 +136,36 @@ public class IndexHealthTests
     }
 
     [Fact]
+    public void Read_SummarisesTheImportProblemsPastTheSameCapEverythingElseUses()
+    {
+        // This detail is the banner printed above EVERY answer, and every other path that
+        // builds one stops at ten entries and says how many more there were. This one did
+        // not: a pending job's detail runs to roughly 250 characters, and a polyglot
+        // repository with a job per language prefixed all of them to every answer. A wall
+        // of text stops being read, which is the crying-wolf failure in slow motion.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, Degraded: false, null));
+
+        for (var i = 0; i < IndexHealth.MaxDetailProblems + 4; i++)
+            IndexHealth.WriteImport(db, $"/tmp/{i:D2}.scip", $"duplicate-document: problem-{i:D2}");
+
+        var health = IndexHealth.Read(db);
+
+        Assert.True(health.Degraded);
+        Assert.NotNull(health.Detail);
+
+        // The first ten by source, which is the order Read already promises, and then a
+        // count of what was left out rather than silence about it.
+        Assert.Contains("problem-00", health.Detail);
+        Assert.Contains("problem-09", health.Detail);
+        Assert.DoesNotContain("problem-10", health.Detail);
+        Assert.Contains("(+4 more)", health.Detail);
+    }
+
+    [Fact]
     public void Read_WhenMultipleRowsPresent_ReportsDegradedRegardlessOfRowOrder()
     {
         // Write always leaves zero or one row, but the schema has no singleton

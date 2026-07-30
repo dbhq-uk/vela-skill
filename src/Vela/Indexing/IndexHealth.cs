@@ -10,6 +10,15 @@ public static class IndexHealth
     /// <summary>Exit code for an answer produced from a degraded or stale index.</summary>
     public const int ExitDegraded = 3;
 
+    /// <summary>
+    /// Detail entries beyond this many are summarised rather than listed, wherever a
+    /// detail is built. It lives here because this is the type the detail belongs to, and
+    /// because it has to be ONE number: `Program` capped every list it built and this
+    /// class capped none, so the same index rendered a bounded banner from one path and an
+    /// unbounded one from another.
+    /// </summary>
+    public const int MaxDetailProblems = 10;
+
     public static void Write(SqliteConnection db, HealthRecord record)
     {
         // DELETE then INSERT must be atomic: without an explicit transaction, SQLite
@@ -88,15 +97,20 @@ public static class IndexHealth
         var record = ReadIndexingPass(db);
         var imports = ReadImportProblems(db);
 
-        return imports.Count == 0
-            ? record
-            : record with
-            {
-                Degraded = true,
-                Detail = string.IsNullOrEmpty(record.Detail)
-                    ? string.Join("; ", imports)
-                    : record.Detail + "; " + string.Join("; ", imports)
-            };
+        if (imports.Count == 0) return record;
+
+        // Capped here, at the same ten every other detail in vela stops at. It was not:
+        // one pending job's detail runs to roughly 250 characters, a polyglot repository
+        // declares a job per language, and all of them were joined and prefixed to every
+        // answer. A banner nobody finishes reading is a banner nobody reads.
+        var shown = string.Join("; ", imports.Take(MaxDetailProblems));
+        if (imports.Count > MaxDetailProblems) shown += $"; (+{imports.Count - MaxDetailProblems} more)";
+
+        return record with
+        {
+            Degraded = true,
+            Detail = string.IsNullOrEmpty(record.Detail) ? shown : record.Detail + "; " + shown
+        };
     }
 
     /// <summary>
