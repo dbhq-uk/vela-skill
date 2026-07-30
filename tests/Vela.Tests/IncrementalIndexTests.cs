@@ -296,6 +296,88 @@ public class IncrementalIndexTests
         Assert.Contains("Shared.Common.FromBeta()", after);
     }
 
+    /// <summary>
+    /// The same failure arriving from the direction the ledger cannot see, and the one
+    /// that made this feature lose code at exit 0 with no banner.
+    ///
+    /// Alpha already compiles Shared/Shared.cs. Only Beta's project file changes, gaining
+    /// a Compile item for that same file, so only Beta's own inputs changed and only Beta
+    /// is selected on its own account. The ledger has no entry joining the two, because
+    /// last time Beta did not compile it. But the load deletes every path the FRESH
+    /// harvest names, and the fresh harvest names Shared/Shared.cs, so Alpha's occurrences
+    /// in it are deleted and nothing puts them back.
+    ///
+    /// The file is compiled under a different symbol in each project, so the loss is a
+    /// name that is simply gone rather than a subtlety about line numbers.
+    /// </summary>
+    [Fact]
+    public async Task Incremental_WhenAProjectStartsCompilingASharedFile_KeepsTheOtherProjectsOccurrences()
+    {
+        using var fx = FixtureSolution.CreateSharedFileSolution(betaCompilesShared: false);
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var before = SymbolsIn(fx, "Shared/Shared.cs");
+        Assert.Contains("Shared.Common.FromAlpha()", before);
+        Assert.DoesNotContain("Shared.Common.FromBeta()", before);
+
+        fx.Write("Beta/Beta.csproj", BetaCompilingTheSharedFile);
+
+        var second = await InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath);
+        Assert.Equal(0, second.ExitCode);
+
+        // Asserted before the shape of the plan, because this is the failure: Alpha's
+        // occurrence in a file still on disk and still compiled, gone from the index, at
+        // exit 0 and with no banner.
+        var after = SymbolsIn(fx, "Shared/Shared.cs");
+        Assert.Contains("Shared.Common.FromAlpha()", after);
+        Assert.Contains("Shared.Common.FromBeta()", after);
+
+        // Alpha is pulled in because it compiles a file Beta is about to replace, and
+        // Gamma is not, so this is a real incremental run and not a full rebuild passing
+        // the assertions above by reading everything.
+        Assert.Contains("2 of 3 project(s) rebuilt", second.Output);
+        Assert.Contains("rebuilt Alpha/Alpha.csproj", second.Output);
+        Assert.Contains("Shared/Shared.cs", second.Output);
+        Assert.Contains("reused Gamma/Gamma.csproj", second.Output);
+    }
+
+    /// <summary>
+    /// The mirror: a project that STOPS compiling a shared file. Beta's rows for that
+    /// document are deleted on Beta's behalf whether or not the fresh harvest names the
+    /// file, because a rebuild replaces everything the project used to contribute to, so
+    /// Alpha has to be rebuilt to put its own back.
+    ///
+    /// This is the half the ledger catches, and it is here so that a later change cannot
+    /// fix the case above by dropping it.
+    /// </summary>
+    [Fact]
+    public async Task Incremental_WhenAProjectStopsCompilingASharedFile_KeepsTheOtherProjectsOccurrences()
+    {
+        using var fx = FixtureSolution.CreateSharedFileSolution();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var before = SymbolsIn(fx, "Shared/Shared.cs");
+        Assert.Contains("Shared.Common.FromAlpha()", before);
+        Assert.Contains("Shared.Common.FromBeta()", before);
+
+        fx.Write("Beta/Beta.csproj", BetaCompilingOnlyItsOwnFile);
+
+        var second = await InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath);
+        Assert.Equal(0, second.ExitCode);
+
+        Assert.Contains("2 of 3 project(s) rebuilt", second.Output);
+        Assert.Contains("rebuilt Alpha/Alpha.csproj", second.Output);
+        Assert.Contains("reused Gamma/Gamma.csproj", second.Output);
+
+        var after = SymbolsIn(fx, "Shared/Shared.cs");
+        Assert.Contains("Shared.Common.FromAlpha()", after);
+        Assert.DoesNotContain("Shared.Common.FromBeta()", after);
+    }
+
     [Fact]
     public async Task Incremental_WithNoIndexYet_BuildsTheWholeIndexAndSaysSo()
     {
@@ -429,6 +511,34 @@ public class IncrementalIndexTests
         using var db = Open(fx);
         Assert.Null(IndexHealth.Read(db).Rebuild);
     }
+
+    /// <summary>
+    /// Beta's project file with the shared file added to it, and without it. The same
+    /// text the fixture writes either way, so the only difference between two runs is the
+    /// one line under test.
+    /// </summary>
+    private const string BetaCompilingTheSharedFile = """
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup>
+            <TargetFramework>net10.0</TargetFramework>
+            <ImplicitUsings>disable</ImplicitUsings>
+            <Nullable>disable</Nullable>
+            <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+          </PropertyGroup>
+          <ItemGroup><Compile Include="../Shared/Shared.cs" Link="Shared.cs" /></ItemGroup>
+        </Project>
+        """;
+
+    private const string BetaCompilingOnlyItsOwnFile = """
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup>
+            <TargetFramework>net10.0</TargetFramework>
+            <ImplicitUsings>disable</ImplicitUsings>
+            <Nullable>disable</Nullable>
+            <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+          </PropertyGroup>
+        </Project>
+        """;
 
     private const string DocumentsAndOccurrences = """
         SELECT d.relative_path, d.language, d.generated, d.source,

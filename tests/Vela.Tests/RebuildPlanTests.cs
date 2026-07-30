@@ -345,6 +345,76 @@ public class RebuildPlanTests
                                            && r.Contains("Shared/Shared.cs", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// The case the ledger on its own cannot see, and the one that made this feature lose
+    /// code silently.
+    ///
+    /// beta has just STARTED compiling a file alpha already compiles: its project file
+    /// gained a Compile item, so its own inputs changed and it is selected. The ledger has
+    /// no record of beta compiling that file, because last time it did not, so nothing in
+    /// the ledger links the two projects. The fresh harvest names the file anyway, the
+    /// loader deletes every path the fresh harvest names, and alpha's occurrences in it go
+    /// with no reason printed and no banner raised.
+    ///
+    /// So the closure has to run over what each project compiles NOW as well as what the
+    /// ledger says it compiled then.
+    /// </summary>
+    [Fact]
+    public void For_SelectsAProjectThatAlreadyCompilesAFileASelectedProjectHasJustStartedCompiling()
+    {
+        var current = new[]
+        {
+            Compiling("alpha", "a0", "Alpha/Own.cs", "Shared/Shared.cs"),
+            Compiling("beta", "changed", "Beta/Own.cs", "Shared/Shared.cs"),
+            Compiling("gamma", "g0", "Gamma/Own.cs")
+        };
+
+        var plan = RebuildPlan.For(
+            current,
+            Prior(("alpha", "a0"), ("beta", "b0"), ("gamma", "g0")),
+            Schema, Vela,
+            Documents(
+                ("alpha", new[] { "Alpha/Own.cs", "Shared/Shared.cs" }),
+                ("beta", new[] { "Beta/Own.cs" }),
+                ("gamma", new[] { "Gamma/Own.cs" })));
+
+        Assert.Equal(new[] { "alpha", "beta" }, plan.Rebuild);
+        Assert.Equal(new[] { "gamma" }, plan.Reuse);
+        Assert.Contains(plan.Reasons, r => r.StartsWith("alpha:", StringComparison.Ordinal)
+                                           && r.Contains("Shared/Shared.cs", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The mirror of it: beta has STOPPED compiling a file alpha still compiles. The
+    /// ledger is what catches this one, because the ledger is the only record that beta
+    /// ever contributed to that document, and the rows it contributed are deleted on
+    /// beta's behalf whether or not the fresh harvest names the file.
+    /// </summary>
+    [Fact]
+    public void For_SelectsAProjectThatStillCompilesAFileASelectedProjectHasStoppedCompiling()
+    {
+        var current = new[]
+        {
+            Compiling("alpha", "a0", "Alpha/Own.cs", "Shared/Shared.cs"),
+            Compiling("beta", "changed", "Beta/Own.cs"),
+            Compiling("gamma", "g0", "Gamma/Own.cs")
+        };
+
+        var plan = RebuildPlan.For(
+            current,
+            Prior(("alpha", "a0"), ("beta", "b0"), ("gamma", "g0")),
+            Schema, Vela,
+            Documents(
+                ("alpha", new[] { "Alpha/Own.cs", "Shared/Shared.cs" }),
+                ("beta", new[] { "Beta/Own.cs", "Shared/Shared.cs" }),
+                ("gamma", new[] { "Gamma/Own.cs" })));
+
+        Assert.Equal(new[] { "alpha", "beta" }, plan.Rebuild);
+        Assert.Equal(new[] { "gamma" }, plan.Reuse);
+        Assert.Contains(plan.Reasons, r => r.StartsWith("alpha:", StringComparison.Ordinal)
+                                           && r.Contains("Shared/Shared.cs", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void For_ClosesOverSharedDocumentsTransitively()
     {
@@ -420,6 +490,17 @@ public class RebuildPlanTests
 
     private static ProjectFingerprint Project(string identity, string fingerprint, params string[] references) =>
         new(identity, identity, fingerprint, Array.Empty<ProjectInput>(), references);
+
+    /// <summary>
+    /// A project that references nothing and compiles the named files, as its fingerprint
+    /// records them: source inputs, relative to the root, in the same form a document's
+    /// relative_path takes.
+    /// </summary>
+    private static ProjectFingerprint Compiling(
+        string identity, string fingerprint, params string[] sources) =>
+        new(identity, identity, fingerprint,
+            sources.Select(s => new ProjectInput(ProjectFingerprint.SourceKind, s, "hash")).ToArray(),
+            Array.Empty<string>());
 
     private static RecordedProject[] Prior(params (string Project, string Fingerprint)[] projects) =>
         projects

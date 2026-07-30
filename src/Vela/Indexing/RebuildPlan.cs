@@ -73,6 +73,11 @@ public sealed record RebuildPlan(
     /// them replaces that row and deletes the other's occurrences, and nothing puts them
     /// back. So a project that shares a document with a selected project is selected too,
     /// transitively.
+    ///
+    /// This is only half the evidence. What each project compiles NOW comes off
+    /// <paramref name="current"/>, and it has to, because a file one project has just
+    /// STARTED compiling has no ledger entry linking it to the project that was already
+    /// compiling it. See <see cref="CloseOverSharedDocuments"/>.
     /// </param>
     public static RebuildPlan For(
         IReadOnlyList<ProjectFingerprint> current,
@@ -140,7 +145,7 @@ public sealed record RebuildPlan(
         var dependents = Dependents(ordered, known);
         var selected = Close(seeds, dependents);
 
-        CloseOverSharedDocuments(selected, recordedDocuments, known);
+        CloseOverSharedDocuments(selected, recordedDocuments, ordered, known);
 
         var rebuild = selected.Keys.OrderBy(identity => identity, StringComparer.Ordinal).ToList();
         var reuse = everything.Where(identity => !selected.ContainsKey(identity)).ToList();
@@ -317,10 +322,30 @@ public sealed record RebuildPlan(
     /// nothing in their place: a file that is still on disk, still compiled, and half
     /// absent from an index that reports itself complete.
     ///
-    /// The walk is over what the LEDGER recorded, which is what is actually in the
-    /// database and therefore what is actually at risk. A file that has since moved from
-    /// one project to another changed both projects' inputs, so both are already selected
-    /// on their own account; what this catches is the case where only one of them changed.
+    /// <b>Both halves of the evidence, because either one alone loses code.</b> The walk
+    /// is over the union of what the LEDGER recorded and what each project compiles NOW,
+    /// and the two catch different failures.
+    ///
+    /// The ledger catches a project that has STOPPED compiling a shared file. Its rows for
+    /// that document are still in the database, they are deleted on its behalf because the
+    /// rebuild replaces everything it used to contribute to, and only the ledger remembers
+    /// that anyone else was contributing to the same document.
+    ///
+    /// The current compile set catches the reverse, and it is the one the ledger cannot
+    /// see at all: a project that has just STARTED compiling a file another project was
+    /// already compiling. Its project file changed, so it is selected in its own right,
+    /// but there is no ledger entry joining it to the other project, because last time it
+    /// did not compile that file. The load deletes every path the FRESH harvest names, so
+    /// that document goes, taking the other project's occurrences with it, and nothing
+    /// reinserts them: a file still on disk, still compiled, half absent from an index
+    /// reporting itself complete, at exit 0 with no banner. That is the exact failure this
+    /// feature exists to avoid, so both sides are walked.
+    ///
+    /// Sources and additional documents both count. A .cs is a document in this index and
+    /// so is a .cshtml or a .razor, which reaches it through the generator that reads it,
+    /// and either can be compiled by two projects at once. The paths are recorded in the
+    /// same relative form as a document's relative_path, which is what lets the two halves
+    /// be unioned at all.
     ///
     /// Everything is sorted before it is walked, so the same graph gives the same set in
     /// the same order with the same reasons, whichever order the projects arrived in
@@ -329,19 +354,19 @@ public sealed record RebuildPlan(
     private static void CloseOverSharedDocuments(
         Dictionary<string, string> selected,
         IReadOnlyDictionary<string, IReadOnlyList<string>>? recordedDocuments,
+        IReadOnlyList<ProjectFingerprint> ordered,
         HashSet<string> known)
     {
-        if (recordedDocuments is null || recordedDocuments.Count == 0) return;
+        var documents = DocumentsOfEachProject(recordedDocuments, ordered, known);
+        if (documents.Count == 0) return;
 
-        // Which projects contributed to each document, restricted to projects this
-        // solution still holds: one the ledger remembers and the solution has lost cannot
-        // be rebuilt, and the whole-index check above has already fired on it.
+        // Which projects contribute to each document, restricted to projects this solution
+        // still holds: one the ledger remembers and the solution has lost cannot be
+        // rebuilt, and the whole-index check above has already fired on it.
         var contributors = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-        foreach (var entry in recordedDocuments.OrderBy(e => e.Key, StringComparer.Ordinal))
+        foreach (var entry in documents.OrderBy(e => e.Key, StringComparer.Ordinal))
         {
-            if (!known.Contains(entry.Key)) continue;
-
-            foreach (var path in entry.Value.OrderBy(p => p, StringComparer.Ordinal))
+            foreach (var path in entry.Value)
             {
                 if (!contributors.TryGetValue(path, out var projects))
                     contributors[path] = projects = new List<string>();
@@ -354,9 +379,9 @@ public sealed record RebuildPlan(
         while (pending.Count > 0)
         {
             var project = pending.Dequeue();
-            if (!recordedDocuments.TryGetValue(project, out var paths)) continue;
+            if (!documents.TryGetValue(project, out var paths)) continue;
 
-            foreach (var path in paths.OrderBy(p => p, StringComparer.Ordinal))
+            foreach (var path in paths)
             {
                 if (!contributors.TryGetValue(path, out var sharing)) continue;
 
@@ -373,5 +398,55 @@ public sealed record RebuildPlan(
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Every document path each project is on the hook for: the ones the ledger says it
+    /// contributed to last time, and the ones its current inputs say it compiles now,
+    /// merged and sorted.
+    ///
+    /// Merged rather than compared, because a rebuild replaces BOTH sets - the loader
+    /// deletes what the ledger recorded for a rebuilt project and everything the fresh
+    /// harvest names - so a project sharing either one with a selected project is at risk.
+    ///
+    /// Projects the solution no longer holds are dropped: they cannot be rebuilt, and the
+    /// whole-index check has already fired on their disappearance.
+    /// </summary>
+    private static Dictionary<string, List<string>> DocumentsOfEachProject(
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? recordedDocuments,
+        IReadOnlyList<ProjectFingerprint> ordered,
+        HashSet<string> known)
+    {
+        var documents = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+
+        void Record(string project, string path)
+        {
+            if (!known.Contains(project)) return;
+
+            if (!documents.TryGetValue(project, out var paths))
+                documents[project] = paths = new SortedSet<string>(StringComparer.Ordinal);
+
+            paths.Add(path);
+        }
+
+        if (recordedDocuments is not null)
+        {
+            foreach (var entry in recordedDocuments)
+            {
+                foreach (var path in entry.Value) Record(entry.Key, path);
+            }
+        }
+
+        foreach (var project in ordered)
+        {
+            foreach (var input in project.Inputs)
+            {
+                if (input.Kind is ProjectFingerprint.SourceKind or ProjectFingerprint.AdditionalKind)
+                    Record(project.Project, input.Path);
+            }
+        }
+
+        return documents.ToDictionary(
+            entry => entry.Key, entry => entry.Value.ToList(), StringComparer.Ordinal);
     }
 }

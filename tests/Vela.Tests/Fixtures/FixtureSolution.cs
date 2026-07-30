@@ -88,7 +88,29 @@ public sealed class FixtureSolution : IDisposable
     /// puts them back. The file is compiled under a different symbol in each project, so
     /// the loss is visible rather than merely theoretical.
     /// </summary>
-    public static FixtureSolution CreateSharedFileSolution() => FromTemplate(Template.SharedFile);
+    /// <param name="betaCompilesShared">
+    /// False leaves Beta compiling only its own file, so a test can ADD the shared file to
+    /// Beta and watch what happens when a project starts compiling something another
+    /// project was already compiling. The ledger cannot know about that pairing until
+    /// after the rebuild that creates it, which is the one case a closure over the ledger
+    /// alone cannot see.
+    ///
+    /// This is one template and not two. The two shapes differ by a single item in one
+    /// project file, and a <c>&lt;Compile&gt;</c> item is not an input to restore: the
+    /// assets file the copy carries describes packages and project references, neither of
+    /// which moves. So the cheaper shape is the shared one restored once, with Beta's
+    /// project file rewritten in the private copy afterwards - which is precisely the edit
+    /// the test that asks for this then reverses, so nothing here is doing anything the
+    /// suite does not already rely on working.
+    /// </param>
+    public static FixtureSolution CreateSharedFileSolution(bool betaCompilesShared = true)
+    {
+        var fx = FromTemplate(Template.SharedFile);
+        if (!betaCompilesShared)
+            WriteProject(fx.Root, "Beta");
+
+        return fx;
+    }
 
     /// <summary>One class library, for the tests that only need an index to exist.</summary>
     public static FixtureSolution CreateLibrary() => FromTemplate(Template.Library);
