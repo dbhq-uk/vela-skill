@@ -182,8 +182,8 @@ consumer of the database has to know, because both are sentinels rather than mon
 - **`scip_symbol = ''` means the occurrence has no moniker**, not "the empty moniker".
   `scip.proto` makes `Occurrence.symbol` optional, and vela leaves it empty rather than
   claim a document scope that an array type or the global namespace does not have. On the
-  real solution's index 23,200 occurrences of 935,731 carry it, 2.48%. A join on this column
-  without `AND scip_symbol <> ''` makes one equivalence class of all 23,200.
+  real solution's index 23,200 occurrences of 935,731 carry no moniker, 2.48%. A join on
+  this column without `AND scip_symbol <> ''` makes one equivalence class of all 23,200.
 - **`scip_symbol` beginning `local ` is scoped to one document.** `scip.proto`: local
   symbols "MUST only be used for entities which are local to a `Document`, and cannot be
   accessed from outside the `Document`". The ids are per-document counters, so `local 1` in
@@ -300,7 +300,7 @@ so no bare name reached either of them. `refs ILogger` answered **24** where **5
 
 Folding the type arguments out recovers 269 symbols and 539 rows. Every one of them really
 is named `ILogger`, and **not one row was lost** to the change. 20,281 of the index's 135,555
-distinct symbols carry a `<` at all, and 99,211 occurrences sit on them, so this was not an
+distinct symbols carry a `<` at all, and 101,073 occurrences sit on them, so this was not an
 edge case.
 
 That second one is the more dangerous shape of error. An answer that says a symbol used

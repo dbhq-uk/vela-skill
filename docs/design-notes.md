@@ -253,7 +253,7 @@ neither implements them nor, yet, imports them.
   Only files vela could index or that decide what is compiled are examined - `.cs`,
   `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`, `.slnx`, `.props`,
   `.targets` - and `bin`, `obj`, `.git`, `.vs`, `.idea`, `node_modules` and the cache
-  directory are never descended into. On the real solution 365 indexed documents sit
+  directory are never descended into. On the real solution 340 indexed documents sit
   under `bin` and `obj` alone, and a change to one of those does not degrade anything.
   The exclusions are deliberate: build output changes on every build and `.git` on
   every command, so watching them would leave every query permanently degraded, which

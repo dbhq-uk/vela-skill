@@ -201,7 +201,7 @@ may be living there uncounted.
 For a distinctive identifier, grep wins on zero setup.
 
 ```bash
-grep -rw --include='*.cs' PerfumeService .
+grep -rw --include='*.cs' --include='*.cshtml' PerfumeService .
 ```
 
 Thirty-two lines on that solution, most of them documentation comments mentioning the

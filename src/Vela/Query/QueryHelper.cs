@@ -80,7 +80,7 @@ public static class QueryHelper
     /// guarantee than the one it replaces, and no third copy of it exists anywhere.
     ///
     /// <b>What the predicate still does in SQL.</b> A function call per row would be
-    /// paid on all 935,029 occurrences of the real index, so the scan leads with a
+    /// paid on all 935,731 occurrences of the real index, so the scan leads with a
     /// necessary condition SQLite answers with a substring search, and the function is
     /// only reached by the rows that pass it. <see cref="NecessarySubstring"/> is one
     /// maximal run of identifier characters of the pattern, and it is necessary because
@@ -112,11 +112,11 @@ public static class QueryHelper
     ///   ScentVerdict.Ai.Auditing.AuditRunner.RunWithAuditAsync&lt;(int, int)&gt;(System.String)
     ///
     /// so no bare name reached either of them. On the real solution `refs ILogger`
-    /// answered 2 occurrences where 271 exist, and `refs RunWithAuditAsync` matched
+    /// answered 24 occurrences where 563 exist, and `refs RunWithAuditAsync` matched
     /// none of its 33 instantiations while reporting a confident total, which is the
     /// silent under-count this tool exists to prevent: an answer that says a symbol
-    /// used everywhere is barely used is the one that gets it deleted. 13,366 of the
-    /// index's 135,321 distinct symbols carry a '&lt;' before any parameter list.
+    /// used everywhere is barely used is the one that gets it deleted. 13,368 of the
+    /// index's 135,555 distinct symbols carry a '&lt;' before any parameter list.
     ///
     /// A type argument list can hold anything a type can, so it is read by matching
     /// brackets rather than by cutting at the first '&lt;': the parentheses of a tuple
@@ -126,12 +126,16 @@ public static class QueryHelper
     /// Two guards, and both are load-bearing:
     ///
     /// A name whose brackets do not pair is not a name this rule can read, and it is
-    /// returned exactly as it is. 'System.Guid.operator &gt;(System.Guid, System.Guid)'
-    /// is that name: 39 symbols in the real index have an angle bracket that opens or
-    /// closes nothing. Counting without pairing swallows the rest of the name, and for
-    /// 'operator &gt;' the count goes negative and the parameter list is promoted into
-    /// the name, so `refs Guid` would answer with an operator as though the type in its
-    /// signature were the symbol.
+    /// returned exactly as it is. 'System.DateTime.operator &lt;(System.DateTime,
+    /// System.DateTime)' is that name: 18 symbols in the real index open an angle
+    /// bracket that closes nothing, and this guard is what returns them untouched. A
+    /// further 21 close one that never opened, 'System.Guid.operator
+    /// &gt;(System.Guid, System.Guid)' among them, and those never reach the guard
+    /// because a name with no '&lt;' in it is returned before the walk starts.
+    /// Counting without pairing swallows the rest of the name, and for 'operator &gt;'
+    /// the count goes negative and the parameter list is promoted into the name, so
+    /// `refs Guid` would answer with an operator as though the type in its signature
+    /// were the symbol.
     ///
     /// A group is only removed when what follows its closing bracket cannot continue an
     /// identifier. Nothing else could sensibly follow a type argument list, and
@@ -201,7 +205,7 @@ public static class QueryHelper
     /// Cut at the first '(' it read '...PerfumeService.PerfumeService', whose last
     /// segment is PerfumeService, so `refs PerfumeService` answered with the
     /// constructor's parameters as though they were the type, and `refs Get` answered
-    /// 9,493 occurrences on the real solution where 362 are real: the other 9,131 were
+    /// 9,613 occurrences on the real solution where 423 are real: the other 9,190 were
     /// locals and parameters declared inside some Get(...). That is the noise vela
     /// exists to remove, reintroduced by the one place that shortens a name.
     ///

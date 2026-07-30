@@ -70,12 +70,12 @@ vela index
 ```
 
 ```
-Using vela.json at /tmp/velatut/vela.json: 3 job(s): csharp and razor from vela's own
+Using vela.json at /home/you/velatut/vela.json: 3 job(s): csharp and razor from vela's own
 indexer; typescript from scip-typescript at 'web'.
 Indexed 23 documents to /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
 No job covers javascript 1 file(s), so none of it is in this index. Nothing of yours is
 missing that a job asked for; this is what the repository holds beside it.
-The exclude list kept this count out of 4 director(ies) and rejected 0 further file(s).
+The exclude list kept this count out of 3 director(ies) and rejected 0 further file(s).
 1 configured job(s) are not in this index. vela does not run other indexers, so each one's
 .scip has to be produced and imported; until it is, this index is missing that language and
 says so on every answer:
@@ -104,8 +104,8 @@ vela import web/index.scip
 ```
 
 ```
-Imported 2 document(s) and 17 occurrence(s) from /tmp/velatut/web/index.scip, produced by
-scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
+Imported 2 document(s) and 17 occurrence(s) from /home/you/velatut/web/index.scip, produced
+by scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
 2 document(s) declare no position encoding, so their character offsets were read as UTF-16
 code units, which is what every other row in this index means. ...
 ```
@@ -176,7 +176,20 @@ read, degrades the index and names itself, and that verdict is written under the
 
 ## Re-running an indexer after the code changed
 
+Give the TypeScript something more to index, so the counts move:
+
 ```bash
+cat > web/src/cart.ts <<'EOF'
+import { formatPrice } from "./format";
+
+export function subtotal(prices: number[]): number {
+  return prices.reduce((a, b) => a + b, 0);
+}
+
+export function total(prices: number[]): string {
+  return formatPrice(subtotal(prices));
+}
+EOF
 cd web && scip-typescript index --output index.scip && cd ..
 vela import web/index.scip --replace
 ```
@@ -186,9 +199,9 @@ written. With it, the documents that `.scip` names are deleted with their occurr
 written again, and you are told how many went and how many came:
 
 ```
-Imported 2 document(s) and 25 occurrence(s) from /tmp/velatut/web/index.scip, produced by
-scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
-Replaced 2 document(s) already in the index: 17 occurrence(s) removed and 25 written in
+Imported 2 document(s) and 21 occurrence(s) from /home/you/velatut/web/index.scip, produced
+by scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
+Replaced 2 document(s) already in the index: 17 occurrence(s) removed and 21 written in
 their place.
 Only the paths this .scip names were touched. A document a previous import of it held and
 this one does not name is still in the index, unchanged: run vela index to rebuild from
@@ -222,11 +235,13 @@ them. With the defaults plus that one directory, the honest first-party picture 
 repository is:
 
 ```
-csharp 1866, razor 307, javascript 139, python 81, sql 40, vue 36, typescript 30, java 3
+csharp 1866, razor 307, javascript 139, python 86, sql 40, vue 36, typescript 30, java 3
 ```
 
 `vela index` prints what the exclude list kept out and which languages no job covers, so the
-numbers can be checked rather than trusted.
+numbers can be checked rather than trusted. The census reaches 86 Python files rather than
+81 because that repository's `.agents/skills` is a symlink to `.claude/skills`, and the walk
+follows it and counts those five twice.
 
 ### Exclude syntax
 

@@ -11,11 +11,11 @@ Deterministic: no model calls, no network, and it never modifies the repository 
 
 ## When to use this instead of grep
 
-Use grep when the identifier is distinctive. `grep -w PerfumeService` returns twenty-four lines, costs nothing, and needs no index.
+Use grep when the identifier is distinctive. `grep -w PerfumeService` returns thirty-two lines, costs nothing, and needs no index.
 
 Use vela when:
 
-- the name is ordinary - `Name`, `Status`, `Value`, `Id`, `Update`. Measured on a real solution, grep is 88 to 98% noise for these.
+- the name is ordinary - `Name`, `Status`, `Value`, `Id`, `Update`. Measured on a real solution, grep is 91 to 99% noise for these.
 - you need **callers**, not just textual matches
 - you need to know **what breaks** if you change something
 - the symbol might be referenced from a **`.cshtml` or `.razor`** file. Nothing else indexes these, including grep, which finds the text but cannot tell you it binds to a specific property on a specific type
@@ -48,10 +48,10 @@ The index is a cache, and it carries the schema version of the vela that wrote i
 ### 2. Establish shape before pulling content
 
 ```bash
-vela outline <file|type>
+vela outline <file>
 ```
 
-Returns the symbol tree without reading the file. Do this first: it is far cheaper than reading a 900-line source file to find out what is in it.
+Takes a path relative to the repository root, and returns the symbol tree without reading the file. Do this first: it is far cheaper than reading a 900-line source file to find out what is in it.
 
 ### 3. Ask the specific question
 

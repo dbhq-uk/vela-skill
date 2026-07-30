@@ -1,7 +1,7 @@
 {
   "name": "vela",
   "description": "Compiler-exact code search for .NET, for Claude Code and Codex - find references, callers and change impact across C#, VB, Razor Pages, MVC views and Blazor components. Built on Roslyn, so answers come from the compiler rather than pattern matching, and Razor and Blazor are indexed rather than skipped. Deterministic: no model calls, no network, and it never modifies the repository it indexes.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "author": {
     "name": "DBHQ",
     "email": "dan@dbhq.uk"

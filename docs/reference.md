@@ -227,10 +227,10 @@ to.
 Grouped by file, shaped for a context window rather than a terminal.
 
 ```
-src/ScentVerdict.Data/Entities/Perfume.cs
-      60:23   def  ScentVerdict.Data.Entities.Perfume.Status
-src/ScentVerdict.Web/Pages/Admin/Perfumes/Detail.cshtml
-      41:38   ref  ScentVerdict.Data.Entities.Perfume.Status
+src/ScentVerdict.ServiceModel/Admin/CrudRetailerDtos.cs
+     643:19   def  ScentVerdict.ServiceModel.Admin.AdminFeedSyncRunSummary.Status
+src/ScentVerdict.Web/Pages/Admin/Commerce/RetailerDetail.cshtml
+     222:55   ref  ScentVerdict.ServiceModel.Admin.AdminFeedSyncRunSummary.Status
 
 2 result(s)
 ```
@@ -309,7 +309,7 @@ banner.
 ```
 No job covers javascript 1 file(s), so none of it is in this index. Nothing of yours is
 missing that a job asked for; this is what the repository holds beside it.
-The exclude list kept this count out of 4 director(ies) and rejected 0 further file(s).
+The exclude list kept this count out of 3 director(ies) and rejected 0 further file(s).
 ```
 
 **Occurrences suppressed for living in generated code**, after `refs` or `impact`.

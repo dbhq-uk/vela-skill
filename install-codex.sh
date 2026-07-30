@@ -27,10 +27,21 @@ for src in "$SCRIPT_DIR"/skills/*/; do
   name="$(basename "$src")"
   target="$SKILLS_ROOT/$name"
   mkdir -p "$target"
-  for sub in scripts references tests; do
-    [ -d "$src/$sub" ] && ln -sfn "$src/$sub" "$target/$sub"
+
+  # Whatever the skill actually holds, rather than a fixed list of subdirectories
+  # it might have had. This repository ships one file, skills/vela/SKILL.md, and
+  # naming directories that are not there installed nothing and said nothing.
+  for sub in "$src"/*/; do
+    [ -d "$sub" ] || continue
+    sub="${sub%/}"
+    ln -sfn "$sub" "$target/$(basename "$sub")"
   done
-  sed "s|\${CLAUDE_SKILL_DIR}|$target|g" "$src/SKILL.md" > "$target/SKILL.md"
+
+  for file in "$src"/*; do
+    [ -f "$file" ] || continue
+    sed "s|\${CLAUDE_SKILL_DIR}|$target|g" "$file" > "$target/$(basename "$file")"
+  done
+
   echo "Installed '$name' -> $target"
 done
 

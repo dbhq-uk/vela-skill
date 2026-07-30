@@ -35,9 +35,9 @@ resolves, but the canonical name is `scip-code/scip-java`.
 | C, C++, CUDA | `scip-clang` | `sourcegraph/scip-clang` | Sourcegraph | v0.4.0, 23 Feb 2026 |
 | Ruby | `scip-ruby` | `sourcegraph/scip-ruby` | Sourcegraph, built on Sorbet | v0.4.7, 7 Nov 2025 |
 | PHP | `scip-php` | `davidrjenni/scip-php` | community, David Jenni | no releases (commits to 9 Jul 2026) |
-| Dart | `scip-dart` | `Workiva/scip-dart` | Workiva | no releases (commits to 3 Apr 2026) |
+| Dart | `scip-dart` | `Workiva/scip-dart` | Workiva | 1.6.2, 28 May 2025 (commits to 3 Apr 2026) |
 | C#, Visual Basic | `scip-dotnet` | `sourcegraph/scip-dotnet` | Sourcegraph | v0.2.14, 5 May 2026 |
-| Debian packaging | `debian-lsp` | `jelmer/debian-lsp` | community, Jelmer Vernooij | no releases |
+| Debian packaging | `debian-lsp` | `jelmer/debian-lsp` | community, Jelmer Vernooij | v0.1.7, 30 Mar 2026 |
 
 ### TypeScript and JavaScript
 
@@ -170,8 +170,8 @@ what a repository is written in that no job covers.
 ## The protocol
 
 `scip-code/scip`, Apache 2.0, v0.9.0 (29 Jun 2026). The repository holds the protobuf
-schema (`scip.proto`), Go and Rust bindings, generated TypeScript and Haskell bindings, and
-the `scip` CLI.
+schema (`scip.proto`), bindings for Go, Rust, TypeScript, Haskell, Java and Kotlin, and the
+`scip` CLI.
 
 The CLI is worth having when you are debugging an import:
 
