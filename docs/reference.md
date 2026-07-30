@@ -92,6 +92,16 @@ hundred assemblies per project would cost more than the rebuild it avoids. The p
 the version, so a package upgrade is caught. **A rebuilt assembly at the same path and the
 same version is not.** That is the one deliberate hole, and a full index is the answer to it.
 
+**The walk for build files stops at the repository root, and looks only for those names.**
+A `Directory.Build.props` or a `global.json` ABOVE the root the index is built at is not
+hashed, so editing one does not invalidate anything, even though MSBuild would go on looking
+and would import it. Nor is a `.props` file under some other name that a project imports
+explicitly. The root is where vela's world ends: it is what every path in the index is
+relative to and what the freshness check walks, and hashing an unbounded number of parent
+directories on every index is not a cost worth paying for a layout almost nobody has. If
+your build is configured from above the repository root, or from files under names of your
+own, index without the flag after changing one.
+
 **What it falls back to a full rebuild for**, saying so every time:
 
 | Reason | Line it prints |
@@ -149,6 +159,22 @@ be the exact failure vela exists to prevent.
 **An imported `.scip` survives.** A full rebuild deletes the database and replays every
 import into the new one. An incremental rebuild never deletes the database and simply does
 not touch rows another source contributed.
+
+**An incremental run resets the freshness clock for the whole index, including the projects
+it reused, and that is honest.** [Freshness](#freshness) compares each watched file's
+modification time against `index_health.built_at_utc`, and an incremental run moves that
+timestamp even for projects whose rows it did not rewrite. It is entitled to: working out
+the plan reads and hashes every input of every project the solution holds, reused ones
+included, because that is the only way to find out which ones can be reused. A file whose
+content changed changes its project's fingerprint and that project is rebuilt. So by the
+time the timestamp moves, every fingerprinted file has been compared by **content**, which
+is a stricter test than the modification-time comparison the freshness check makes.
+
+What that does not cover is a watched file that is an input of no project: a `.cs` excluded
+from compilation, anything belonging to a project that failed to load, a `.props` under a
+name the walk above does not look for. Those are outside the ledger, and a full index moves
+the same timestamp without reading them either, so the two modes are equally blind here and
+neither is more blind than the other.
 
 #### What `--incremental` actually saves
 

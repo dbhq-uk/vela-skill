@@ -378,6 +378,59 @@ public class IncrementalIndexTests
         Assert.DoesNotContain("Shared.Common.FromBeta()", after);
     }
 
+    /// <summary>
+    /// A project that was REUSED is still read on the next run, and that is what entitles
+    /// an incremental rebuild to move the whole index's freshness clock.
+    ///
+    /// `index_health.built_at_utc` is what Staleness compares every watched file's
+    /// modification time against, and an incremental run moves it even for projects whose
+    /// rows it did not rewrite. That would be a lie if the run had taken those projects on
+    /// trust. It does not: working out the plan reads and hashes every input of every
+    /// project, because that is the only way to find out which ones can be reused, so a
+    /// reused project has been compared by content and not merely left alone.
+    ///
+    /// Leaf is reused by the second run here and rebuilt by the third on the strength of
+    /// one edit, which is the whole claim.
+    /// </summary>
+    [Fact]
+    public async Task Incremental_StillReadsTheFilesOfAProjectItPreviouslyReused()
+    {
+        using var fx = FixtureSolution.CreateProjectGraph();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        fx.Write("Lib/Upstream.cs", """
+            namespace Lib
+            {
+                public static class Upstream
+                {
+                    public static long Twice(long value) => value + value;
+                }
+            }
+            """);
+
+        var second = await InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath);
+        Assert.Equal(0, second.ExitCode);
+        Assert.Contains("reused Leaf/Leaf.csproj", second.Output);
+
+        fx.Write("Leaf/Standalone.cs", """
+            namespace Leaf
+            {
+                public static class Standalone
+                {
+                    public static int RenamedOnly() => 1;
+                }
+            }
+            """);
+
+        var third = await InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath);
+        Assert.Equal(0, third.ExitCode);
+        Assert.Contains("1 of 3 project(s) rebuilt", third.Output);
+        Assert.Contains("rebuilt Leaf/Leaf.csproj", third.Output);
+        Assert.Contains("Leaf.Standalone.RenamedOnly()", SymbolsIn(fx, "Leaf/Standalone.cs"));
+    }
+
     [Fact]
     public async Task Incremental_WithNoIndexYet_BuildsTheWholeIndexAndSaysSo()
     {

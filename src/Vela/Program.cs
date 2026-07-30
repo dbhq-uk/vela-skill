@@ -409,6 +409,23 @@ public static class Program
                 var replacing = DocumentsOf(ProjectDocuments.Read(db), rebuild.Rebuild);
                 var written = ScipLoader.LoadIncremental(db, emitted, replacing);
 
+                // The freshness clock, moved for the whole index and not only for the
+                // projects this run rewrote. That is honest, and it is worth saying why,
+                // because "the index was built at T" is what Staleness compares every
+                // watched file's mtime against and a reused project's rows are older than T.
+                //
+                // Working out the plan read and hashed every input of every project the
+                // solution holds, reused ones included: that is the only way to find out
+                // which ones can be reused. A file whose content changed changed its
+                // project's fingerprint, and that project is in the rebuild set. So by the
+                // time this line runs, every fingerprinted file has been compared by
+                // CONTENT, which is stricter than the mtime comparison the freshness check
+                // makes, and a reused project's rows are as good as its files are unchanged.
+                //
+                // The gap is a watched file that is an input of no project at all, and a
+                // full rebuild moves this same timestamp without reading one of those
+                // either, so neither mode is blinder than the other. Documented in
+                // reference.md under --incremental.
                 var builtAtUtc = DateTime.UtcNow;
                 ProjectInputs.Write(
                     db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, builtAtUtc);
