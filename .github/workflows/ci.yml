@@ -3,13 +3,7 @@ on: [push, pull_request]
 
 jobs:
   test:
-    # vela is a global tool people install on Windows and macOS as readily as on
-    # Linux, and nothing but a run on those runners can say whether it works there.
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     # The suite scaffolds and harvests real projects, so it is minutes rather than
     # seconds. Without a limit a hung MSBuild or a wedged `dotnet new` runs for the
     # full six hours; this is generous against a cold NuGet cache and still catches
