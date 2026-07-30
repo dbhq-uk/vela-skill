@@ -52,9 +52,9 @@ vela index --stats     # in a dotnet new webapp scaffold
 
 ## Upstream first
 
-The two ways vela's harvester differs from Sourcegraph's `scip-dotnet` - source-
-generated documents, and recorded enclosing ranges - are both upstreamable. If
-you are improving either, consider sending it to `scip-dotnet` as well. We would
+The two ways vela's harvester differs from Sourcegraph's `scip-dotnet` -
+source-generated documents, and recorded enclosing ranges - are both upstreamable.
+If you are improving either, consider sending it to `scip-dotnet` as well. We would
 rather the ecosystem gained Razor support than that we kept it.
 
 **This is not aspirational.** The Razor half is upstream now:

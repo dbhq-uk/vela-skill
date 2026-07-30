@@ -197,8 +197,8 @@ nothing.
 
 If the replacement holds fewer occurrences than what it replaced, vela says so. That is what
 re-running the indexer over code that lost a symbol looks like, and it is also what a broken
-indexer run looks like; the two cannot be told apart from inside vela, so the fact is stated
-and neither is assumed.
+indexer run looks like; vela cannot tell the two apart from the inside, so it states the
+fact and assumes neither.
 
 ## Why the excludes are the feature
 

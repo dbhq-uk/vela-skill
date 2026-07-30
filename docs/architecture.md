@@ -163,8 +163,8 @@ whole-dotted-segment rule operates on it, and the ambiguity tally groups by it.
 scip-dotnet nuget ScentVerdict.Data 1.0.0.0 ScentVerdict/Data/Entities/Perfume#Status.
 ```
 
-This is what makes the index exportable, and what lets an index somebody else's tool
-produced be correlated with this one.
+This is what makes the index exportable, and what lets vela correlate an index somebody
+else's tool produced with this one.
 
 ### Why not just one of them
 
@@ -311,9 +311,9 @@ because it can hold anything a type can, including tuples with their own parenth
 further generics. Two guards go with it, and both are load-bearing: a name whose brackets do
 not pair is returned untouched (18 symbols in that index have an angle bracket that opens or
 closes nothing, `System.DateTime.operator <(System.DateTime, System.DateTime)` among them),
-and a group
-is only removed when what follows its closing bracket cannot continue an identifier, which
-is the guarantee that taking a group out never joins two identifiers into one.
+and a group is only removed when what follows its closing bracket cannot continue an
+identifier, which is the guarantee that taking a group out never joins two identifiers into
+one.
 
 ### Coverage that must not regress
 

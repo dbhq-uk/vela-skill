@@ -53,8 +53,7 @@ occurrences          : 2670
 
 `razor views` must equal the number of `.cshtml` and `.razor` files on disk, and
 `in razor views` must be non-zero. Those two numbers are the only visible sign of the one
-regression that is otherwise silent, so `--stats` is what a change to the harvester is
-validated with.
+regression that is otherwise silent, so validate a change to the harvester with `--stats`.
 
 Two further lines appear when the counts warrant them. `No Razor views are indexed.` means
 source-generated documents are not reaching the index at all. `Razor views are indexed but
@@ -72,7 +71,7 @@ Reads a `.scip` file produced by any language's SCIP indexer into the same datab
 |---|---|
 | `<index>` | Path to the `.scip`. Looked for in the current directory first, then under the repository root, which is where `vela index` names a job's `.scip`. |
 | `--solution <path>` | As for `vela index`. |
-| `--replace` | Import over a previous import of the same `.scip`: delete the documents this index carries, with their occurrences, and write them again. Only the paths this `.scip` itself names are touched, whoever contributed them, and how many were replaced is reported. |
+| `--replace` | Import over a previous import of the same `.scip`: delete the documents this index carries, with their occurrences, and write them again. Only the paths this `.scip` itself names are touched, whoever contributed them, and vela reports how many it replaced. |
 
 `import` adds. `index` deletes and rebuilds. So the order is `vela index` and then
 `vela import`, and a later `vela index` replays what was imported rather than losing it.
