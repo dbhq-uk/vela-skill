@@ -217,9 +217,12 @@ guessed.
 | `document` | path, language, whether it is source-generated, its declared position encoding, and which `.scip` it came from (`''` means vela's own harvest) |
 | `symbol_fts` | an FTS5 index over symbol names, which is what `find` searches |
 | `external_document` | the paths this index deliberately does not hold, named rather than counted |
-| `index_health` | the indexing pass's verdict on itself, and when it ran |
+| `index_health` | the indexing pass's verdict on itself, when it ran, and how it was built (`rebuild` is `NULL` for a full rebuild) |
 | `import_health` | one row per imported `.scip` whose last import lost something; presence is the degradation |
 | `imported_source` | every `.scip` ever imported, with its content hash, which is what makes an import survive a rebuild |
+| `project_input`, `project_input_document`, `project_input_reference` | the ledger: what each project was built from, and the project reference graph |
+| `project_note` | every reason one project is missing code from this index, against the project rather than against the run |
+| `project_document` | which documents each project contributed to |
 
 `import_health` and `imported_source` are separate tables keyed the same way, and the
 separation is load-bearing. `import_health` holds only the imports that lost something, so a
@@ -231,9 +234,76 @@ and zero TypeScript, because a proven `scip-typescript` import had been wiped by
 re-index, silently, at exit 0, with `degraded = 0`. A whole language had disappeared from an
 index that called itself complete.
 
+### The ledger, and deciding what to rebuild
+
+The last four tables exist for one feature: `vela index --incremental`, which is off by
+default. Nothing else reads them, and a full rebuild writes them and never looks at them
+again.
+
+**A fingerprint is what a project was built from.** Every file the compiler was handed,
+hashed by content: sources, the `.cshtml` and `.razor` additional documents, the analyzer
+configs, the project file and every `Directory.Build.props` and friend between it and the
+root. Content hashes rather than modification times, because an mtime changes when nothing
+did (a checkout, a `touch`) and does not change when something did (a file restored with its
+timestamp preserved). The first costs a needless rebuild; the second leaves the index
+describing code that no longer exists while reporting itself complete, which is Constraint
+3's exact failure.
+
+A source-generated document is deliberately **not** hashed. Its content is derived, so
+hashing it records a consequence rather than a cause, and it could only be computed by
+running every generator again, which is most of the work incremental exists to avoid. Roslyn
+hands over the real input instead: a `.cshtml` arrives as an additional document, on disk and
+readable. Assembly references are hashed by **path** and not by content, because reading
+several hundred assemblies per project would cost more than the rebuild it avoids; the path
+carries the version, so an upgrade is caught and a rebuilt assembly at the same path is not.
+That is the one deliberate hole and it is why the flag is opt-in.
+
+Fingerprinting all ten projects of the real solution, 6,070 inputs, costs 554ms cold and
+76ms warm, against a full index of about 158s. Roughly 0.4%, which is what it has to be for
+the decision it enables to be worth making.
+
+**The plan is pure.** `RebuildPlan.For` takes the current fingerprints, the ledger, the
+schema version and the vela version, and returns which projects to rebuild, which to reuse,
+and one sentence per decision. No I/O, no clock, no environment, so it is tested without a
+workspace or a database and the same inputs give the same set in the same order.
+
+**The hard part is the closure**, and it is where silent staleness would come from. A
+project is not independent: change a public member in one and every reference to it in the
+projects downstream moves, though not one of their files was touched. So the set is the
+changed projects plus everything transitively downstream over the **current** reference
+graph. Current rather than recorded, because an edge that has since been deleted cannot
+propagate a change, and the project that deleted it changed its own project file anyway. The
+walk is breadth-first over a membership set, so a diamond names a project once and a cycle
+terminates rather than hanging.
+
+There is a second closure, over `project_document`. A document in this index is keyed by the
+file a developer can open, and two projects can compile one file, so both projects'
+occurrences land in one row. Replacing that row on behalf of one project would delete the
+other's occurrences and nothing would put them back. So a project sharing a document with a
+selected project is selected too.
+
+Roslyn's reference edges are a transitive superset of the declared `<ProjectReference>`
+entries, 34 against 21 on the real solution, because MSBuild flows project references
+transitively and Roslyn reports the resolved set. A superset only ever widens the closure,
+which is the safe direction.
+
+**`project_note` is what stops a skipped project going quiet.** A project that will not
+compile is fingerprinted like any other, so an incremental run can skip it, and its
+`compile-error:` note is produced fresh by each harvest and by nothing else. Recording the
+note against the run would have meant a skipped project lost it: the index would stop calling
+itself degraded while still holding an incomplete picture of that project. A broken project
+that goes quiet is precisely the failure vela exists to prevent, so the notes are recorded
+against the project and survive being skipped.
+
+**On the real graph, the honest shape of the feature** is that nothing changed rebuilds 0 of
+10, a leaf edit rebuilds 1 of 10, and one line in `ScentVerdict.Data` rebuilds 10 of 10,
+because `Data` is upstream of every other project. The last case falls back to a genuine full
+rebuild, since rebuilding all ten one at a time is a slower route to the same index. See
+[the reference](reference.md#what---incremental-actually-saves) for the timings.
+
 ### No migrations
 
-The index carries a schema version, currently 7, and a build that reads a different one
+The index carries a schema version, currently 9, and a build that reads a different one
 refuses to answer. There is no migration path, deliberately: re-indexing takes seconds and
 rebuilds from the truth, where a migration would rebuild from a guess about what the old
 rows meant.

@@ -108,6 +108,13 @@ Indexing itself costs about what a build costs. On the 375,608-line solution vel
 developed against, a full index took 2 minutes 12 seconds at 1.5 GB peak, measured on
 29 July 2026. On a `dotnet new webapp` scaffold it is about 8 seconds.
 
+**`vela index --incremental` will not help a pipeline**, and the reason is worth stating so
+nobody adds the flag hoping. A fresh runner has no index, so the first thing the flag does
+is print `there is no index at ... yet, so there is nothing to compare this tree against`
+and build the whole thing. Where it pays is a working copy that persists between runs: a
+developer's machine, or a self-hosted runner that keeps its cache directory. See
+[keeping a local index fresh](#keeping-a-local-index-fresh).
+
 ## A polyglot pipeline
 
 Order matters: index, then import, in that order, because `vela index` rebuilds the database
@@ -171,14 +178,61 @@ extension, or a `Directory.Build.props` inside `obj`, changes nothing the check 
 
 It is timestamps only. Nothing is read and nothing is hashed.
 
+### Paying less for it, sometimes
+
+`vela index --incremental` rebuilds only the projects whose inputs changed and everything
+downstream of them. It is **off by default** and it should stay that way until you have a
+reason: a full rebuild cannot be stale, because it reads everything, whereas an incremental
+one is a claim that what it skipped has not changed.
+
+What it is worth depends entirely on where you edited. Measured on the ten-project,
+375,608-line solution vela is developed against, on 30 July 2026:
+
+| What changed | Wall clock | What it rebuilt |
+|---|---|---|
+| nothing (full index for comparison) | 158.1s | all ten |
+| nothing | **11.9s** | 0 of 10 |
+| one line in a leaf project | **22.2s** | 1 of 10 |
+| one line in the project everything depends on | **153.9s** | fell back to a full rebuild: 10 of 10 |
+
+**Incremental helps most when you edit a leaf.** A change low in the dependency graph
+rebuilds nearly everything and saves nothing, because every reference to the changed
+project's types in every other project sits at a line number the change can move. On this
+solution `ScentVerdict.Data` is upstream of all nine others, so one line in it invalidates
+the whole index. That is the closure being right, not a defect.
+
+Trying and failing is cheap: the fallback is decided before anything is harvested and reuses
+the workspace load the rebuild needed anyway, so about 0.6s on a 155s rebuild. And it is
+never silent. Every fallback prints its reason followed by `A full rebuild cannot be stale,
+because it reads everything. This is the safe outcome and not a failure.`
+
+So as a habit it is reasonable, and it degrades to what you already had:
+
+```bash
+dotnet build && vela index --incremental
+```
+
+Two things to know before you rely on it:
+
+- **The first run on a tree whose build output is stale may fall back anyway**, reporting
+  `its own inputs changed` for a project you did not touch. MSBuild regenerates
+  `obj/**/*.AssemblyInfo.cs` and the compiler is handed it, so it is an input. It converges;
+  the run after it does not do this. It errs towards rebuilding, which is the safe direction.
+- **Assembly references are compared by path, not by content.** A package upgrade changes
+  the path and is caught. A referenced assembly rebuilt in place at the same version is not.
+  If something outside the solution was rebuilt, index without the flag.
+
+Whenever you are unsure, drop the flag. A full index is always the safe answer, which is why
+it is the default.
+
 ## Upgrading vela
 
 The index carries a schema version. If you upgrade and the shape has changed, every verb
 refuses to answer and tells you to re-index rather than querying a database it cannot read:
 
 ```
-The index at ... was built against index schema version 6, and this vela reads schema
-version 7. It cannot be queried, and answering from it anyway would risk a wrong answer
+The index at ... was built against index schema version 8, and this vela reads schema
+version 9. It cannot be queried, and answering from it anyway would risk a wrong answer
 rather than no answer.
 The index is a cache, so it is rebuilt rather than migrated.
 Run: vela index --solution ...
