@@ -8,14 +8,16 @@ using Xunit;
 // CLI tests do the same. An environment variable is process-wide, so those classes
 // share a collection with parallelisation disabled and can never overlap.
 [Collection(EnvironmentSensitive.Name)]
-public class ScipLoaderTests
+public class ScipLoaderTests : IClassFixture<HarvestedWebApp>
 {
+    private readonly HarvestedWebApp _webApp;
+
+    public ScipLoaderTests(HarvestedWebApp webApp) => _webApp = webApp;
+
     [Fact]
-    public async Task Load_PopulatesDocumentsAndOccurrences()
+    public void Load_PopulatesDocumentsAndOccurrences()
     {
-        using var fx = FixtureSolution.CreateWebApp();
-        var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
-        var index = (await ScipEmitter.EmitAsync(load.Solution, load.Failures, default)).Index;
+        var index = _webApp.Emitted.Index;
 
         using var db = new SqliteConnection("Data Source=:memory:");
         db.Open();
@@ -203,15 +205,13 @@ public class ScipLoaderTests
     }
 
     [Fact]
-    public async Task Load_StoresBothNamesForEveryOccurrence()
+    public void Load_StoresBothNamesForEveryOccurrence()
     {
         // The whole point of storing two names. symbol is the display name the query
         // layer matches on, and scip_symbol is the moniker that makes the index
         // exportable and correlatable. Overwriting either with the other loses
         // something no other column holds.
-        using var fx = FixtureSolution.CreateWebApp();
-        var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
-        var emitted = await ScipEmitter.EmitAsync(load.Solution, load.Failures, default);
+        var emitted = _webApp.Emitted;
 
         using var db = new SqliteConnection("Data Source=:memory:");
         db.Open();
