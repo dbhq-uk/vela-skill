@@ -37,11 +37,31 @@ namespace Vela.Harvest;
 /// projects, so a project cannot be indexed without also being written down. See
 /// <see cref="Vela.Indexing.ProjectFingerprint"/>.
 /// </summary>
+/// <param name="ProjectNotes">
+/// Every reason a project is missing code from this index, against the project that owns
+/// it. The same sentences go into the index's tool arguments, where they always went, and
+/// they are attributed here as well so that a project a later run SKIPS can go on saying
+/// what it could not do. Without that, an incremental rebuild would quietly stop calling a
+/// broken project broken.
+/// </param>
+/// <param name="ProjectDocuments">
+/// Which documents each project contributed to. Two projects can compile one file and its
+/// occurrences land in one document, so a rebuild has to know who else would lose rows
+/// when it replaces that document.
+/// </param>
+/// <param name="HarvestedProjects">
+/// The projects this run actually looked at, which is not the same as the projects the
+/// solution holds when a reuse set was given. It is what the ledger clears before writing:
+/// a project that has been fixed has to be able to stop saying it is broken.
+/// </param>
 public record EmitResult(
     Scip.Index Index,
     IReadOnlySet<string> GeneratedDocuments,
     IReadOnlyDictionary<Scip.Occurrence, string>? DisplayNames = null,
-    IReadOnlyList<Vela.Indexing.ProjectFingerprint>? ProjectFingerprints = null)
+    IReadOnlyList<Vela.Indexing.ProjectFingerprint>? ProjectFingerprints = null,
+    IReadOnlyList<Vela.Indexing.ProjectNote>? ProjectNotes = null,
+    IReadOnlyDictionary<string, IReadOnlyList<string>>? ProjectDocuments = null,
+    IReadOnlyList<string>? HarvestedProjects = null)
 {
     /// <summary>
     /// What each project was built from, and nothing at all for an index that did not
@@ -50,6 +70,15 @@ public record EmitResult(
     /// </summary>
     public IReadOnlyList<Vela.Indexing.ProjectFingerprint> Fingerprints =>
         ProjectFingerprints ?? Array.Empty<Vela.Indexing.ProjectFingerprint>();
+
+    public IReadOnlyList<Vela.Indexing.ProjectNote> Notes =>
+        ProjectNotes ?? Array.Empty<Vela.Indexing.ProjectNote>();
+
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> DocumentsByProject =>
+        ProjectDocuments ?? new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+
+    public IReadOnlyList<string> Harvested =>
+        HarvestedProjects ?? Array.Empty<string>();
 
     /// <summary>
     /// What vela calls this occurrence's symbol, falling back to the SCIP symbol when
@@ -64,8 +93,20 @@ public record EmitResult(
 
 public static class ScipEmitter
 {
+    /// <param name="reuseProjects">
+    /// Projects to leave alone, by the identity <see cref="Vela.Indexing.ProjectFingerprint.IdentityOf"/>
+    /// gives them, or null to harvest everything.
+    ///
+    /// It is deliberately the set to SKIP and not the set to build. A project whose
+    /// identity nothing here recognises - one added since the ledger was written, one that
+    /// produced no compilation last time, one whose name changed - is then harvested,
+    /// because it is not named in the skip set. Naming the set to build would have made
+    /// the same project silently absent, and an index missing a project it says nothing
+    /// about is the failure this whole feature has to avoid.
+    /// </param>
     public static async Task<EmitResult> EmitAsync(
-        Solution solution, IReadOnlyList<string> failures, CancellationToken ct)
+        Solution solution, IReadOnlyList<string> failures, CancellationToken ct,
+        IReadOnlySet<string>? reuseProjects = null)
     {
         var roots = Roots.Resolve(Path.GetDirectoryName(solution.FilePath)!);
 
@@ -122,8 +163,30 @@ public static class ScipEmitter
         // against, so nothing can be indexed without also being written down.
         var fingerprints = new List<Vela.Indexing.ProjectFingerprint>();
 
+        // Every reason a project is incomplete, against the project that owns it, and
+        // which documents each project put occurrences into. Both exist so that a LATER
+        // run can skip a project without forgetting what it said or what it held. See
+        // Vela.Indexing.ProjectNotes for the failure that made the first one necessary.
+        var notes = new List<Vela.Indexing.ProjectNote>();
+        var documentsOf = new Dictionary<string, SortedSet<string>>(StringComparer.Ordinal);
+        var harvestedProjects = new List<string>();
+
         foreach (var project in solution.Projects)
         {
+            var identity = Vela.Indexing.ProjectFingerprint.IdentityOf(project, roots.ProjectRoot);
+            if (reuseProjects is not null && reuseProjects.Contains(identity)) continue;
+
+            harvestedProjects.Add(identity);
+
+            var contributed = new SortedSet<string>(StringComparer.Ordinal);
+            documentsOf[identity] = contributed;
+
+            void Note(string text)
+            {
+                index.Metadata.ToolInfo.Arguments.Add(text);
+                notes.Add(new Vela.Indexing.ProjectNote(identity, text));
+            }
+
             var compilation = await project.GetCompilationAsync(ct);
             if (compilation is null)
             {
@@ -131,13 +194,13 @@ public static class ScipEmitter
                 // all to this index. Skipping it silently, which is what a bare
                 // `continue` did, produced an index missing a whole project and a
                 // health record that said everything was fine.
-                index.Metadata.ToolInfo.Arguments.Add(
-                    $"no-compilation: project '{project.Name}' produced no compilation, "
-                    + "so none of its code is in this index");
+                Note($"no-compilation: project '{project.Name}' produced no compilation, "
+                     + "so none of its code is in this index");
                 continue;
             }
 
-            RecordCompilationErrors(index, project, compilation, ct);
+            var compileError = CompilationErrorNote(project, compilation, ct);
+            if (compileError is not null) Note(compileError);
 
             // Fingerprinted only once past the compilation check, so a project that
             // contributed nothing to this index has no ledger entry and is rebuilt on
@@ -155,7 +218,7 @@ public static class ScipEmitter
                 // (_ValidationScriptsPartial.cshtml is pure markup) must still appear,
                 // as an empty document: an empty document is honest, a missing one
                 // says the view does not exist.
-                SeedSourceDocuments(harvested.Tree, root, byOriginalPath, index, roots);
+                SeedSourceDocuments(harvested.Tree, root, byOriginalPath, index, roots, Note, contributed);
 
                 foreach (var node in root.DescendantNodes())
                 {
@@ -177,7 +240,8 @@ public static class ScipEmitter
                     var location = RazorMapper.MapToOriginal(harvested.Tree, anchorPosition);
                     if (location is null) continue;
 
-                    var doc = GetOrAddDocument(byOriginalPath, index, location.FilePath, roots);
+                    var doc = GetOrAddDocument(
+                        byOriginalPath, index, location.FilePath, roots, Note, contributed);
                     if (doc is null) continue;
 
                     // Generated, and it stayed generated: the position mapped to the
@@ -284,12 +348,21 @@ public static class ScipEmitter
         // Ordered by identity, so the ledger is written in the same order on every run
         // and every machine (Constraint 1).
         fingerprints.Sort((left, right) => string.CompareOrdinal(left.Project, right.Project));
+        harvestedProjects.Sort(StringComparer.Ordinal);
+        notes.Sort((left, right) => string.CompareOrdinal(left.Project + " " + left.Note,
+                                                          right.Project + " " + right.Note));
 
-        return new EmitResult(index, generated, displayNames, fingerprints);
+        var projectDocuments = documentsOf.ToDictionary(
+            entry => entry.Key,
+            entry => (IReadOnlyList<string>)entry.Value.ToList(),
+            StringComparer.Ordinal);
+
+        return new EmitResult(
+            index, generated, displayNames, fingerprints, notes, projectDocuments, harvestedProjects);
     }
 
     /// <summary>
-    /// Records, into the index, that a project did not compile cleanly.
+    /// The note saying a project did not compile cleanly, or null when it did.
     ///
     /// This is the quietest way an index can be wrong. Every reference vela stores comes
     /// from a resolved symbol, and a compilation error makes the symbol null for every
@@ -304,8 +377,8 @@ public static class ScipEmitter
     /// ordered before sampling so the same solution produces the same sample on every run
     /// and every machine (Constraint 1), rather than whatever order the binder finished in.
     /// </summary>
-    private static void RecordCompilationErrors(
-        Scip.Index index, Project project, Compilation compilation, CancellationToken ct)
+    private static string? CompilationErrorNote(
+        Project project, Compilation compilation, CancellationToken ct)
     {
         var errors = compilation.GetDiagnostics(ct)
             .Where(d => d.Severity == DiagnosticSeverity.Error)
@@ -314,15 +387,14 @@ public static class ScipEmitter
             .ThenBy(d => d.Id, StringComparer.Ordinal)
             .ToList();
 
-        if (errors.Count == 0) return;
+        if (errors.Count == 0) return null;
 
         var sample = string.Join(" | ", errors
             .Take(CompileErrorSampleSize)
             .Select(d => d.Id + " " + d.GetMessage(System.Globalization.CultureInfo.InvariantCulture)));
 
-        index.Metadata.ToolInfo.Arguments.Add(
-            $"compile-error: project '{project.Name}' has {errors.Count} compilation error(s), "
-            + $"so references that depend on them are missing from this index. For example: {sample}");
+        return $"compile-error: project '{project.Name}' has {errors.Count} compilation error(s), "
+             + $"so references that depend on them are missing from this index. For example: {sample}";
     }
 
     private const int CompileErrorSampleSize = 3;
@@ -495,21 +567,21 @@ public static class ScipEmitter
     /// </summary>
     private static void SeedSourceDocuments(
         SyntaxTree tree, SyntaxNode root, Dictionary<string, Scip.Document?> map,
-        Scip.Index index, Roots roots)
+        Scip.Index index, Roots roots, Action<string> note, ISet<string> contributed)
     {
         foreach (var trivia in root.GetLeadingTrivia())
         {
             if (trivia.GetStructure() is not PragmaChecksumDirectiveTriviaSyntax checksum) continue;
             var file = checksum.File.ValueText;
             if (!string.IsNullOrEmpty(file))
-                GetOrAddDocument(map, index, file, roots);
+                GetOrAddDocument(map, index, file, roots, note, contributed);
         }
 
         foreach (var mapping in tree.GetLineMappings())
         {
             var path = mapping.MappedSpan.Path;
             if (string.IsNullOrEmpty(path)) continue;
-            GetOrAddDocument(map, index, path, roots);
+            GetOrAddDocument(map, index, path, roots, note, contributed);
         }
     }
 
@@ -537,9 +609,30 @@ public static class ScipEmitter
     /// <summary>
     /// Returns the document for a source path, or null when the path cannot be a
     /// SCIP document at all. Null is memoised so the omission is recorded once.
+    ///
+    /// Every document it hands back is recorded against the project that asked for it,
+    /// including one another project created first: two projects compiling one file both
+    /// contribute to it, and a rebuild that knew about only the first would delete the
+    /// second's occurrences.
+    ///
+    /// The note for a path that cannot be a document is attributed to the FIRST project
+    /// that reached it, because the memo makes sure it is recorded once. On an incremental
+    /// rebuild that can be a different project from last time, so the same sentence can
+    /// end up recorded against two projects; the health detail is deduplicated before it
+    /// is rendered, which is the only place that shows.
     /// </summary>
     private static Scip.Document? GetOrAddDocument(
-        Dictionary<string, Scip.Document?> map, Scip.Index index, string path, Roots roots)
+        Dictionary<string, Scip.Document?> map, Scip.Index index, string path, Roots roots,
+        Action<string> note, ISet<string> contributed)
+    {
+        var document = ResolveDocument(map, index, path, roots, note);
+        if (document is not null) contributed.Add(document.RelativePath);
+        return document;
+    }
+
+    private static Scip.Document? ResolveDocument(
+        Dictionary<string, Scip.Document?> map, Scip.Index index, string path, Roots roots,
+        Action<string> note)
     {
         if (map.TryGetValue(path, out var existing)) return existing;
 
@@ -555,8 +648,7 @@ public static class ScipEmitter
             // health record and raises the exit code. Somebody else's file is not a gap
             // in this repository: reporting it as one made a stock .NET solution exit 3
             // on every query forever, which is how a banner stops being read.
-            index.Metadata.ToolInfo.Arguments.Add(
-                (roots.IsExternal(path) ? ExternalDocumentPrefix : OutsideProjectRootPrefix) + path);
+            note((roots.IsExternal(path) ? ExternalDocumentPrefix : OutsideProjectRootPrefix) + path);
             map[path] = null;
             return null;
         }

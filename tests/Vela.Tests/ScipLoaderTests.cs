@@ -300,6 +300,149 @@ public class ScipLoaderTests : IClassFixture<HarvestedWebApp>
         Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM symbol_fts WHERE symbol = 'string[]'"));
     }
 
+    [Fact]
+    public void LoadIncremental_ReplacesTheDocumentsItIsGivenAndLeavesTheRestAlone()
+    {
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, TwoDocuments());
+
+        // A second harvest of one project only: One.cs has lost a symbol and gained
+        // another, and Two.cs was not looked at.
+        var replacement = new Scip.Index();
+        replacement.Documents.Add(Document("One.cs", "One.After"));
+
+        var result = ScipLoader.LoadIncremental(
+            db, new Vela.Harvest.EmitResult(replacement, new HashSet<string>()), new[] { "One.cs" });
+
+        Assert.Equal(1, result.DocumentsRemoved);
+        Assert.Equal(1, result.DocumentsWritten);
+        Assert.Empty(result.SkippedPaths);
+
+        Assert.Equal(2, ScalarInt(db, "SELECT COUNT(*) FROM document"));
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM occurrence WHERE symbol = 'One.After'"));
+        Assert.Equal(0, ScalarInt(db, "SELECT COUNT(*) FROM occurrence WHERE symbol = 'One.Before'"));
+
+        // The document nobody rebuilt still answers, which is the whole claim the
+        // feature makes.
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM occurrence WHERE symbol = 'Two.Only'"));
+
+        // And nothing in the full-text table names a symbol no occurrence carries. It is
+        // keyed to nothing, so a name that has gone survives unless it is removed.
+        Assert.Equal(0, ScalarInt(db,
+            "SELECT COUNT(*) FROM symbol_fts WHERE symbol NOT IN (SELECT symbol FROM occurrence)"));
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM symbol_fts WHERE symbol = 'One.After'"));
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM symbol_fts WHERE symbol = 'Two.Only'"));
+    }
+
+    [Fact]
+    public void LoadIncremental_DeletesADocumentThatIsNoLongerProduced()
+    {
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, TwoDocuments());
+
+        // The project rebuilt and produced nothing at all for One.cs, which is what a
+        // deleted file looks like. Leaving the row would be the index describing a file
+        // that is not there.
+        var result = ScipLoader.LoadIncremental(
+            db, new Vela.Harvest.EmitResult(new Scip.Index(), new HashSet<string>()), new[] { "One.cs" });
+
+        Assert.Equal(1, result.DocumentsRemoved);
+        Assert.Equal(0, result.DocumentsWritten);
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM document"));
+        Assert.Equal(0, ScalarInt(db, "SELECT COUNT(*) FROM occurrence WHERE symbol = 'One.Before'"));
+        Assert.Equal(0, ScalarInt(db, "SELECT COUNT(*) FROM symbol_fts WHERE symbol = 'One.Before'"));
+    }
+
+    [Fact]
+    public void LoadIncremental_NeverTouchesADocumentAnImportContributed()
+    {
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, TwoDocuments());
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(relative_path, language, generated, position_encoding, source)
+                VALUES ('site/app.ts', 'typescript', 0, 0, '/tmp/site.scip');
+                INSERT INTO occurrence(document_id, symbol, scip_symbol, is_definition, start_line, start_char)
+                VALUES ((SELECT id FROM document WHERE relative_path = 'site/app.ts'),
+                        'renderPage', 'scip-typescript npm app 1.0.0 `app.ts`/renderPage().', 1, 3, 9);
+                INSERT INTO symbol_fts(symbol) VALUES ('renderPage');
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var replacement = new Scip.Index();
+        replacement.Documents.Add(Document("One.cs", "One.After"));
+
+        // A full rebuild deletes the database and replays every import into the new one.
+        // An incremental rebuild never deletes the database, so an import survives by not
+        // being touched - including when the paths handed in name it.
+        ScipLoader.LoadIncremental(
+            db,
+            new Vela.Harvest.EmitResult(replacement, new HashSet<string>()),
+            new[] { "One.cs", "site/app.ts" });
+
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM document WHERE source = '/tmp/site.scip'"));
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM occurrence WHERE symbol = 'renderPage'"));
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM symbol_fts WHERE symbol = 'renderPage'"));
+    }
+
+    [Fact]
+    public void LoadIncremental_RefusesToWriteOverADocumentAnImportOwnsAndNamesIt()
+    {
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(relative_path, language, generated, position_encoding, source)
+                VALUES ('One.cs', 'csharp', 0, 0, '/tmp/other.scip')
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var replacement = new Scip.Index();
+        replacement.Documents.Add(Document("One.cs", "One.After"));
+
+        var result = ScipLoader.LoadIncremental(
+            db, new Vela.Harvest.EmitResult(replacement, new HashSet<string>()), Array.Empty<string>());
+
+        // relative_path is UNIQUE, so writing it would abort the whole rebuild. The row
+        // is left where it is and the collision is named, because a document quietly not
+        // written is the shape of failure this codebase forbids.
+        Assert.Equal(new[] { "One.cs" }, result.SkippedPaths);
+        Assert.Equal(0, result.DocumentsWritten);
+        Assert.Equal(1, ScalarInt(db, "SELECT COUNT(*) FROM document WHERE source = '/tmp/other.scip'"));
+    }
+
+    private static Scip.Index TwoDocuments()
+    {
+        var index = new Scip.Index();
+        index.Documents.Add(Document("One.cs", "One.Before"));
+        index.Documents.Add(Document("Two.cs", "Two.Only"));
+        return index;
+    }
+
+    private static Scip.Document Document(string path, string symbol)
+    {
+        var doc = new Scip.Document { RelativePath = path, Language = "csharp" };
+        doc.Occurrences.Add(new Scip.Occurrence
+        {
+            Symbol = symbol,
+            SymbolRoles = (int)Scip.SymbolRole.Definition
+        });
+        return doc;
+    }
+
     private static (string Display, string Scip)? ReadOne(SqliteConnection db, string sql)
     {
         using var cmd = db.CreateCommand();

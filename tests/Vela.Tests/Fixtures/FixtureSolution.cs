@@ -7,11 +7,11 @@ namespace Vela.Tests.Fixtures;
 /// A scaffolded solution in a temp directory of its own, for one test.
 ///
 /// Every fixture a test is handed is still private to that test: several of them
-/// deliberately corrupt a .csproj, corrupt a .sln, or drop a vela.json beside the
-/// solution, so a shared directory would make those tests depend on the order they ran
-/// in. What is shared is the SCAFFOLDING, which is identical every time and is the
-/// expensive part: `dotnet new` and a restore cost several seconds each, and this
-/// assembly asked for the same Razor Pages app around thirty times.
+/// deliberately corrupt a .csproj, corrupt a .sln, drop a vela.json beside the solution,
+/// or edit a source file to make a project stale, so a shared directory would make those
+/// tests depend on the order they ran in. What is shared is the SCAFFOLDING, which is
+/// identical every time and is the expensive part: `dotnet new` and a restore cost several
+/// seconds each, and this assembly asked for the same Razor Pages app around thirty times.
 ///
 /// So each shape is scaffolded and restored once per test run, into a template
 /// directory, and every fixture after that is a directory copy of it. The copy is a few
@@ -62,6 +62,49 @@ public sealed class FixtureSolution : IDisposable
         return new FixtureSolution(root, Path.Combine(root, "Empty.sln"));
     }
 
+    /// <summary>
+    /// A three-project graph: Lib, App which references it, and Leaf which references
+    /// nothing.
+    ///
+    /// It exists because the incremental rebuild's one dangerous property is the CLOSURE,
+    /// and a closure cannot be tested on a solution with one project in it. Two is not
+    /// enough either: an edit to the upstream of a two-project solution selects both, and
+    /// selecting every project is a full rebuild by another name, so the interesting case -
+    /// some rebuilt, some reused - needs a third project that the change cannot reach.
+    ///
+    /// Written out as files and restored rather than scaffolded through `dotnet new`
+    /// three times, which costs several seconds per project and produces more code than
+    /// any of these tests reads.
+    /// </summary>
+    public static FixtureSolution CreateProjectGraph() => FromTemplate(Template.ProjectGraph);
+
+    /// <summary>
+    /// Three projects, two of which compile the SAME file: Alpha and Beta both include
+    /// Shared/Shared.cs, and Gamma includes nothing of anybody's.
+    ///
+    /// One document in the index holds the occurrences of every project that compiles it,
+    /// because documents are keyed by the file a developer can open. So replacing that
+    /// document on behalf of one project deletes the other project's rows, and nothing
+    /// puts them back. The file is compiled under a different symbol in each project, so
+    /// the loss is visible rather than merely theoretical.
+    /// </summary>
+    public static FixtureSolution CreateSharedFileSolution() => FromTemplate(Template.SharedFile);
+
+    /// <summary>One class library, for the tests that only need an index to exist.</summary>
+    public static FixtureSolution CreateLibrary() => FromTemplate(Template.Library);
+
+    private static FixtureSolution FromTemplate(Template template)
+    {
+        var root = template.CopyToFreshRoot();
+        return new FixtureSolution(root, Path.Combine(root, "Fixture.sln"));
+    }
+
+    /// <summary>Overwrites a file under the fixture, which is what an edit is.</summary>
+    public void Write(string relativePath, string text) => WriteFile(Root, relativePath, text);
+
+    public string Read(string relativePath) =>
+        File.ReadAllText(Path.Combine(Root, relativePath.Replace('/', Path.DirectorySeparatorChar)));
+
     public void Dispose()
     {
         try { Directory.Delete(Root, recursive: true); } catch { /* temp dir, best effort */ }
@@ -94,6 +137,112 @@ public sealed class FixtureSolution : IDisposable
 
         public static readonly Template EmptySolution = new(root =>
             Run("dotnet", "new sln -n Empty --format sln", root));
+
+        public static readonly Template ProjectGraph = new(root =>
+        {
+            WriteProject(root, "Lib");
+            WriteFile(root, "Lib/Upstream.cs", """
+                namespace Lib
+                {
+                    public static class Upstream
+                    {
+                        public static long Twice(int value) => value + value;
+                    }
+                }
+                """);
+
+            WriteProject(root, "App", references: new[] { "../Lib/Lib.csproj" });
+            WriteFile(root, "App/Caller.cs", """
+                namespace App
+                {
+                    public static class Caller
+                    {
+                        public static long Call() => Lib.Upstream.Twice(21);
+                    }
+                }
+                """);
+
+            WriteProject(root, "Leaf");
+            WriteFile(root, "Leaf/Standalone.cs", """
+                namespace Leaf
+                {
+                    public static class Standalone
+                    {
+                        public static int OriginalOnly() => 1;
+                    }
+                }
+                """);
+
+            Restore(root, "Lib/Lib.csproj", "App/App.csproj", "Leaf/Leaf.csproj");
+        });
+
+        public static readonly Template SharedFile = new(root =>
+        {
+            WriteFile(root, "Shared/Shared.cs", """
+                namespace Shared
+                {
+                    public static class Common
+                    {
+                #if ALPHA
+                        public static int FromAlpha() => 1;
+                #else
+                        public static int FromBeta() => 2;
+                #endif
+                    }
+                }
+                """);
+
+            WriteProject(root, "Alpha", define: "ALPHA", compiles: "../Shared/Shared.cs");
+            WriteFile(root, "Alpha/Own.cs", """
+                namespace Alpha
+                {
+                    public static class Own
+                    {
+                        public static int Value() => 1;
+                    }
+                }
+                """);
+
+            WriteProject(root, "Beta", compiles: "../Shared/Shared.cs");
+            WriteFile(root, "Beta/Own.cs", """
+                namespace Beta
+                {
+                    public static class Own
+                    {
+                        public static int Value() => 2;
+                    }
+                }
+                """);
+
+            WriteProject(root, "Gamma");
+            WriteFile(root, "Gamma/Own.cs", """
+                namespace Gamma
+                {
+                    public static class Own
+                    {
+                        public static int Value() => 3;
+                    }
+                }
+                """);
+
+            Restore(root, "Alpha/Alpha.csproj", "Beta/Beta.csproj", "Gamma/Gamma.csproj");
+        });
+
+        public static readonly Template Library = new(root =>
+        {
+            WriteProject(root, "Solo");
+            WriteFile(root, "Solo/Thing.cs", """
+                namespace Solo
+                {
+                    public static class Thing
+                    {
+                        public static int Value() => 1;
+                    }
+                }
+                """);
+
+            Restore(root, "Solo/Solo.csproj");
+        });
 
         private readonly Lazy<string> _path;
 
@@ -139,6 +288,51 @@ public sealed class FixtureSolution : IDisposable
             };
             return path;
         });
+    }
+
+    /// <summary>
+    /// A plain class library targeting the framework vela itself targets, with implicit
+    /// usings and nullable annotations off so the generated code these tests reason about
+    /// is exactly the code they wrote.
+    /// </summary>
+    private static void WriteProject(
+        string root, string name, string[]? references = null, string? define = null, string? compiles = null)
+    {
+        var items = new StringBuilder();
+        if (compiles is not null)
+            items.AppendLine($"""  <ItemGroup><Compile Include="{compiles}" Link="Shared.cs" /></ItemGroup>""");
+
+        if (references is not null)
+        {
+            foreach (var reference in references)
+                items.AppendLine($"""  <ItemGroup><ProjectReference Include="{reference}" /></ItemGroup>""");
+        }
+
+        WriteFile(root, $"{name}/{name}.csproj", $"""
+            <Project Sdk="Microsoft.NET.Sdk">
+              <PropertyGroup>
+                <TargetFramework>net10.0</TargetFramework>
+                <ImplicitUsings>disable</ImplicitUsings>
+                <Nullable>disable</Nullable>
+                <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+                {(define is null ? "" : $"<DefineConstants>$(DefineConstants);{define}</DefineConstants>")}
+              </PropertyGroup>
+            {items}</Project>
+            """);
+    }
+
+    private static void WriteFile(string root, string relativePath, string text)
+    {
+        var full = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+        File.WriteAllText(full, text);
+    }
+
+    private static void Restore(string root, params string[] projects)
+    {
+        Run("dotnet", "new sln -n Fixture --format sln", root);
+        Run("dotnet", "sln Fixture.sln add " + string.Join(' ', projects), root);
+        Run("dotnet", "restore Fixture.sln", root);
     }
 
     private static void Run(string exe, string args, string cwd, int timeoutMs = 120_000)

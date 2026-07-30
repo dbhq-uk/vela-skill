@@ -3,7 +3,19 @@ using Microsoft.Data.Sqlite;
 
 namespace Vela.Indexing;
 
-public record HealthRecord(DateTime BuiltAtUtc, string? GitRef, bool Degraded, string? Detail);
+/// <param name="Rebuild">
+/// How this index was last built, and null for a full rebuild - which is what it stays
+/// for anybody who never asks for anything else.
+///
+/// An incremental rebuild rebuilds some projects and reuses the rows of others, so
+/// <paramref name="BuiltAtUtc"/> stops being one fact about the whole index: the reused
+/// rows are as old as the run that last wrote them. This sentence names which projects
+/// were which, so a reader who distrusts an answer can find out whether the project it
+/// came from was looked at. project_input.built_at_utc holds the per-project dates behind
+/// it.
+/// </param>
+public record HealthRecord(
+    DateTime BuiltAtUtc, string? GitRef, bool Degraded, string? Detail, string? Rebuild = null);
 
 public static class IndexHealth
 {
@@ -29,13 +41,14 @@ public static class IndexHealth
         cmd.Transaction = tx;
         cmd.CommandText = """
             DELETE FROM index_health;
-            INSERT INTO index_health(built_at_utc, git_ref, degraded, detail)
-            VALUES ($b, $g, $d, $t);
+            INSERT INTO index_health(built_at_utc, git_ref, degraded, detail, rebuild)
+            VALUES ($b, $g, $d, $t, $r);
             """;
         cmd.Parameters.AddWithValue("$b", record.BuiltAtUtc.ToString("O"));
         cmd.Parameters.AddWithValue("$g", (object?)record.GitRef ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$d", record.Degraded ? 1 : 0);
         cmd.Parameters.AddWithValue("$t", (object?)record.Detail ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$r", (object?)record.Rebuild ?? DBNull.Value);
         cmd.ExecuteNonQuery();
         tx.Commit();
     }
@@ -147,7 +160,7 @@ public static class IndexHealth
         // suffix for a given DateTimeKind, so ordering them as text matches
         // ordering them chronologically.
         using var cmd = db.CreateCommand();
-        cmd.CommandText = "SELECT built_at_utc, git_ref, degraded, detail FROM index_health ORDER BY built_at_utc DESC LIMIT 1";
+        cmd.CommandText = "SELECT built_at_utc, git_ref, degraded, detail, rebuild FROM index_health ORDER BY built_at_utc DESC LIMIT 1";
         using var reader = cmd.ExecuteReader();
 
         // No health row at all is the most dangerous case: it means we do not even
@@ -178,6 +191,7 @@ public static class IndexHealth
             builtAtUtc,
             gitRef,
             reader.GetInt32(2) != 0,
-            reader.IsDBNull(3) ? null : reader.GetString(3));
+            reader.IsDBNull(3) ? null : reader.GetString(3),
+            reader.IsDBNull(4) ? null : reader.GetString(4));
     }
 }

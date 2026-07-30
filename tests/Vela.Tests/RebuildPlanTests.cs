@@ -319,6 +319,94 @@ public class RebuildPlanTests
     }
 
     /// <summary>
+    /// Two projects compiling one file is ordinary - a linked file, a shared source
+    /// directory, a file included by a wildcard from two places. A document in the index
+    /// holds the occurrences of EVERY project that compiles it, because documents are
+    /// keyed by the file a developer can open, so replacing that document on behalf of one
+    /// project deletes the other's rows and nothing puts them back.
+    /// </summary>
+    [Fact]
+    public void For_SelectsAProjectThatCompilesAFileASelectedProjectAlsoCompiles()
+    {
+        var current = new[] { Project("alpha", "changed"), Project("beta", "b0"), Project("gamma", "g0") };
+
+        var plan = RebuildPlan.For(
+            current,
+            Prior(("alpha", "a0"), ("beta", "b0"), ("gamma", "g0")),
+            Schema, Vela,
+            Documents(
+                ("alpha", new[] { "Alpha/Own.cs", "Shared/Shared.cs" }),
+                ("beta", new[] { "Beta/Own.cs", "Shared/Shared.cs" }),
+                ("gamma", new[] { "Gamma/Own.cs" })));
+
+        Assert.Equal(new[] { "alpha", "beta" }, plan.Rebuild);
+        Assert.Equal(new[] { "gamma" }, plan.Reuse);
+        Assert.Contains(plan.Reasons, r => r.StartsWith("beta:", StringComparison.Ordinal)
+                                           && r.Contains("Shared/Shared.cs", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void For_ClosesOverSharedDocumentsTransitively()
+    {
+        // alpha shares a file with beta, beta shares a different file with gamma. Rebuild
+        // alpha and all three documents are being replaced, so all three projects have to
+        // contribute to them.
+        var current = new[] { Project("alpha", "changed"), Project("beta", "b0"), Project("gamma", "g0") };
+
+        var plan = RebuildPlan.For(
+            current,
+            Prior(("alpha", "a0"), ("beta", "b0"), ("gamma", "g0")),
+            Schema, Vela,
+            Documents(
+                ("alpha", new[] { "one.cs" }),
+                ("beta", new[] { "one.cs", "two.cs" }),
+                ("gamma", new[] { "two.cs" })));
+
+        Assert.Equal(new[] { "alpha", "beta", "gamma" }, plan.Rebuild);
+        Assert.Empty(plan.Reuse);
+    }
+
+    [Fact]
+    public void For_DoesNotSelectAProjectThatSharesNoDocument()
+    {
+        var current = new[] { Project("alpha", "changed"), Project("beta", "b0") };
+
+        var plan = RebuildPlan.For(
+            current,
+            Prior(("alpha", "a0"), ("beta", "b0")),
+            Schema, Vela,
+            Documents(("alpha", new[] { "one.cs" }), ("beta", new[] { "two.cs" })));
+
+        Assert.Equal(new[] { "alpha" }, plan.Rebuild);
+        Assert.Equal(new[] { "beta" }, plan.Reuse);
+    }
+
+    [Fact]
+    public void For_ReturnsTheSameSharedDocumentClosureWhateverOrderItIsGiven()
+    {
+        var forwards = new[] { Project("alpha", "changed"), Project("beta", "b0"), Project("gamma", "g0") };
+        var backwards = forwards.Reverse().ToArray();
+
+        var documents = Documents(
+            ("alpha", new[] { "one.cs" }),
+            ("beta", new[] { "one.cs", "two.cs" }),
+            ("gamma", new[] { "two.cs" }));
+
+        var prior = Prior(("alpha", "a0"), ("beta", "b0"), ("gamma", "g0"));
+
+        var one = RebuildPlan.For(forwards, prior, Schema, Vela, documents);
+        var other = RebuildPlan.For(backwards, prior, Schema, Vela, documents);
+
+        Assert.Equal(one.Rebuild, other.Rebuild);
+        Assert.Equal(one.Reuse, other.Reuse);
+        Assert.Equal(one.Reasons, other.Reasons);
+    }
+
+    private static Dictionary<string, IReadOnlyList<string>> Documents(
+        params (string Project, string[] Paths)[] entries) =>
+        entries.ToDictionary(e => e.Project, e => (IReadOnlyList<string>)e.Paths, StringComparer.Ordinal);
+
+    /// <summary>
     /// a is upstream of b is upstream of c is upstream of d: four projects, three deep,
     /// and every one of them a different distance from the change.
     /// </summary>

@@ -255,7 +255,23 @@ public static class Program
                         + "and definition counts."
         };
 
-        var command = new Command("index", "Build the index for a solution") { solutionOption, statsOption };
+        // Off by default, and it will stay off until this version has been proven in use.
+        // A full rebuild cannot be stale, because it reads everything. An incremental one
+        // is a CLAIM that what it skipped has not changed, and if the claim is wrong the
+        // index holds rows describing code that no longer exists while reporting itself
+        // complete - Constraint 3's exact failure, and worse than the slowness it replaces.
+        var incrementalOption = new Option<bool>("--incremental")
+        {
+            Description = "Rebuild only the projects whose inputs changed, and every project downstream "
+                        + "of them. Off by default. Falls back to a full rebuild, saying so, whenever the "
+                        + "decision cannot be trusted. It helps most when the change is in a leaf project; "
+                        + "a change low in the dependency graph rebuilds nearly everything."
+        };
+
+        var command = new Command("index", "Build the index for a solution")
+        {
+            solutionOption, statsOption, incrementalOption
+        };
 
         command.SetAction(async (parseResult, cancellationToken) =>
         {
@@ -288,23 +304,6 @@ public static class Program
                 }
             }
 
-            var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(solution, cancellationToken);
-            var emitted = await Vela.Harvest.ScipEmitter.EmitAsync(load.Solution, load.Failures, cancellationToken);
-            var index = emitted.Index;
-            var health = BuildHealthRecord(index, load.Failures);
-
-            // A job root that is not there can never be settled by an import, so it belongs
-            // in the indexing pass's own verdict, which this run rewrites: fix the config or
-            // the tree, index again, and it clears.
-            if (plan.Problems.Count > 0)
-            {
-                health = health with
-                {
-                    Degraded = true,
-                    Detail = Append(health.Detail, Summarise(plan.Problems))
-                };
-            }
-
             var path = IndexPaths.ForSolution(solution);
 
             // ForSolution is pure, so the cache directory may not exist yet, and
@@ -312,19 +311,51 @@ public static class Program
             // build's database is a precondition violation, not an update.
             IndexPaths.EnsureDirectoryExists(path);
 
-            // Asked BEFORE the delete, because the answer is in the file that is about to
-            // go. This is what an imported language survives a rebuild by: nothing else in
-            // the database outlives this line. See ImportedSources for what its absence
-            // cost on the real repository.
-            var remembered = ImportedSources.ReadFrom(path);
+            var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(solution, cancellationToken);
 
-            if (File.Exists(path)) File.Delete(path);
+            // The incremental decision, taken before anything is harvested. Null means a
+            // full rebuild, which is what this verb has always done and what it still does
+            // unless asked otherwise - and every reason the decision was refused is printed
+            // by the time this returns, because a fallback is a good outcome and a silent
+            // one is not.
+            var rebuild = parseResult.GetValue(incrementalOption)
+                ? await PlanRebuildAsync(load.Solution, repositoryRoot, path, output, cancellationToken)
+                : null;
+
+            var emitted = await Vela.Harvest.ScipEmitter.EmitAsync(
+                load.Solution, load.Failures, cancellationToken,
+                rebuild is null ? null : rebuild.Reuse.ToHashSet(StringComparer.Ordinal));
+            var index = emitted.Index;
 
             var replayed = new HashSet<string>(StringComparer.Ordinal);
             var replayProblems = new List<string>();
+            HealthRecord health;
 
-            using (var db = new SqliteConnection(ConnectionStringFor(path)))
+            if (rebuild is null)
             {
+                health = BuildHealthRecord(index, load.Failures);
+
+                // A job root that is not there can never be settled by an import, so it
+                // belongs in the indexing pass's own verdict, which this run rewrites: fix
+                // the config or the tree, index again, and it clears.
+                if (plan.Problems.Count > 0)
+                {
+                    health = health with
+                    {
+                        Degraded = true,
+                        Detail = Append(health.Detail, Summarise(plan.Problems))
+                    };
+                }
+
+                // Asked BEFORE the delete, because the answer is in the file that is about
+                // to go. This is what an imported language survives a rebuild by: nothing
+                // else in the database outlives this line. See ImportedSources for what its
+                // absence cost on the real repository.
+                var remembered = ImportedSources.ReadFrom(path);
+
+                if (File.Exists(path)) File.Delete(path);
+
+                using var db = new SqliteConnection(ConnectionStringFor(path));
                 db.Open();
                 Schema.Create(db);
                 ScipLoader.Load(db, emitted);
@@ -333,12 +364,15 @@ public static class Program
                 ExternalDocuments.Write(db, external);
                 IndexHealth.Write(db, health);
 
-                // What each project was built from, so a later run has something to
-                // compare a tree against rather than a guess. Nothing reads it yet, and
-                // it changes no answer this command gives; a rebuild that cannot check
-                // its own claim is the thing this record exists to make impossible.
+                // What each project was built from, what each project could not do, and
+                // which documents each one contributed to. Together they are what lets a
+                // LATER run skip a project without forgetting any of it: a rebuild that
+                // cannot check its own claim is the thing these records exist to make
+                // impossible.
                 ProjectInputs.Write(
                     db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, health.BuiltAtUtc);
+                ProjectNotes.Write(db, emitted.Harvested, emitted.Notes);
+                ProjectDocuments.Write(db, emitted.Harvested, emitted.DocumentsByProject);
 
                 output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
 
@@ -359,25 +393,92 @@ public static class Program
                         IndexHealth.WriteImport(db, pending.Source, pending.Detail);
                 }
 
-                // Said plainly, and once. These files are not in the index and the
-                // number is worth knowing, but they were never this index's to hold, so
-                // saying it through the "!!" banner below would raise the exit code and
-                // teach the reader to ignore the banner (Constraint 3 cuts both ways).
+                ReportExternalDocuments(output, external.Count);
+
+                if (parseResult.GetValue(statsOption))
+                    output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
+            }
+            else
+            {
+                using var db = new SqliteConnection(ConnectionStringFor(path));
+                db.Open();
+
+                // What the rebuilt projects contributed to LAST time, which is the only
+                // record of a document whose file has since been deleted: the fresh harvest
+                // cannot name a file that is not there.
+                var replacing = DocumentsOf(ProjectDocuments.Read(db), rebuild.Rebuild);
+                var written = ScipLoader.LoadIncremental(db, emitted, replacing);
+
+                var builtAtUtc = DateTime.UtcNow;
+                ProjectInputs.Write(
+                    db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, builtAtUtc);
+                ProjectNotes.Write(db, emitted.Harvested, emitted.Notes);
+                ProjectDocuments.Write(db, emitted.Harvested, emitted.DocumentsByProject);
+
+                // Everything every project has to say about itself, INCLUDING the projects
+                // this run did not look at. That is what stops a skipped project going
+                // quiet: a `compile-error:` note is produced by the harvest and by nothing
+                // else, so a rebuild that only knew what it had just harvested would drop
+                // the note and the index would stop calling itself degraded while still
+                // holding an incomplete picture of that project.
                 //
-                // The sentence claims only what was checked. A document reaches this
-                // count by living under the NuGet package cache or under the .NET
-                // installation, and nothing else does: a file merely outside the
-                // repository is first-party code until shown otherwise and goes to the
-                // banner. So naming those two places is exact, where "from outside this
-                // repository" was a wider claim than the test behind it.
-                if (external.Count > 0)
+                // Deduplicated because the note for a path that cannot be a document is
+                // attributed to whichever project reached it first, and that can be a
+                // different project on a different run.
+                var notes = ProjectNotes.Read(db)
+                    .Select(note => note.Note)
+                    .Distinct(StringComparer.Ordinal)
+                    .ToList();
+
+                var external = ExternalPathsIn(notes);
+                ExternalDocuments.Replace(db, external);
+
+                health = BuildHealthRecordFromNotes(notes, load.Failures, builtAtUtc);
+
+                if (plan.Problems.Count > 0)
                 {
-                    output.WriteLine($"{external.Count} document(s) contributed by a NuGet package or "
-                                   + "the .NET SDK were not indexed. They live in the package cache or "
-                                   + "the .NET installation, not in this repository, so none of your "
-                                   + "code is missing because of them. Run vela index --stats to list "
-                                   + "them.");
+                    health = health with
+                    {
+                        Degraded = true,
+                        Detail = Append(health.Detail, Summarise(plan.Problems))
+                    };
                 }
+
+                // A document the harvest produced and could not write, because an import
+                // holds that path and relative_path is UNIQUE. Nothing was lost that was
+                // not already somebody else's, and the index is still missing code it
+                // harvested, so it says so.
+                if (written.SkippedPaths.Count > 0)
+                {
+                    health = health with
+                    {
+                        Degraded = true,
+                        Detail = Append(health.Detail, Summarise(written.SkippedPaths
+                            .Select(p => "import-collision: " + p + " was harvested and not written, because "
+                                       + "an imported .scip already holds that path. Run vela index without "
+                                       + "--incremental, which rebuilds from nothing and replays the import "
+                                       + "over the top.")
+                            .ToList()))
+                    };
+                }
+
+                health = health with { Rebuild = DescribeRebuild(rebuild) };
+                IndexHealth.Write(db, health);
+
+                ReportRebuild(output, rebuild, written, path);
+
+                // An import survives an incremental rebuild by not being touched, where it
+                // survives a full one by being replayed. Either way it is still in the
+                // index and still remembered, so a job waiting on it is still settled.
+                replayed.UnionWith(ImportedPaths(db));
+
+                foreach (var pending in plan.Pending)
+                {
+                    if (!replayed.Contains(pending.Source))
+                        IndexHealth.WriteImport(db, pending.Source, pending.Detail);
+                }
+
+                ReportExternalDocuments(output, external.Count);
 
                 if (parseResult.GetValue(statsOption))
                     output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
@@ -414,6 +515,219 @@ public static class Program
         });
 
         return command;
+    }
+
+    /// <summary>
+    /// Which projects this run can honestly skip, or null when it can skip none of them.
+    ///
+    /// <b>Every null is printed before it is returned.</b> A fallback to a full rebuild is
+    /// a good outcome - it is the only outcome that cannot be stale - and it must never be
+    /// silent, because a user who asked for a fast rebuild and got a slow one needs to know
+    /// which one they got and why. There are five ways to reach it: no index yet, a schema
+    /// this build does not read, a whole-index reason in the plan, a plan that reaches
+    /// every project anyway, and anything at all going wrong while working it out.
+    ///
+    /// The fingerprinting here does not compile anything, which is what makes the decision
+    /// affordable: on the real solution it is 554ms cold and 76ms warm against a full index
+    /// of 2m13s, and the plan itself is 7 to 9ms over ten projects and thirty-four edges.
+    /// </summary>
+    private static async Task<RebuildPlan?> PlanRebuildAsync(
+        Microsoft.CodeAnalysis.Solution solution,
+        string repositoryRoot,
+        string indexPath,
+        TextWriter output,
+        CancellationToken ct)
+    {
+        if (!File.Exists(indexPath))
+        {
+            FallBackToFullRebuild(output,
+                $"there is no index at {indexPath} yet, so there is nothing to compare this tree against.");
+            return null;
+        }
+
+        try
+        {
+            RebuildPlan plan;
+
+            using (var db = new SqliteConnection(ConnectionStringFor(indexPath)))
+            {
+                db.Open();
+
+                var version = Schema.ReadVersion(db);
+                if (version != Schema.Version)
+                {
+                    FallBackToFullRebuild(output,
+                        $"the index at {indexPath} was built against schema version {version} and this vela "
+                        + $"reads schema version {Schema.Version}, so nothing recorded in it means what this "
+                        + "build would write.");
+                    return null;
+                }
+
+                plan = RebuildPlan.For(
+                    await ProjectFingerprint.ForSolutionAsync(
+                        solution.Projects.ToArray(), repositoryRoot, ct),
+                    ProjectInputs.Read(db),
+                    Schema.Version,
+                    ProjectInputs.VelaVersion,
+                    ProjectDocuments.Read(db));
+            }
+
+            if (plan.RebuildsEverything)
+            {
+                FallBackToFullRebuild(output, string.Join(" ", plan.Reasons));
+                return null;
+            }
+
+            // NOT the same fact as the flag above, and worth keeping straight. The flag
+            // means a whole-index reason fired: something made every recorded row
+            // untrustworthy. This means the closure was right and happened to reach every
+            // project, which is what a change low in the dependency graph looks like -
+            // ordinary, correct, and expensive. Rebuilding them one at a time would produce
+            // the same index by a slower route, having paid for the decision first.
+            if (plan.Reuse.Count == 0)
+            {
+                FallBackToFullRebuild(output,
+                    $"the change reaches every project in this solution, all {plan.Rebuild.Count} of them, so "
+                    + "there is nothing left to reuse. "
+                    + (plan.Reasons.Count > 0 ? plan.Reasons[0] + "." : ""));
+                return null;
+            }
+
+            return plan;
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException
+                                   or InvalidOperationException or FormatException)
+        {
+            // Anything at all. The plan is the part of this feature that can be wrong
+            // silently, so a plan that threw is a plan nobody should act on, and the only
+            // safe reading of one is that there is no plan.
+            FallBackToFullRebuild(output, "the plan could not be worked out: " + ex.Message);
+            return null;
+        }
+    }
+
+    private static void FallBackToFullRebuild(TextWriter output, string reason)
+    {
+        output.WriteLine("Falling back to a full rebuild: " + reason);
+        output.WriteLine("   A full rebuild cannot be stale, because it reads everything. This is the safe "
+                       + "outcome and not a failure.");
+    }
+
+    /// <summary>
+    /// What the incremental rebuild did, project by project, because the one thing a
+    /// reader needs from this verb is which parts of the answer were looked at and which
+    /// were taken on trust.
+    /// </summary>
+    private static void ReportRebuild(
+        TextWriter output, RebuildPlan plan, ScipLoader.IncrementalLoad written, string path)
+    {
+        var total = plan.Rebuild.Count + plan.Reuse.Count;
+
+        output.WriteLine($"Incremental rebuild: {plan.Rebuild.Count} of {total} project(s) rebuilt, "
+                       + $"{plan.Reuse.Count} reused.");
+
+        foreach (var reason in plan.Reasons.Take(MaxDetailProblems))
+            output.WriteLine("  rebuilt " + reason);
+
+        if (plan.Reasons.Count > MaxDetailProblems)
+            output.WriteLine($"  (+{plan.Reasons.Count - MaxDetailProblems} more rebuilt)");
+
+        foreach (var reused in plan.Reuse.Take(MaxDetailProblems))
+            output.WriteLine("  reused " + reused);
+
+        if (plan.Reuse.Count > MaxDetailProblems)
+            output.WriteLine($"  (+{plan.Reuse.Count - MaxDetailProblems} more reused)");
+
+        output.WriteLine($"Replaced {written.DocumentsRemoved} document(s) with {written.DocumentsWritten} "
+                       + $"in {path}. Every other document in it is the one the last build wrote, and this "
+                       + "run did not look at the code behind it.");
+    }
+
+    /// <summary>
+    /// The sentence the index keeps about how it was last built. Null for a full rebuild,
+    /// which is what makes "this index was built whole" the thing an absent value means.
+    /// </summary>
+    private static string DescribeRebuild(RebuildPlan plan)
+    {
+        var total = plan.Rebuild.Count + plan.Reuse.Count;
+
+        return $"incremental: {plan.Rebuild.Count} of {total} project(s) rebuilt ({Names(plan.Rebuild)}); "
+             + $"{plan.Reuse.Count} reused ({Names(plan.Reuse)})";
+    }
+
+    private static string Names(IReadOnlyList<string> projects)
+    {
+        if (projects.Count == 0) return "none";
+
+        var shown = string.Join(", ", projects.Take(MaxDetailProblems));
+        return projects.Count > MaxDetailProblems
+            ? $"{shown}, (+{projects.Count - MaxDetailProblems} more)"
+            : shown;
+    }
+
+    /// <summary>
+    /// Every document the projects being rebuilt contributed to when the index was last
+    /// built, deduplicated because two of them can share one.
+    /// </summary>
+    private static List<string> DocumentsOf(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> recorded, IReadOnlyList<string> projects)
+    {
+        var paths = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var project in projects)
+        {
+            if (recorded.TryGetValue(project, out var documents)) paths.UnionWith(documents);
+        }
+
+        return paths.OrderBy(path => path, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>The .scip files this index already holds documents from.</summary>
+    private static IReadOnlyList<string> ImportedPaths(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT source FROM imported_source ORDER BY source";
+        using var reader = cmd.ExecuteReader();
+
+        var sources = new List<string>();
+        while (reader.Read()) sources.Add(reader.GetString(0));
+        return sources;
+    }
+
+    /// <summary>
+    /// The files a NuGet package or the .NET SDK contributed, recovered from the notes.
+    /// An incremental rebuild sees only the projects it looked at, so the whole list has
+    /// to be assembled from what every project recorded rather than from this run alone.
+    /// </summary>
+    private static IReadOnlyList<string> ExternalPathsIn(IReadOnlyList<string> notes) =>
+        notes
+            .Where(note => note.StartsWith(ExternalDocumentPrefix, StringComparison.Ordinal))
+            .Select(note => note[ExternalDocumentPrefix.Length..].Trim())
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// Said plainly, and once. These files are not in the index and the number is worth
+    /// knowing, but they were never this index's to hold, so saying it through the "!!"
+    /// banner would raise the exit code and teach the reader to ignore the banner
+    /// (Constraint 3 cuts both ways).
+    ///
+    /// The sentence claims only what was checked. A document reaches this count by living
+    /// under the NuGet package cache or under the .NET installation, and nothing else does:
+    /// a file merely outside the repository is first-party code until shown otherwise and
+    /// goes to the banner. So naming those two places is exact, where "from outside this
+    /// repository" was a wider claim than the test behind it.
+    /// </summary>
+    private static void ReportExternalDocuments(TextWriter output, int count)
+    {
+        if (count == 0) return;
+
+        output.WriteLine($"{count} document(s) contributed by a NuGet package or "
+                       + "the .NET SDK were not indexed. They live in the package cache or "
+                       + "the .NET installation, not in this repository, so none of your "
+                       + "code is missing because of them. Run vela index --stats to list "
+                       + "them.");
     }
 
     /// <summary>
@@ -973,18 +1287,36 @@ public static class Program
     /// package cache, and calling that index incomplete made every query on a stock
     /// solution exit 3 forever.
     /// </summary>
-    public static HealthRecord BuildHealthRecord(Scip.Index index, IReadOnlyList<string> failures)
+    public static HealthRecord BuildHealthRecord(Scip.Index index, IReadOnlyList<string> failures) =>
+        BuildHealthRecordFromNotes(
+            index.Metadata?.ToolInfo?.Arguments ?? (IReadOnlyList<string>)Array.Empty<string>(),
+            failures,
+            DateTime.UtcNow);
+
+    /// <summary>
+    /// The same verdict, reached from the notes rather than from a freshly emitted index.
+    ///
+    /// An incremental rebuild cannot read its verdict off the index it just emitted,
+    /// because that index covers only the projects it harvested. The projects it skipped
+    /// still have everything they had to say recorded against them in project_note, and
+    /// they are as true as they were: their inputs have not changed and nothing upstream of
+    /// them has either. So the two halves are merged and the SAME classification is applied
+    /// to both, through the same prefix list, so a note cannot mean one thing on one path
+    /// and something else on the other.
+    /// </summary>
+    /// <param name="builtAtUtc">
+    /// Passed in rather than taken here, so the health record, the ledger and the rebuild
+    /// summary of one run all carry one instant.
+    /// </param>
+    public static HealthRecord BuildHealthRecordFromNotes(
+        IReadOnlyList<string> notes, IReadOnlyList<string> failures, DateTime builtAtUtc)
     {
         var problems = new List<string>();
 
-        var arguments = index.Metadata?.ToolInfo?.Arguments;
-        if (arguments is not null)
+        foreach (var note in notes)
         {
-            foreach (var argument in arguments)
-            {
-                if (ProblemPrefixes.Any(prefix => argument.StartsWith(prefix, StringComparison.Ordinal)))
-                    problems.Add(argument);
-            }
+            if (ProblemPrefixes.Any(prefix => note.StartsWith(prefix, StringComparison.Ordinal)))
+                problems.Add(note);
         }
 
         // ScipEmitter copies the loader's failures into the index, so they are
@@ -998,8 +1330,8 @@ public static class Program
         }
 
         return problems.Count == 0
-            ? new HealthRecord(DateTime.UtcNow, null, Degraded: false, Detail: null)
-            : new HealthRecord(DateTime.UtcNow, null, Degraded: true, Detail: Summarise(problems));
+            ? new HealthRecord(builtAtUtc, null, Degraded: false, Detail: null)
+            : new HealthRecord(builtAtUtc, null, Degraded: true, Detail: Summarise(problems));
     }
 
     /// <summary>

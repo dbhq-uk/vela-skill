@@ -64,11 +64,22 @@ public sealed record RebuildPlan(
     /// <param name="prior">What the ledger recorded, from <see cref="ProjectInputs.Read"/>.</param>
     /// <param name="schemaVersion">The schema this build of vela reads and writes.</param>
     /// <param name="velaVersion">This build of vela.</param>
+    /// <param name="recordedDocuments">
+    /// Which documents each project contributed to when the index was built, from
+    /// <see cref="ProjectDocuments.Read"/>, or null to take no account of it.
+    ///
+    /// A document is keyed by the file a developer can open, and two projects can compile
+    /// one file, so the occurrences of both land in ONE document row. Rebuilding one of
+    /// them replaces that row and deletes the other's occurrences, and nothing puts them
+    /// back. So a project that shares a document with a selected project is selected too,
+    /// transitively.
+    /// </param>
     public static RebuildPlan For(
         IReadOnlyList<ProjectFingerprint> current,
         IReadOnlyList<RecordedProject> prior,
         int schemaVersion,
-        string velaVersion)
+        string velaVersion,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? recordedDocuments = null)
     {
         var everything = current
             .Select(project => project.Project)
@@ -128,6 +139,8 @@ public sealed record RebuildPlan(
 
         var dependents = Dependents(ordered, known);
         var selected = Close(seeds, dependents);
+
+        CloseOverSharedDocuments(selected, recordedDocuments, known);
 
         var rebuild = selected.Keys.OrderBy(identity => identity, StringComparer.Ordinal).ToList();
         var reuse = everything.Where(identity => !selected.ContainsKey(identity)).ToList();
@@ -290,5 +303,75 @@ public sealed record RebuildPlan(
         }
 
         return selected;
+    }
+
+    /// <summary>
+    /// Adds every project that contributed to a document one of the selected projects
+    /// also contributed to, transitively.
+    ///
+    /// <b>Why this is not optional.</b> A rebuild replaces a document whole, because a
+    /// document is one row and its occurrences hang off it. Two projects compiling one
+    /// file is ordinary - a linked file, a shared source directory, a wildcard reaching
+    /// into a common folder - and both projects' occurrences land in that one row. So
+    /// rebuilding one of them and not the other deletes the other's occurrences and writes
+    /// nothing in their place: a file that is still on disk, still compiled, and half
+    /// absent from an index that reports itself complete.
+    ///
+    /// The walk is over what the LEDGER recorded, which is what is actually in the
+    /// database and therefore what is actually at risk. A file that has since moved from
+    /// one project to another changed both projects' inputs, so both are already selected
+    /// on their own account; what this catches is the case where only one of them changed.
+    ///
+    /// Everything is sorted before it is walked, so the same graph gives the same set in
+    /// the same order with the same reasons, whichever order the projects arrived in
+    /// (Constraint 1).
+    /// </summary>
+    private static void CloseOverSharedDocuments(
+        Dictionary<string, string> selected,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? recordedDocuments,
+        HashSet<string> known)
+    {
+        if (recordedDocuments is null || recordedDocuments.Count == 0) return;
+
+        // Which projects contributed to each document, restricted to projects this
+        // solution still holds: one the ledger remembers and the solution has lost cannot
+        // be rebuilt, and the whole-index check above has already fired on it.
+        var contributors = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var entry in recordedDocuments.OrderBy(e => e.Key, StringComparer.Ordinal))
+        {
+            if (!known.Contains(entry.Key)) continue;
+
+            foreach (var path in entry.Value.OrderBy(p => p, StringComparer.Ordinal))
+            {
+                if (!contributors.TryGetValue(path, out var projects))
+                    contributors[path] = projects = new List<string>();
+                projects.Add(entry.Key);
+            }
+        }
+
+        var pending = new Queue<string>(selected.Keys.OrderBy(p => p, StringComparer.Ordinal));
+
+        while (pending.Count > 0)
+        {
+            var project = pending.Dequeue();
+            if (!recordedDocuments.TryGetValue(project, out var paths)) continue;
+
+            foreach (var path in paths.OrderBy(p => p, StringComparer.Ordinal))
+            {
+                if (!contributors.TryGetValue(path, out var sharing)) continue;
+
+                foreach (var other in sharing)
+                {
+                    if (string.Equals(other, project, StringComparison.Ordinal)) continue;
+
+                    var reason = other + ": it compiles " + path + ", which " + project
+                               + " also compiles and which is being rebuilt. One document in this index "
+                               + "holds the occurrences of every project that compiles it, so replacing "
+                               + "it without this project would delete rows nothing would put back";
+
+                    if (selected.TryAdd(other, reason)) pending.Enqueue(other);
+                }
+            }
+        }
     }
 }

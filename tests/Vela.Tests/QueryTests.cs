@@ -2840,7 +2840,18 @@ public class QueryTests
             cmd.ExecuteNonQuery();
         }
 
-        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+        // Written as the old schema wrote it, in plain SQL, rather than through
+        // IndexHealth.Write. This helper's whole job is to reproduce a database vela no
+        // longer creates, and the current writer writes the current columns: calling it
+        // here would make the fixture a mixture of two schemas and stop it standing for
+        // the file it is meant to stand for.
+        using (var health = db.CreateCommand())
+        {
+            health.CommandText =
+                "INSERT INTO index_health(built_at_utc, git_ref, degraded, detail) VALUES ($b, NULL, 0, NULL)";
+            health.Parameters.AddWithValue("$b", DateTime.UtcNow.ToString("O"));
+            health.ExecuteNonQuery();
+        }
     }
 
     /// <summary>Restamps an existing index file, leaving its tables alone.</summary>

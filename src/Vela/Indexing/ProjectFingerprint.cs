@@ -216,6 +216,34 @@ public sealed record ProjectFingerprint(
     }
 
     /// <summary>
+    /// Every project of a solution, fingerprinted, without compiling any of them.
+    ///
+    /// This is what a rebuild plan is computed from, and it has to be cheap: compiling
+    /// every project to find out which ones need compiling would cost exactly what the
+    /// feature exists to avoid. Measured on the real solution, ten projects and 6,070
+    /// inputs: 554ms cold and 76ms warm, against a full index of 2m13s.
+    ///
+    /// Projects Roslyn cannot compile at all are left out, because they are also left out
+    /// of the ledger the harvest writes, and a list that held them would report the
+    /// project set as having changed on every run. They are never skipped either: the
+    /// harvest is told which projects to REUSE, so anything not named there is looked at.
+    /// </summary>
+    public static async Task<IReadOnlyList<ProjectFingerprint>> ForSolutionAsync(
+        Project[] projects, string projectRoot, CancellationToken ct)
+    {
+        var fingerprints = new List<ProjectFingerprint>();
+
+        foreach (var project in projects)
+        {
+            if (!project.SupportsCompilation) continue;
+            fingerprints.Add(await ForAsync(project, projectRoot, ct));
+        }
+
+        fingerprints.Sort((left, right) => string.CompareOrdinal(left.Project, right.Project));
+        return fingerprints;
+    }
+
+    /// <summary>
     /// What this project is called in the ledger: its file, relative to the root.
     ///
     /// A multi-targeted project is several Roslyn projects over one file, and they compile
@@ -420,6 +448,190 @@ public sealed record RecordedProject(
     int SchemaVersion,
     string VelaVersion,
     IReadOnlyList<string> References);
+
+/// <summary>
+/// One reason a project is missing code from the index, in the emitter's own words,
+/// prefix and all.
+/// </summary>
+/// <param name="Project">
+/// The project it is about, as <see cref="ProjectFingerprint.IdentityOf"/> names it, so a
+/// project that is skipped on a later run can keep saying what it could not do.
+/// </param>
+public sealed record ProjectNote(string Project, string Note);
+
+/// <summary>
+/// Each project's own reasons for being incomplete, recorded against the PROJECT and not
+/// against the run that found them.
+///
+/// <b>The hole this closes.</b> A project that will not compile is fingerprinted like any
+/// other, so an incremental run can skip it. Its `compile-error:` note is produced fresh
+/// by each harvest and by nothing else, so skipping the project meant the note was never
+/// regenerated: the index stopped calling itself degraded while still holding an
+/// incomplete picture of that project. A broken project that goes quiet is precisely the
+/// failure vela exists to prevent, and it is worse than the one it replaces, because
+/// nobody is looking.
+///
+/// <b>Why the note is kept rather than the project rebuilt.</b> Both were open. Keeping
+/// the note is honest for the same reason the skip is: the fingerprint says nothing this
+/// project compiles has changed, and the closure says nothing upstream of it has either,
+/// so the compiler would produce the same diagnostics. Forcing a rebuild of every project
+/// that has ever had a problem pays the full price for byte-identical output, and it makes
+/// the DEGRADED index the one that never gets faster - which is backwards, because an
+/// index you already know is incomplete is the one you re-run most often.
+///
+/// What it does not cover is a diagnostic that changes without any fingerprinted input
+/// changing, which is the same hole <see cref="ProjectFingerprint.ReferenceKind"/> already
+/// states: an assembly rebuilt at the same path and the same version. A full rebuild is
+/// the answer to that, and it is the default.
+/// </summary>
+public static class ProjectNotes
+{
+    /// <summary>
+    /// Replaces the notes of the projects this run looked at, and leaves every other
+    /// project's alone.
+    /// </summary>
+    /// <param name="harvested">
+    /// The projects the run actually harvested. Their rows are cleared whether or not
+    /// they produced a note, because a project that has been FIXED has to be able to stop
+    /// saying it is broken - a record only a failure can write is a record nobody can
+    /// clear.
+    /// </param>
+    public static void Write(
+        SqliteConnection db, IReadOnlyList<string> harvested, IReadOnlyList<ProjectNote> notes)
+    {
+        using var tx = db.BeginTransaction();
+
+        using (var clear = db.CreateCommand())
+        {
+            clear.Transaction = tx;
+            clear.CommandText = "DELETE FROM project_note WHERE project = $p";
+            clear.Parameters.Add("$p", SqliteType.Text);
+
+            foreach (var project in harvested)
+            {
+                clear.Parameters["$p"].Value = project;
+                clear.ExecuteNonQuery();
+            }
+        }
+
+        using var insert = db.CreateCommand();
+        insert.Transaction = tx;
+        insert.CommandText = "INSERT OR REPLACE INTO project_note(project, note) VALUES ($p, $n)";
+        insert.Parameters.Add("$p", SqliteType.Text);
+        insert.Parameters.Add("$n", SqliteType.Text);
+
+        foreach (var note in notes)
+        {
+            insert.Parameters["$p"].Value = note.Project;
+            insert.Parameters["$n"].Value = note.Note;
+            insert.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// Every note this index holds, ordered by project and then by note so the same index
+    /// renders the same banner on every run and every machine (Constraint 1).
+    /// </summary>
+    public static IReadOnlyList<ProjectNote> Read(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "SELECT project, note FROM project_note ORDER BY project, note";
+        using var reader = cmd.ExecuteReader();
+
+        var notes = new List<ProjectNote>();
+        while (reader.Read()) notes.Add(new ProjectNote(reader.GetString(0), reader.GetString(1)));
+        return notes;
+    }
+}
+
+/// <summary>
+/// Which documents each project contributed to.
+///
+/// A document is keyed by the file a developer can open, and two projects can compile one
+/// file - a linked file, a shared source directory, a wildcard reaching into a common
+/// folder. The occurrences of every project that compiles it land in ONE document row, so
+/// replacing that row on behalf of one project deletes the other's occurrences and nothing
+/// puts them back. <see cref="RebuildPlan"/> reads this to pull every such project into
+/// the rebuild.
+///
+/// It is also the only record of what a project USED to contribute, which is how a
+/// document whose file has been deleted is removed: the fresh harvest cannot name a file
+/// that is not there, so without this there would be nothing to match the stale row
+/// against.
+/// </summary>
+public static class ProjectDocuments
+{
+    /// <summary>
+    /// Replaces the documents recorded for the projects this run harvested. Cleared per
+    /// project for the same reason the notes are: a project that no longer compiles a file
+    /// has to be able to stop saying it does.
+    /// </summary>
+    public static void Write(
+        SqliteConnection db,
+        IReadOnlyList<string> harvested,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> documents)
+    {
+        using var tx = db.BeginTransaction();
+
+        using (var clear = db.CreateCommand())
+        {
+            clear.Transaction = tx;
+            clear.CommandText = "DELETE FROM project_document WHERE project = $p";
+            clear.Parameters.Add("$p", SqliteType.Text);
+
+            foreach (var project in harvested)
+            {
+                clear.Parameters["$p"].Value = project;
+                clear.ExecuteNonQuery();
+            }
+        }
+
+        using var insert = db.CreateCommand();
+        insert.Transaction = tx;
+        insert.CommandText =
+            "INSERT OR REPLACE INTO project_document(project, relative_path) VALUES ($p, $d)";
+        insert.Parameters.Add("$p", SqliteType.Text);
+        insert.Parameters.Add("$d", SqliteType.Text);
+
+        foreach (var entry in documents.OrderBy(e => e.Key, StringComparer.Ordinal))
+        {
+            insert.Parameters["$p"].Value = entry.Key;
+            foreach (var path in entry.Value)
+            {
+                insert.Parameters["$d"].Value = path;
+                insert.ExecuteNonQuery();
+            }
+        }
+
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// What each project contributed to, ordered so the plan built from it is the same on
+    /// every run and every machine (Constraint 1).
+    /// </summary>
+    public static IReadOnlyDictionary<string, IReadOnlyList<string>> Read(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText =
+            "SELECT project, relative_path FROM project_document ORDER BY project, relative_path";
+        using var reader = cmd.ExecuteReader();
+
+        var documents = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        while (reader.Read())
+        {
+            var project = reader.GetString(0);
+            if (!documents.TryGetValue(project, out var paths))
+                documents[project] = paths = new List<string>();
+            paths.Add(reader.GetString(1));
+        }
+
+        return documents.ToDictionary(
+            entry => entry.Key, entry => (IReadOnlyList<string>)entry.Value, StringComparer.Ordinal);
+    }
+}
 
 /// <summary>
 /// The ledger's home in the database: what each project was built from, written by the
