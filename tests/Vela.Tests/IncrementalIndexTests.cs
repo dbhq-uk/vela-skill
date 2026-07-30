@@ -448,6 +448,44 @@ public class IncrementalIndexTests
     }
 
     /// <summary>
+    /// Rows another build of vela wrote are not evidence about what this one would
+    /// produce. Two builds can emit different occurrences from identical source - the
+    /// anchoring, dedup and moniker rules have all changed at least once - so an index
+    /// carrying another build's identity is rebuilt whole.
+    /// </summary>
+    [Fact]
+    public async Task Incremental_WhenAnotherBuildOfVelaWroteTheIndex_FallsBackToAFullRebuildAndSaysSo()
+    {
+        using var fx = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        using (var db = Open(fx))
+        {
+            using var cmd = db.CreateCommand();
+            cmd.CommandText = "UPDATE project_input SET vela_version = $v";
+            cmd.Parameters.AddWithValue("$v", "1.0.0.0+000000000000");
+            cmd.ExecuteNonQuery();
+        }
+
+        var result = await InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Falling back to a full rebuild", result.Output);
+        Assert.Contains("a different build of vela wrote this index", result.Output);
+        Assert.Contains("1.0.0.0+000000000000", result.Output);
+        Assert.Contains("Indexed", result.Output);
+
+        // And the rebuilt index carries this build's identity, so the next run does not
+        // fall back a second time for a reason that has been dealt with.
+        using var after = Open(fx);
+        Assert.All(
+            ProjectInputs.Read(after),
+            row => Assert.Equal(ProjectInputs.VelaVersion, row.VelaVersion));
+    }
+
+    /// <summary>
     /// A plan that selects every project is a full rebuild reached the long way, and it
     /// is NOT the same thing as a whole-index reason firing. The flag on the plan means
     /// "something made the whole index untrustworthy"; this case means "the closure was

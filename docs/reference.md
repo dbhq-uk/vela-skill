@@ -107,6 +107,17 @@ same version is not.** That is the one deliberate hole, and a full index is the 
 Each is followed by `A full rebuild cannot be stale, because it reads everything. This is
 the safe outcome and not a failure.` **A fallback is a good outcome and it is never silent.**
 
+**"A different build of vela" means a different binary, not a different version number.**
+The identity recorded against every project is the assembly version followed by the module
+version id of the binary that ran, for example `1.0.0.0+8f3a2b1c9d4e`. It is derived from
+the compiled module rather than declared in a file, because a version number is a promise
+somebody has to remember to keep on the day they change the moniker grammar, and this is the
+one record that has to be right about that day. C# builds are deterministic, so rebuilding
+vela from unchanged source produces the same id and invalidates nothing; changing any line
+of vela produces a different one. **So the first incremental run after upgrading or
+rebuilding vela falls back to a full rebuild, and says so.** That is broader than "the
+harvest changed" on purpose: it errs towards the rebuild that cannot be stale.
+
 **What it prints when it does go incremental:**
 
 ```

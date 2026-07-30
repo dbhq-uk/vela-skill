@@ -291,6 +291,41 @@ public class ProjectFingerprintTests
         Assert.All(emitted.Fingerprints, f => Assert.Matches("^[0-9a-f]{64}$", f.Fingerprint));
     }
 
+    /// <summary>
+    /// The build identity has to identify the BUILD, and for a long time it did not.
+    ///
+    /// It was the version the assembly declares, and vela's csproj sets no version, so it
+    /// was `1.0.0.0` for every build vela has ever produced. The fallback that reads it -
+    /// "a different build of vela wrote this index", advertised in the reference and in
+    /// SKILL.md - could therefore never fire. A change to the anchoring, dedup or moniker
+    /// rules that left the schema alone would mix two builds' output in one index, with no
+    /// signal at all, which is exactly the silence this feature is supposed to break.
+    ///
+    /// So the identity is keyed on something a person cannot forget to bump: the module
+    /// version id of the binary that ran.
+    /// </summary>
+    [Fact]
+    public void VelaVersion_IdentifiesTheBuildAndNotJustTheDeclaredVersion()
+    {
+        var assembly = typeof(ProjectInputs).Assembly;
+        var declared = assembly.GetName().Version?.ToString();
+
+        // A string every build shares is a fact about none of them.
+        Assert.NotEqual(declared, ProjectInputs.VelaVersion);
+
+        // The compiler's own identifier for one compiled module. C# builds are
+        // deterministic, so recompiling unchanged source keeps it and every fingerprint
+        // vela wrote; changing any line of vela loses both, which is the safe direction.
+        Assert.Contains(
+            assembly.ManifestModule.ModuleVersionId.ToString("N")[..12],
+            ProjectInputs.VelaVersion,
+            StringComparison.Ordinal);
+
+        // Still readable, because it is printed in the sentence that explains the
+        // fallback to whoever is reading the output.
+        Assert.StartsWith(declared + "+", ProjectInputs.VelaVersion, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void WriteThenRead_RoundTripsTheLedger()
     {

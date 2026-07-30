@@ -640,13 +640,46 @@ public static class ProjectDocuments
 public static class ProjectInputs
 {
     /// <summary>
-    /// The build of vela that wrote a row. A different build can emit different
-    /// occurrences from identical source - the anchor rules, the dedup rules and the
-    /// moniker grammar have all changed at least once - so rows written by another build
-    /// are not evidence about what this one would produce.
+    /// The build of vela that wrote a row: the version the assembly declares, and then the
+    /// module version id of the binary that actually ran. A different build can emit
+    /// different occurrences from identical source - the anchor rules, the dedup rules and
+    /// the moniker grammar have all changed at least once - so rows written by another
+    /// build are not evidence about what this one would produce.
+    ///
+    /// <b>Why the declared version is not enough, and why this is not a style choice.</b>
+    /// This used to be the declared version alone. vela's csproj sets no Version or
+    /// VersionPrefix, so that is <c>1.0.0.0</c> for every build vela has ever produced: a
+    /// value every build shares is a fact about none of them, the fallback that reads it
+    /// could never fire, and the reference and SKILL.md both advertised it as working. A
+    /// change to the harvest that left the schema alone would have mixed two builds' output
+    /// in one index with no signal at all.
+    ///
+    /// A hand-maintained version number would only move that hole: it is a promise somebody
+    /// has to remember to keep on the day they change the moniker grammar, and the whole
+    /// point of this row is to be right about that day. The module version id is the
+    /// compiler's own identifier for one compiled module, so nobody has to remember
+    /// anything. C# builds are deterministic, so recompiling unchanged source produces the
+    /// same id and an ordinary rebuild of vela invalidates nothing; changing ANY line of
+    /// vela produces a different one. That is a superset of "changed the harvest", and it
+    /// errs towards a full rebuild, which is the direction that cannot be stale.
+    ///
+    /// The consequence is worth stating plainly, and the documentation states it: the first
+    /// incremental run after upgrading vela falls back to a full rebuild, and says so.
+    ///
+    /// Twelve hex characters of it, because the whole value is printed in the sentence that
+    /// explains the fallback to a person, and 48 bits is far more than is needed to tell
+    /// two builds of one tool apart. Computed once, because it cannot change while the
+    /// process is running and it is read on every project of every index.
     /// </summary>
-    public static string VelaVersion =>
-        typeof(ProjectInputs).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+    public static string VelaVersion { get; } = Identify();
+
+    private static string Identify()
+    {
+        var assembly = typeof(ProjectInputs).Assembly;
+        var declared = assembly.GetName().Version?.ToString() ?? "0.0.0";
+
+        return declared + "+" + assembly.ManifestModule.ModuleVersionId.ToString("N")[..12];
+    }
 
     /// <summary>
     /// Records what each project was built from, replacing whatever the same project
