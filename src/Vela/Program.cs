@@ -549,7 +549,14 @@ public static class Program
     /// affordable: on the real solution it is 554ms cold and 76ms warm against a full index
     /// of 2m13s, and the plan itself is 7 to 9ms over ten projects and thirty-four edges.
     /// </summary>
-    private static async Task<RebuildPlan?> PlanRebuildAsync(
+    /// <summary>
+    /// Internal rather than private so the test suite can drive it over a real solution.
+    /// The one behaviour that needs it is the catch below refusing to swallow a
+    /// cancellation: that is a `when` clause with nothing else in the process able to
+    /// reach it, since a token cancelled before the run is answered by the workspace load
+    /// long before the plan is computed.
+    /// </summary>
+    internal static async Task<RebuildPlan?> PlanRebuildAsync(
         Microsoft.CodeAnalysis.Solution solution,
         string repositoryRoot,
         string indexPath,

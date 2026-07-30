@@ -472,6 +472,74 @@ public class RebuildPlanTests
         Assert.Equal(one.Reasons, other.Reasons);
     }
 
+    /// <summary>
+    /// An additional file that becomes no document must not join two projects together.
+    ///
+    /// A root-level `&lt;AdditionalFiles Include="../stylecop.json" /&gt;` is the ordinary way
+    /// to configure an analyser across a whole solution, and Roslyn hands every one of them
+    /// over as an additional document. Counting them as shared documents put every project
+    /// in such a repository into one group, so any edit anywhere closed over the entire
+    /// solution and reported "it compiles stylecop.json" as the reason. The direction was
+    /// safe and no answer was ever wrong; the feature was simply worth nothing there.
+    ///
+    /// Nothing is given up by excluding them: a file that becomes no document cannot be a
+    /// document two projects share, which is the only hazard this closure exists for.
+    /// </summary>
+    [Fact]
+    public void For_DoesNotShareADocumentBecauseTwoProjectsDeclareTheSameAnalyserInput()
+    {
+        var current = new[]
+        {
+            WithAdditional("alpha", "changed", new[] { "Alpha/Own.cs" }, "stylecop.json"),
+            WithAdditional("beta", "b0", new[] { "Beta/Own.cs" }, "stylecop.json"),
+            WithAdditional("gamma", "g0", new[] { "Gamma/Own.cs" }, "stylecop.json")
+        };
+
+        var plan = RebuildPlan.For(
+            current,
+            Prior(("alpha", "a0"), ("beta", "b0"), ("gamma", "g0")),
+            Schema, Vela,
+            Documents(
+                ("alpha", new[] { "Alpha/Own.cs" }),
+                ("beta", new[] { "Beta/Own.cs" }),
+                ("gamma", new[] { "Gamma/Own.cs" })));
+
+        Assert.Equal(new[] { "alpha" }, plan.Rebuild);
+        Assert.Equal(new[] { "beta", "gamma" }, plan.Reuse);
+        Assert.DoesNotContain(plan.Reasons, r => r.Contains("stylecop.json", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// And the half that must survive the narrowing. A .cshtml IS a document in this
+    /// index - it reaches the compilation through the Razor generator that reads it - so
+    /// two projects that both compile one view are still joined, and rebuilding either
+    /// without the other would delete rows nothing would put back.
+    /// </summary>
+    [Fact]
+    public void For_StillSharesADocumentWhenTwoProjectsCompileTheSameRazorView()
+    {
+        var current = new[]
+        {
+            WithAdditional("alpha", "changed", new[] { "Alpha/Own.cs" }, "Shared/Views/_Layout.cshtml"),
+            WithAdditional("beta", "b0", new[] { "Beta/Own.cs" }, "Shared/Views/_Layout.cshtml"),
+            WithAdditional("gamma", "g0", new[] { "Gamma/Own.cs" }, "Gamma/Views/Own.razor")
+        };
+
+        var plan = RebuildPlan.For(
+            current,
+            Prior(("alpha", "a0"), ("beta", "b0"), ("gamma", "g0")),
+            Schema, Vela,
+            Documents(
+                ("alpha", new[] { "Alpha/Own.cs" }),
+                ("beta", new[] { "Beta/Own.cs" }),
+                ("gamma", new[] { "Gamma/Own.cs" })));
+
+        Assert.Equal(new[] { "alpha", "beta" }, plan.Rebuild);
+        Assert.Equal(new[] { "gamma" }, plan.Reuse);
+        Assert.Contains(plan.Reasons, r => r.StartsWith("beta:", StringComparison.Ordinal)
+                                           && r.Contains("Shared/Views/_Layout.cshtml", StringComparison.Ordinal));
+    }
+
     private static Dictionary<string, IReadOnlyList<string>> Documents(
         params (string Project, string[] Paths)[] entries) =>
         entries.ToDictionary(e => e.Project, e => (IReadOnlyList<string>)e.Paths, StringComparer.Ordinal);
@@ -496,6 +564,19 @@ public class RebuildPlanTests
     /// records them: source inputs, relative to the root, in the same form a document's
     /// relative_path takes.
     /// </summary>
+    /// <summary>
+    /// A project that compiles the named sources and is also handed the named additional
+    /// files, in the kinds <see cref="ProjectFingerprint"/> records them under.
+    /// </summary>
+    private static ProjectFingerprint WithAdditional(
+        string identity, string fingerprint, string[] sources, params string[] additional) =>
+        new(identity, identity, fingerprint,
+            sources.Select(s => new ProjectInput(ProjectFingerprint.SourceKind, s, "hash"))
+                .Concat(additional.Select(a =>
+                    new ProjectInput(ProjectFingerprint.AdditionalKind, a, "hash")))
+                .ToArray(),
+            Array.Empty<string>());
+
     private static ProjectFingerprint Compiling(
         string identity, string fingerprint, params string[] sources) =>
         new(identity, identity, fingerprint,

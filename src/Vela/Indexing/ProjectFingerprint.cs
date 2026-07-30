@@ -235,6 +235,13 @@ public sealed record ProjectFingerprint(
 
         foreach (var project in projects)
         {
+            // Checked here, per project, because this loop reads and hashes every file of
+            // every project in the solution and a run somebody has cancelled should stop
+            // rather than finish the reading first. Roslyn's own text loaders may or may
+            // not observe the token depending on whether a document's text is already in
+            // memory, so waiting for one of them to notice is not a guarantee.
+            ct.ThrowIfCancellationRequested();
+
             if (!project.SupportsCompilation) continue;
             fingerprints.Add(await ForAsync(project, projectRoot, ct));
         }
@@ -658,13 +665,22 @@ public static class ProjectInputs
     /// has to remember to keep on the day they change the moniker grammar, and the whole
     /// point of this row is to be right about that day. The module version id is the
     /// compiler's own identifier for one compiled module, so nobody has to remember
-    /// anything. C# builds are deterministic, so recompiling unchanged source produces the
-    /// same id and an ordinary rebuild of vela invalidates nothing; changing ANY line of
-    /// vela produces a different one. That is a superset of "changed the harvest", and it
-    /// errs towards a full rebuild, which is the direction that cannot be stale.
+    /// anything. Changing ANY line of vela produces a different one, which is a superset of
+    /// "changed the harvest", and it errs towards a full rebuild, which is the direction
+    /// that cannot be stale.
+    ///
+    /// <b>How deterministic this actually is, measured rather than assumed.</b> Recompiling
+    /// unchanged source with the same SDK AT THE SAME ABSOLUTE PATH reproduces the id
+    /// exactly, so an ordinary rebuild of vela in place invalidates nothing. The same source
+    /// built at a DIFFERENT absolute path does not: this project sets neither PathMap nor
+    /// DeterministicSourcePaths, so the paths the compiler embeds are part of what the id
+    /// covers, and a checkout that moved is a different build as far as this record is
+    /// concerned. That is the safe direction - it costs a full rebuild nobody needed rather
+    /// than reusing rows another build wrote - so it is recorded here rather than fixed.
     ///
     /// The consequence is worth stating plainly, and the documentation states it: the first
-    /// incremental run after upgrading vela falls back to a full rebuild, and says so.
+    /// incremental run after upgrading, rebuilding or relocating vela falls back to a full
+    /// rebuild, and says so.
     ///
     /// Twelve hex characters of it, because the whole value is printed in the sentence that
     /// explains the fallback to a person, and 48 bits is far more than is needed to tell

@@ -635,6 +635,100 @@ public class IncrementalIndexTests
         Assert.Contains("Lib.Upstream.Twice(System.Int64)", SymbolsIn(fx, "App/Caller.cs"));
     }
 
+    /// <summary>
+    /// An analyser input every project declares must not put every project into one
+    /// shared-document group.
+    ///
+    /// `&lt;AdditionalFiles Include="../stylecop.json" /&gt;` in every project is the ordinary
+    /// way to configure an analyser across a solution, and Roslyn hands that file to each
+    /// project as an additional document. It becomes no document in the index. Treating it
+    /// as one joined all three of these projects together, so an edit to Alpha alone
+    /// reported `3 of 3 project(s) rebuilt` with the reason "it compiles stylecop.json" -
+    /// safe, since it over-rebuilds, and worth nothing, since it is a full rebuild with a
+    /// plan computed first.
+    ///
+    /// These three projects reference nothing and share no code, so the only thing that
+    /// could reach Beta and Gamma is the shared-document closure.
+    /// </summary>
+    [Fact]
+    public async Task Incremental_DoesNotRebuildEveryProjectBecauseTheyShareAnAnalyserInput()
+    {
+        using var fx = FixtureSolution.CreateSharedAnalyserFileSolution();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        fx.Write("Alpha/Own.cs", """
+            namespace Alpha
+            {
+                public static class Own
+                {
+                    public static int Value() => 41;
+                }
+            }
+            """);
+
+        var second = await InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath);
+
+        Assert.Equal(0, second.ExitCode);
+        Assert.Contains("1 of 3 project(s) rebuilt", second.Output);
+        Assert.Contains("rebuilt Alpha/Alpha.csproj", second.Output);
+        Assert.Contains("reused Beta/Beta.csproj", second.Output);
+        Assert.Contains("reused Gamma/Gamma.csproj", second.Output);
+        Assert.DoesNotContain("stylecop.json", second.Output);
+
+        // And the index is still a real one: the edit landed and the reused projects kept
+        // everything they had.
+        Assert.Contains("Alpha.Own.Value()", SymbolsIn(fx, "Alpha/Own.cs"));
+        Assert.Contains("Beta.Own.Value()", SymbolsIn(fx, "Beta/Own.cs"));
+        Assert.Contains("Gamma.Own.Value()", SymbolsIn(fx, "Gamma/Own.cs"));
+    }
+
+    /// <summary>
+    /// Cancellation leaves by its own route rather than being read as "the plan could not
+    /// be worked out".
+    ///
+    /// The fallback catch in <c>PlanRebuildAsync</c> is deliberately as wide as it can be -
+    /// anything at all that goes wrong deciding is answered with the full rebuild that
+    /// cannot be stale - and it excludes exactly one thing:
+    /// <see cref="OperationCanceledException"/>. Somebody who pressed Ctrl-C asked for LESS
+    /// work, and answering that with a five-minute full index of the whole solution is the
+    /// opposite of what they asked for. That exclusion is one `when` clause, nothing else
+    /// in the suite exercised it, and deleting it would have broken no test.
+    ///
+    /// So this drives the real planning path over a real solution with a token that is
+    /// already cancelled, and asserts both halves: the cancellation comes out, and the
+    /// fallback line was never written.
+    /// </summary>
+    [Fact]
+    public async Task Incremental_WhenTheRunIsCancelled_DoesNotSwallowItAsAFallbackToAFullRebuild()
+    {
+        using var fx = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+
+        // A first index, so there is a ledger to compare against and the plan gets as far
+        // as reading the tree rather than refusing for want of an index.
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(fx.SolutionPath, CancellationToken.None);
+        Assert.Empty(load.Failures);
+
+        using var cancelled = new CancellationTokenSource();
+        await cancelled.CancelAsync();
+
+        using var writer = new StringWriter();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Program.PlanRebuildAsync(
+            load.Solution,
+            ProjectRoot.ForSolution(fx.SolutionPath),
+            IndexPaths.ForSolution(fx.SolutionPath),
+            writer,
+            cancelled.Token));
+
+        Assert.DoesNotContain("Falling back to a full rebuild", writer.ToString());
+        Assert.DoesNotContain("the plan could not be worked out", writer.ToString());
+    }
+
     [Fact]
     public async Task Index_WithoutTheFlag_RebuildsEverythingAndSaysNothingAboutIncremental()
     {

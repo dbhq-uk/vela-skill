@@ -341,11 +341,14 @@ public sealed record RebuildPlan(
     /// reporting itself complete, at exit 0 with no banner. That is the exact failure this
     /// feature exists to avoid, so both sides are walked.
     ///
-    /// Sources and additional documents both count. A .cs is a document in this index and
-    /// so is a .cshtml or a .razor, which reaches it through the generator that reads it,
-    /// and either can be compiled by two projects at once. The paths are recorded in the
-    /// same relative form as a document's relative_path, which is what lets the two halves
-    /// be unioned at all.
+    /// Sources count, and so do the additional documents that actually become documents. A
+    /// .cs is a document in this index and so is a .cshtml or a .razor, which reaches it
+    /// through the generator that reads it, and either can be compiled by two projects at
+    /// once. An additional file that becomes no document - a stylecop.json, a
+    /// BannedSymbols.txt - is excluded, because it cannot be a document two projects share
+    /// and counting it joined every project in a solution into one group. See
+    /// <see cref="BecomesADocument"/>. The paths are recorded in the same relative form as
+    /// a document's relative_path, which is what lets the two halves be unioned at all.
     ///
     /// Everything is sorted before it is walked, so the same graph gives the same set in
     /// the same order with the same reasons, whichever order the projects arrived in
@@ -441,7 +444,9 @@ public sealed record RebuildPlan(
         {
             foreach (var input in project.Inputs)
             {
-                if (input.Kind is ProjectFingerprint.SourceKind or ProjectFingerprint.AdditionalKind)
+                if (input.Kind == ProjectFingerprint.SourceKind) Record(project.Project, input.Path);
+
+                if (input.Kind == ProjectFingerprint.AdditionalKind && BecomesADocument(input.Path))
                     Record(project.Project, input.Path);
             }
         }
@@ -449,4 +454,36 @@ public sealed record RebuildPlan(
         return documents.ToDictionary(
             entry => entry.Key, entry => entry.Value.ToList(), StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// Whether an additional document actually becomes a document in this index.
+    ///
+    /// <b>Why this filter exists.</b> Every source file the compiler is handed becomes a
+    /// document, so the source half of the walk above needs no test. Additional documents
+    /// are not like that. Roslyn hands over EVERY <c>AdditionalFiles</c> item a project
+    /// declares, and only the ones the Razor generator reads - the .cshtml and .razor
+    /// files - ever turn into a document with occurrences hanging off it. The rest are
+    /// analyser inputs: a stylecop.json, a BannedSymbols.txt, an .editorconfig-adjacent
+    /// ruleset. They are hashed into the fingerprint, correctly, because changing one
+    /// changes what the project compiles to. They are not documents, and nothing in the
+    /// index is keyed by them.
+    ///
+    /// <b>What including them cost.</b> The closure below joins two projects that
+    /// contribute to one document, because rebuilding one replaces that document whole and
+    /// deletes the other's rows. Treating every additional file as a document made one
+    /// root-level <c>&lt;AdditionalFiles Include="../stylecop.json" /&gt;</c> - which is the
+    /// ordinary way to configure an analyser across a solution - join EVERY project into a
+    /// single shared-document group. Any edit anywhere then closed over the whole solution,
+    /// with a reason line reading "it compiles stylecop.json", and `1 of 10` silently became
+    /// `10 of 10`. The direction was safe, so no answer was ever wrong, but the feature was
+    /// worth nothing on any repository configured that way.
+    ///
+    /// <b>Why narrowing it is safe rather than a trade.</b> A file that never becomes a
+    /// document cannot be a document two projects share, so it cannot be the hazard this
+    /// closure exists for. Nothing is given up. The one thing to keep in step: if vela ever
+    /// indexes an additional document some OTHER generator reads, this predicate is where
+    /// that has to be said, or the closure will stop covering it.
+    /// </summary>
+    private static bool BecomesADocument(string path) =>
+        string.Equals(SourceFile.LanguageOf(path), "razor", StringComparison.Ordinal);
 }

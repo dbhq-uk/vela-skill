@@ -33,4 +33,11 @@
     <PackageReference Include="Grpc.Tools" Version="2.71.0" PrivateAssets="all" />
     <Protobuf Include="Scip/scip.proto" GrpcServices="None" />
   </ItemGroup>
+
+  <ItemGroup>
+    <!-- So the suite can drive Program.PlanRebuildAsync directly. The behaviour that
+         needs it is the fallback catch declining to swallow a cancellation, which no
+         route through the CLI can reach on its own. -->
+    <InternalsVisibleTo Include="Vela.Tests" />
+  </ItemGroup>
 </Project>

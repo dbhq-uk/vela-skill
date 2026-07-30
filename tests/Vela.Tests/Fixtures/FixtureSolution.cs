@@ -112,6 +112,19 @@ public sealed class FixtureSolution : IDisposable
         return fx;
     }
 
+    /// <summary>
+    /// Three projects that share no code at all, but which every one of them declares the
+    /// same root-level `stylecop.json` as an `AdditionalFiles` item.
+    ///
+    /// That is the ordinary way to configure an analyser across a solution, and Roslyn
+    /// hands the file to every project as an additional document. It becomes no document
+    /// in the index - only a .cshtml or a .razor does - so it must not join these three
+    /// projects into one shared-document group. If it does, an edit to any one of them
+    /// closes over all three and `--incremental` is worth nothing on such a repository.
+    /// </summary>
+    public static FixtureSolution CreateSharedAnalyserFileSolution() =>
+        FromTemplate(Template.SharedAnalyserFile);
+
     /// <summary>One class library, for the tests that only need an index to exist.</summary>
     public static FixtureSolution CreateLibrary() => FromTemplate(Template.Library);
 
@@ -250,6 +263,29 @@ public sealed class FixtureSolution : IDisposable
             Restore(root, "Alpha/Alpha.csproj", "Beta/Beta.csproj", "Gamma/Gamma.csproj");
         });
 
+        public static readonly Template SharedAnalyserFile = new(root =>
+        {
+            WriteFile(root, "stylecop.json", """
+                { "settings": { "documentationRules": { "companyName": "Fixture" } } }
+                """);
+
+            foreach (var name in new[] { "Alpha", "Beta", "Gamma" })
+            {
+                WriteProject(root, name, additionalFiles: "../stylecop.json");
+                WriteFile(root, $"{name}/Own.cs", $$"""
+                    namespace {{name}}
+                    {
+                        public static class Own
+                        {
+                            public static int Value() => 1;
+                        }
+                    }
+                    """);
+            }
+
+            Restore(root, "Alpha/Alpha.csproj", "Beta/Beta.csproj", "Gamma/Gamma.csproj");
+        });
+
         public static readonly Template Library = new(root =>
         {
             WriteProject(root, "Solo");
@@ -318,11 +354,15 @@ public sealed class FixtureSolution : IDisposable
     /// is exactly the code they wrote.
     /// </summary>
     private static void WriteProject(
-        string root, string name, string[]? references = null, string? define = null, string? compiles = null)
+        string root, string name, string[]? references = null, string? define = null, string? compiles = null,
+        string? additionalFiles = null)
     {
         var items = new StringBuilder();
         if (compiles is not null)
             items.AppendLine($"""  <ItemGroup><Compile Include="{compiles}" Link="Shared.cs" /></ItemGroup>""");
+
+        if (additionalFiles is not null)
+            items.AppendLine($"""  <ItemGroup><AdditionalFiles Include="{additionalFiles}" /></ItemGroup>""");
 
         if (references is not null)
         {
