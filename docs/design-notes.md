@@ -3,6 +3,16 @@
 Why the tool is shaped this way. Written before implementation, from measurements
 taken on a real 375k-line .NET solution.
 
+> **This page is a historical record, kept deliberately.** It says what was decided
+> and why, before any of it existed, and most of it turned out to be right. Where the
+> implementation has since moved past it, a **Since then** note says so rather than the
+> text being quietly rewritten, because a design document that edits itself to match the
+> code stops being evidence of anything.
+>
+> For the architecture as it stands today, read
+> [architecture.md](architecture.md). For what the tool does, read
+> [reference.md](reference.md).
+
 ## The problem
 
 An AI coding agent working in a .NET repository discovers structure by grepping.
@@ -18,6 +28,13 @@ Measured on a 375,608-line C# solution with 307 Razor views:
 | `Perfume.Name` | 243 | 2,760 | 8.8% |
 | `Brand.Name` | 324 | 2,760 | 11.7% |
 | `PerfumeService` | - | 24 | grep is fine |
+
+> **Since then.** Those grep counts were taken with
+> `grep -rw --include='*.cs' --include='*.cshtml' <name> src`, over `src/` alone. Re-measured
+> on 30 July 2026 over the whole repository, the real reference counts are 24, 244 and 325,
+> and `grep -w` returns 2,267 lines for `Status` and 3,653 for `Name`. The ratios are of the
+> same order and the conclusion is unchanged. The current table, with the exact commands,
+> is in [the querying guide](guides/querying.md#is-this-used-anywhere).
 
 The names where grep collapses - `Name`, `Status`, `Value`, `Id`, `Update` - are
 exactly the ones you most need answered. 2,760 hits is not context; it is a denial
@@ -100,6 +117,11 @@ from `scip-dotnet` in two deliberate ways:
 
 Both are upstreamable to `scip-dotnet`; we carry them until they land.
 
+> **Since then.** The first of the two has been sent upstream:
+> [sourcegraph/scip-dotnet#117](https://github.com/sourcegraph/scip-dotnet/pull/117),
+> "Index Razor views and Blazor components", is open against their `main`. See
+> [the write-up](upstream/scip-dotnet-razor.md).
+
 **2. SCIP as the interchange format.** SCIP is the standardised, mature format for
 exactly this - language-server-grade intelligence harvested once and persisted.
 Emitting it is what would let vela consume indexes produced by anyone -
@@ -108,8 +130,24 @@ than the limit. That is the reason for the choice, not a feature that exists: th
 is no `.scip` import path today, and everything in the index is harvested from
 Roslyn.
 
+> **Since then.** `vela import` exists and is proven. A real `scip-typescript` 0.4.0
+> index over four TypeScript files sits beside 2,205 C# documents and 307 Razor views in
+> one database, and both halves answer to the same verbs. `vela.json` declares which
+> indexers a repository expects, and a job that has not been imported degrades the index
+> until it is. See [the multi-language guide](guides/multi-language.md).
+>
+> SCIP itself also moved out of Sourcegraph's ownership into independent governance on
+> 25 March 2026, which makes the bet safer than it was when this was written. See
+> [the SCIP ecosystem](scip-ecosystem.md).
+
 **3. SQLite.** Documents, symbols, occurrences and relationships, plus FTS5 for
 name search. One portable file. Nothing resident between queries.
+
+> **Since then.** The schema is version 7 and holds documents, occurrences, an FTS5
+> symbol table, the external documents deliberately left out, and three health and
+> provenance tables. It does not hold relationships: interface implementations are still
+> unanswered. Two names are stored for every symbol, the Roslyn display name and the SCIP
+> moniker, which is [explained in architecture.md](architecture.md#the-schema-and-the-two-names-decision).
 
 **4. Query.** A CLI answering in about a second, with output shaped for a context
 window rather than a terminal.
@@ -128,6 +166,11 @@ and neither had measured it. The comparison above is still the honest one: a
 live workspace pays 9.3s plus 23.8s on every single invocation, because nothing
 stays resident; vela pays a cost like that once, when the index is built, and
 every query after that is seconds, not tens of seconds.
+
+> **Since then.** Re-measured on 30 July 2026, against a larger index of the same
+> solution which now also holds an imported TypeScript index: a 0.08 to 0.09s process
+> floor, about 0.57s for `def Perfume.Status`, about 1.3s for `refs Perfume`. The current
+> table is in [architecture.md](architecture.md#why-not-the-alternatives).
 
 **A resident daemon or MCP server.** Amortises that cost but keeps ~1GB alive per
 project. The cost is a *build* cost, not a *query* cost, so paying it once at index
@@ -148,6 +191,11 @@ provide.
 
 `outline` then `def` is the intended path: establish shape cheaply, pull only the
 body you actually need.
+
+> **Since then.** Two of those signatures were optimistic. `outline` takes a **file path
+> only**, not a type; and `find` searches names only, not kinds. There is also a sixth
+> verb, `import`, which this document did not anticipate at all. The verbs as built are in
+> [reference.md](reference.md#verbs).
 
 ## The three constraints
 
@@ -178,6 +226,9 @@ Razor family is C#-side either way.
 
 Other languages would be reachable by consuming their existing SCIP indexers. vela
 neither implements them nor, yet, imports them.
+
+> **Since then.** It imports them. `vela import` reads a `.scip` from any indexer into the
+> same database, and `vela.json` declares which ones a repository expects.
 
 ## Non-goals
 
@@ -223,8 +274,32 @@ neither implements them nor, yet, imports them.
 - **Incremental reindex.** Full index of a 10-project solution takes ~87s with
   `scip-dotnet` as a reference point. Whether per-project incremental work is worth
   the complexity is deferred until the full path is proven.
+
+  > **Since then.** The full path is proven, and still full. Indexing the real
+  > 375,608-line solution took 2m12s at 1.5GB peak on 29 July 2026. Incremental reindex
+  > remains deferred.
+
 - **Index location.** A cache directory keyed by repo path, versus a file inside the
   repo that a team could commit. Leaning cache directory, to honour constraint 2.
+
+  > **Since then.** Settled: a cache directory. `$XDG_CACHE_HOME/vela/<Name>-<hash>.db`,
+  > where the hash is of the absolute solution path, and vela refuses to run if that
+  > resolves to somewhere inside the solution's own tree.
+
+Three things have been settled since this list was written, and are worth recording
+because none of them was foreseen here.
+
+- **The matching rule needed two corrections, both silent.** Reading a parameter list as
+  part of a name made `refs Get` answer 9,613 where 423 are real; not folding generic type
+  arguments made `refs ILogger` answer 24 where 563 exist. Both were verified over every
+  symbol in the index, and both are written up in
+  [architecture.md](architecture.md#how-we-know-it-is-right).
+- **An ambiguity block was needed.** Whole-segment matching means a bare name can span
+  several real symbols, and a single total across them is the size of nothing. `refs
+  Status` on the real solution spans 154 distinct symbols.
+- **An import has to survive a rebuild.** `vela index` deletes the database, so the first
+  version of the import path lost every imported language on the next routine re-index,
+  silently, at exit 0. The rebuild now replays what it replaced.
 
 ## Etymology
 
