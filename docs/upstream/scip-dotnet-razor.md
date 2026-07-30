@@ -1,5 +1,16 @@
 # The Razor change we owe scip-dotnet
 
+> **The pull request is now open:**
+> [sourcegraph/scip-dotnet#117](https://github.com/sourcegraph/scip-dotnet/pull/117),
+> "Index Razor views and Blazor components", opened 30 July 2026 from the fork at
+> [dbhq-uk/scip-dotnet](https://github.com/dbhq-uk/scip-dotnet). It closes
+> [#61](https://github.com/sourcegraph/scip-dotnet/issues/61).
+>
+> The rest of this page is the write-up as it stood when the patch was finished, and it
+> is left as it was written. Where it says the change has not been proposed, that is now
+> out of date; everything else, including every measurement, is what the pull request
+> carries.
+
 Sourcegraph's `scip-dotnet` cannot see Razor. vela can. This is the patch that
 gives the capability back to the indexer everybody else already uses, written
 against their code in their style, verified on their test suite.
