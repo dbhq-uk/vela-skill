@@ -276,11 +276,20 @@ propagate a change, and the project that deleted it changed its own project file
 walk is breadth-first over a membership set, so a diamond names a project once and a cycle
 terminates rather than hanging.
 
-There is a second closure, over `project_document`. A document in this index is keyed by the
+There is a second closure, over shared documents. A document in this index is keyed by the
 file a developer can open, and two projects can compile one file, so both projects'
 occurrences land in one row. Replacing that row on behalf of one project would delete the
 other's occurrences and nothing would put them back. So a project sharing a document with a
 selected project is selected too.
+
+It walks **both** what `project_document` recorded and what each project's fingerprint says
+it compiles now, and it needs both. The ledger catches a project that has stopped compiling
+a shared file: its rows are still in the database and are deleted on its behalf, and only
+the ledger remembers that anybody else contributed to the same document. The current compile
+set catches the reverse, which the ledger cannot see at all: a project that has just started
+compiling a file another project was already compiling has no ledger entry joining the two,
+and the load deletes every path the fresh harvest names, so that document goes and takes the
+other project's occurrences with it, at exit 0 with no banner.
 
 Roslyn's reference edges are a transitive superset of the declared `<ProjectReference>`
 entries, 34 against 21 on the real solution, because MSBuild flows project references
