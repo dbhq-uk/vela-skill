@@ -453,6 +453,54 @@ public class VelaConfigTests
         Assert.Contains("PATH", pending.Detail, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The example config the README points at is a shipped artefact, so it is held to
+    /// what the README itself says.
+    ///
+    /// It wrote every exclude as `dir/**`, which git reads as "the files inside that
+    /// directory" and not as the directory, so <see cref="PathFilter.ExcludesDirectory"/>
+    /// says no and the walk descends into the subtree and rejects each file one at a time.
+    /// Every other entry in it restates a default that IS written in the pruning form, so
+    /// the walk pruned anyway - except `src/ScentVerdict.Web/wwwroot/app/`, which has no
+    /// default behind it and is the very directory the motivation cites: gitignored build
+    /// output of the mobile app holding 64 of the repository's 81 JavaScript files.
+    /// </summary>
+    [Fact]
+    public void TheShippedExampleConfigPrunesTheDirectoriesItExcludes()
+    {
+        var path = RepositoryFile("docs/examples/scentverdict-vela.json");
+
+        // It parses, which is the other thing a shipped example owes a reader.
+        var config = VelaConfig.Load(path);
+        var filter = PathFilter.For(config.Exclude);
+
+        Assert.True(
+            filter.ExcludesDirectory("src/ScentVerdict.Web/wwwroot/app"),
+            "the example must let the walk prune the directory the README cites, not merely reject "
+            + "its files one at a time");
+
+        // And the files inside it are still excluded, which is the whole point of the two
+        // forms being interchangeable in effect.
+        Assert.True(filter.Excludes("src/ScentVerdict.Web/wwwroot/app/main-4f2a1c.js"));
+
+        // No entry in it is written in the non-pruning form, so the example teaches the
+        // form the README recommends rather than the one it warns about.
+        Assert.DoesNotContain("/**\"", File.ReadAllText(path), StringComparison.Ordinal);
+    }
+
+    /// <summary>A file of this repository, found from the test binary by walking up to the
+    /// solution, so the test does not depend on where it was run from.</summary>
+    private static string RepositoryFile(string relativePath)
+    {
+        for (var current = new DirectoryInfo(AppContext.BaseDirectory); current is not null; current = current.Parent)
+        {
+            var candidate = Path.Combine(current.FullName, relativePath.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        throw new FileNotFoundException($"{relativePath} was not found above {AppContext.BaseDirectory}");
+    }
+
     [Fact]
     public void AJobWhoseRootIsNotThereIsAProblemInItsOwnRight()
     {

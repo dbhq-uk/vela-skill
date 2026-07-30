@@ -116,7 +116,7 @@ A `vela.json` at the solution root, or anywhere between it and the repository ro
     { "language": "javascript", "indexer": "scip-typescript", "root": "src/ScentVerdict.Web",
       "include": ["wwwroot/js/**/*.js"] }
   ],
-  "exclude": ["**/venv/**", "**/site-packages/**", "src/ScentVerdict.Web/wwwroot/app/**"]
+  "exclude": ["**/venv/", "**/site-packages/", "src/ScentVerdict.Web/wwwroot/app/"]
 }
 ```
 

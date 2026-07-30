@@ -9,14 +9,14 @@
       "include": ["wwwroot/js/**/*.js"] }
   ],
   "exclude": [
-    "**/venv/**",
-    "**/site-packages/**",
-    "**/node_modules/**",
-    "**/obj/**",
-    "**/bin/**",
-    "**/dist/**",
-    "src/ScentVerdict.Web/wwwroot/app/**",
-    "**/wwwroot/lib/**",
+    "**/venv/",
+    "**/site-packages/",
+    "**/node_modules/",
+    "**/obj/",
+    "**/bin/",
+    "**/dist/",
+    "src/ScentVerdict.Web/wwwroot/app/",
+    "**/wwwroot/lib/",
     "**/*.min.js"
   ]
 }
