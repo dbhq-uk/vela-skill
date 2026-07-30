@@ -448,6 +448,59 @@ public class IncrementalIndexTests
     }
 
     /// <summary>
+    /// "Anything at all goes wrong deciding" has to mean anything at all.
+    ///
+    /// The catch used to name five exception types, which is a list of what somebody
+    /// thought of rather than a principle, so an unanticipated failure aborted `vela index`
+    /// altogether instead of falling back to the rebuild the user actually asked for.
+    ///
+    /// A ledger holding two rows for one project is such a failure. It is the state the
+    /// primary key exists to forbid and the state RebuildPlan already reasons about, since
+    /// it is a pure function fed out of a database: two rows describing one project, and
+    /// nothing able to say which is current. Reading it throws an ArgumentException, which
+    /// was not on the list, so the run died where it should have shrugged and read
+    /// everything.
+    ///
+    /// Falling back is always available and can never be stale, so it is the right answer
+    /// to a decision that could not be made, whatever the reason it could not be made.
+    /// </summary>
+    [Fact]
+    public async Task Incremental_WhenTheLedgerCannotBeRead_FallsBackToAFullRebuildAndSaysSo()
+    {
+        using var fx = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        using (var db = Open(fx))
+        {
+            using var cmd = db.CreateCommand();
+            cmd.CommandText = """
+                ALTER TABLE project_input RENAME TO project_input_damaged;
+                CREATE TABLE project_input (
+                    project TEXT NOT NULL, name TEXT NOT NULL, fingerprint TEXT NOT NULL,
+                    inputs INTEGER NOT NULL, schema_version INTEGER NOT NULL,
+                    vela_version TEXT NOT NULL, built_at_utc TEXT NOT NULL);
+                INSERT INTO project_input SELECT * FROM project_input_damaged;
+                INSERT INTO project_input SELECT * FROM project_input_damaged;
+                DROP TABLE project_input_damaged;
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var result = await InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Contains("Falling back to a full rebuild", result.Output);
+        Assert.Contains("the plan could not be worked out", result.Output);
+        Assert.Contains("Indexed", result.Output);
+
+        // And the index it rebuilt is a real one, so the failure cost a slow run and
+        // nothing else.
+        Assert.Contains("Solo.Thing.Value()", SymbolsIn(fx, "Solo/Thing.cs"));
+    }
+
+    /// <summary>
     /// Rows another build of vela wrote are not evidence about what this one would
     /// produce. Two builds can emit different occurrences from identical source - the
     /// anchoring, dedup and moniker rules have all changed at least once - so an index

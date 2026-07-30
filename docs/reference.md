@@ -107,6 +107,12 @@ same version is not.** That is the one deliberate hole, and a full index is the 
 Each is followed by `A full rebuild cannot be stale, because it reads everything. This is
 the safe outcome and not a failure.` **A fallback is a good outcome and it is never silent.**
 
+**"Anything at all" is meant literally.** Every exception except the one raised by you
+cancelling the run, whose whole point is that less work should happen rather than more.
+There is no failure for which refusing to build an index is better than building it the slow
+way, and nothing is hidden by choosing the slow way, because the failure's own message is
+printed on the line that announces the fallback.
+
 **"A different build of vela" means a different binary, not a different version number.**
 The identity recorded against every project is the assembly version followed by the module
 version id of the binary that ran, for example `1.0.0.0+8f3a2b1c9d4e`. It is derived from

@@ -525,7 +525,8 @@ public static class Program
     /// silent, because a user who asked for a fast rebuild and got a slow one needs to know
     /// which one they got and why. There are five ways to reach it: no index yet, a schema
     /// this build does not read, a whole-index reason in the plan, a plan that reaches
-    /// every project anyway, and anything at all going wrong while working it out.
+    /// every project anyway, and anything at all going wrong while working it out. The last
+    /// of those means anything that is not the user cancelling; see the catch below.
     ///
     /// The fingerprinting here does not compile anything, which is what makes the decision
     /// affordable: on the real solution it is 554ms cold and 76ms warm against a full index
@@ -595,12 +596,24 @@ public static class Program
 
             return plan;
         }
-        catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException
-                                   or InvalidOperationException or FormatException)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            // Anything at all. The plan is the part of this feature that can be wrong
-            // silently, so a plan that threw is a plan nobody should act on, and the only
-            // safe reading of one is that there is no plan.
+            // Anything at all, and it says anything at all because it means it. This used
+            // to name five exception types, which is a list of what somebody thought of
+            // rather than a principle: a ledger holding two rows for one project threw an
+            // ArgumentException that was not on it, and the whole command died rather than
+            // building the index it was asked for.
+            //
+            // The plan is the part of this feature that can be wrong silently, so a plan
+            // that threw is a plan nobody should act on, and the only safe reading of one
+            // is that there is no plan. There is no failure for which refusing to build an
+            // index is better than building it the slow way, and nothing is hidden by
+            // choosing the slow way: the exception's own message is printed on the line
+            // above, so a bug in here is louder than it was, not quieter.
+            //
+            // Cancellation is the one thing not swallowed. A user who pressed Ctrl-C asked
+            // for less work, and answering that with a full rebuild would be the opposite
+            // of what they asked for. It leaves by the same route it always did.
             FallBackToFullRebuild(output, "the plan could not be worked out: " + ex.Message);
             return null;
         }
