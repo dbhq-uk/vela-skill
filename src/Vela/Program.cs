@@ -572,10 +572,14 @@ public static class Program
             if (!TryResolveSolution(parseResult.GetValue(solutionOption), error, out var solution, out _))
                 return ExitCannotAnswer;
 
-            var scipPath = parseResult.GetRequiredValue(argument);
-            if (!File.Exists(scipPath))
+            var repositoryRoot = ProjectRoot.ForSolution(solution);
+            var scipPath = ResolveScipPath(parseResult.GetRequiredValue(argument), repositoryRoot);
+            if (scipPath is null)
             {
-                error.WriteLine($"No such file: {scipPath}");
+                error.WriteLine($"No such file: {parseResult.GetRequiredValue(argument)}");
+                error.WriteLine("It was looked for in the current directory and, failing that, under the "
+                              + $"repository root {repositoryRoot}, which is where vela index names a "
+                              + "job's .scip.");
                 return ExitCannotAnswer;
             }
 
@@ -612,7 +616,7 @@ public static class Program
             try
             {
                 report = ScipImporter.ImportFile(
-                    db, scipPath, ProjectRoot.ForSolution(solution), parseResult.GetValue(replaceOption));
+                    db, scipPath, repositoryRoot, parseResult.GetValue(replaceOption));
             }
             catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
             {
@@ -736,10 +740,12 @@ public static class Program
             // by source, a cleared problem clears, and this import cannot clear anybody
             // else's.
             //
-            // The source is the full path, so the same file named two ways from two
-            // directories is one contribution rather than two.
+            // The source is the absolute path <see cref="ResolveScipPath"/> arrived at, so
+            // the same file named three different ways from two directories is one
+            // contribution rather than three, and it is the same key a pending job is
+            // recorded under.
             var detail = report.Degraded ? Summarise(report.Problems) : null;
-            IndexHealth.WriteImport(db, Path.GetFullPath(scipPath), detail);
+            IndexHealth.WriteImport(db, scipPath, detail);
 
             if (!report.Degraded) return 0;
 
@@ -749,6 +755,38 @@ public static class Program
         });
 
         return command;
+    }
+
+    /// <summary>
+    /// The .scip the caller means, as an absolute path, or null when there is no such
+    /// file anywhere vela is entitled to look.
+    ///
+    /// <b>Both sides of a pending job have to be resolved the same way.</b> A job's
+    /// <see cref="PendingJob.Source"/> is its .scip resolved against the REPOSITORY ROOT,
+    /// and the row is cleared under the path this returns, so the two have to agree or
+    /// the job can never be settled. They already agreed for an absolute path and for one
+    /// typed relative to the directory the caller is standing in, because both name the
+    /// same file. They did not agree for the command `vela index` itself prints, which
+    /// names the .scip relative to the repository - `vela import src/Mobile/index.scip`.
+    /// Run that from `src/`, where anybody who has just run the indexer over `src/Mobile`
+    /// is standing, and the file was simply not found: nothing was imported, the job
+    /// stayed pending forever, and every answer printed INCOMPLETE naming a command the
+    /// user had already run.
+    ///
+    /// The current directory is tried first, because that is what every command-line tool
+    /// does with a path and changing it would break the ordinary case to fix the
+    /// unusual one. The repository root is tried only when the first found nothing, so
+    /// this can never change which file an existing invocation reads: it can only find
+    /// one where there was none.
+    /// </summary>
+    private static string? ResolveScipPath(string argument, string repositoryRoot)
+    {
+        if (File.Exists(argument)) return Path.GetFullPath(argument);
+
+        // Path.Combine returns an absolute argument unchanged, so an absolute path that
+        // is not there fails here rather than being resolved into something else.
+        var underRoot = Path.GetFullPath(Path.Combine(repositoryRoot, argument));
+        return File.Exists(underRoot) ? underRoot : null;
     }
 
     /// <summary>

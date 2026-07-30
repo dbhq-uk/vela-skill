@@ -660,6 +660,91 @@ public class VelaConfigEndToEndTests
         Assert.Contains("app.ts", clean.Output, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A job has to settle wherever it is imported from.
+    ///
+    /// The pending row is keyed on the .scip resolved against the REPOSITORY ROOT, and the
+    /// import used to clear it on the path resolved against the CURRENT WORKING DIRECTORY.
+    /// The two agree for a path typed relative to the directory the user is standing in,
+    /// and they do not agree for the command `vela index` itself prints, which names the
+    /// .scip relative to the repository: run that from a subdirectory and the file is not
+    /// found, so nothing is imported, the job stays pending forever, and every answer
+    /// prints INCOMPLETE naming a command the user has already run. That is the
+    /// crying-wolf failure this project has paid for twice.
+    ///
+    /// So all three forms are asserted: the absolute path, the path relative to the
+    /// directory the user is in, and the repository-relative path vela printed.
+    /// </summary>
+    [Theory]
+    [InlineData(Form.Absolute)]
+    [InlineData(Form.RelativeToCurrentDirectory)]
+    [InlineData(Form.RelativeToRepositoryRoot)]
+    public async Task Import_SettlesTheJobWhicheverWayItsPathIsWritten(Form form)
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        var mobile = Path.Combine(fx.Root, "src", "Mobile");
+        Directory.CreateDirectory(mobile);
+        File.WriteAllText(Path.Combine(fx.Root, "vela.json"), """
+            {
+              "version": 1,
+              "jobs": [
+                { "language": "csharp", "indexer": "vela", "root": "." },
+                { "language": "razor",  "indexer": "vela", "root": "." },
+                { "language": "typescript", "indexer": "scip-typescript", "root": "src/Mobile" }
+              ]
+            }
+            """);
+
+        var indexed = await InvokeAsync("index", "--solution", fx.SolutionPath);
+        Assert.Equal(IndexHealth.ExitDegraded, indexed.ExitCode);
+
+        // The command the verb printed, verbatim, is the third form below.
+        Assert.Contains("vela import src/Mobile/index.scip", indexed.Output, StringComparison.Ordinal);
+
+        var scip = Path.Combine(mobile, "index.scip");
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "src/Mobile/app.ts", "greet").ToByteArray());
+
+        // Every one of these names the same file. The user stands in src/, which is where
+        // anybody who has just run the indexer over src/Mobile is standing.
+        var (argument, from) = form switch
+        {
+            Form.Absolute => (scip, Path.Combine(fx.Root, "src")),
+            Form.RelativeToCurrentDirectory => ("Mobile/index.scip", Path.Combine(fx.Root, "src")),
+            _ => ("src/Mobile/index.scip", Path.Combine(fx.Root, "src"))
+        };
+
+        var previous = Directory.GetCurrentDirectory();
+        (int ExitCode, string Output) imported;
+        try
+        {
+            Directory.SetCurrentDirectory(from);
+            imported = await InvokeAsync("import", argument, "--solution", fx.SolutionPath);
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(previous);
+        }
+
+        Assert.Equal(0, imported.ExitCode);
+
+        // The job is settled, so no answer carries the banner any more.
+        var clean = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
+        Assert.Equal(0, clean.ExitCode);
+        Assert.DoesNotContain("INCOMPLETE", clean.Output, StringComparison.Ordinal);
+        Assert.Contains("app.ts", clean.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>The three ways a reader can honestly write the path of a .scip that sits
+    /// in the repository they are standing in.</summary>
+    public enum Form
+    {
+        Absolute,
+        RelativeToCurrentDirectory,
+        RelativeToRepositoryRoot
+    }
+
     [Fact]
     public async Task Index_WithAConfigItCannotUnderstand_ChangesNothingAndSaysWhy()
     {
