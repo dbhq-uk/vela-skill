@@ -20,3 +20,8 @@ nupkg/
 *.scip
 *.vela.db
 .vela/
+
+# ...except the one .scip that is a test fixture rather than output. It is a real
+# scip-typescript index, checked in on purpose: three tests read it, and without it
+# in the checkout they fail on a clean clone and in CI.
+!tests/Vela.Tests/Fixtures/*.scip
