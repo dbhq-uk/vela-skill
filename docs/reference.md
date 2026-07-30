@@ -87,6 +87,12 @@ the project file, and every `Directory.Build.props`, `Directory.Build.targets`,
 Content hashes, not modification times: an mtime changes when nothing did, and does not
 change when something did.
 
+An `AdditionalFiles` item that is not a view - a `stylecop.json`, a `BannedSymbols.txt` -
+is an input like any other, so editing one rebuilds the projects that declare it. It is not
+treated as a **document** those projects share, because it becomes no document in the index.
+Were it treated as one, a single root-level analyser file declared by every project would
+put the whole solution into one group and every edit would rebuild all of it.
+
 Assembly references are hashed **by path and not by content**, because reading several
 hundred assemblies per project would cost more than the rebuild it avoids. The path carries
 the version, so a package upgrade is caught. **A rebuilt assembly at the same path and the
@@ -128,11 +134,18 @@ The identity recorded against every project is the assembly version followed by 
 version id of the binary that ran, for example `1.0.0.0+8f3a2b1c9d4e`. It is derived from
 the compiled module rather than declared in a file, because a version number is a promise
 somebody has to remember to keep on the day they change the moniker grammar, and this is the
-one record that has to be right about that day. C# builds are deterministic, so rebuilding
-vela from unchanged source produces the same id and invalidates nothing; changing any line
-of vela produces a different one. **So the first incremental run after upgrading or
-rebuilding vela falls back to a full rebuild, and says so.** That is broader than "the
-harvest changed" on purpose: it errs towards the rebuild that cannot be stale.
+one record that has to be right about that day. C# builds are deterministic, and changing
+any line of vela produces a different id. **The determinism is narrower than it sounds,
+though**, and measured rather than assumed: rebuilding vela from unchanged source with the
+same SDK **at the same absolute path** reproduces the id exactly and invalidates nothing,
+but building that same source at a *different* absolute path produces a different id, because
+vela's own project sets neither `PathMap` nor `DeterministicSourcePaths` and the paths the
+compiler embeds are part of what the module version id covers. Moving the vela checkout, or
+cloning it somewhere else and building there, therefore counts as a different build.
+
+**So the first incremental run after upgrading, rebuilding or relocating vela falls back to
+a full rebuild, and says so.** That is broader than "the harvest changed" on purpose: it
+errs towards the rebuild that cannot be stale.
 
 **What it prints when it does go incremental:**
 

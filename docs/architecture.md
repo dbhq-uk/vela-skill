@@ -292,6 +292,20 @@ compiling a file another project was already compiling has no ledger entry joini
 and the load deletes every path the fresh harvest names, so that document goes and takes the
 other project's occurrences with it, at exit 0 with no banner.
 
+**What it counts as a document is narrower than what Roslyn hands over, and deliberately.**
+Every source file the compiler is given becomes a document. Additional documents do not:
+Roslyn passes every `AdditionalFiles` item a project declares, and only the ones the Razor
+generator reads, the `.cshtml` and `.razor` files, become documents with occurrences on
+them. The rest are analyser inputs, a `stylecop.json` or a `BannedSymbols.txt`. They are
+hashed into the project's fingerprint, because changing one changes what the project
+compiles to, and they are left out of this closure, because a file that becomes no document
+cannot be a document two projects share. Counting them was not wrong in the dangerous
+direction, but it was expensive in a way that would have gone unnoticed: one root-level
+`<AdditionalFiles Include="../stylecop.json" />`, which is the ordinary way to configure an
+analyser across a solution, put every project into a single shared group, so any edit at all
+closed over the whole solution and `1 of 10` became `10 of 10` with the reason "it compiles
+stylecop.json".
+
 Roslyn's reference edges are a transitive superset of the declared `<ProjectReference>`
 entries, 34 against 21 on the real solution, because MSBuild flows project references
 transitively and Roslyn reports the resolved set. A superset only ever widens the closure,
@@ -417,7 +431,7 @@ occurrences          : 2670
 `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count,
 and CI runs it as a separate named step so a failure says what broke.
 
-355 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
+359 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
 The fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
 NuGet cache needs network for test setup.
 

@@ -79,7 +79,7 @@ was. For comparison, loading the same solution into a live Roslyn workspace cost
 stays resident.
 
 **Polyglot, proved not promised.** A real `scip-typescript` 0.4.0 index over four
-TypeScript files imports beside the C# index, and both answer from one database. 355 tests,
+TypeScript files imports beside the C# index, and both answer from one database. 359 tests,
 all hermetic.
 
 ## Upstream
