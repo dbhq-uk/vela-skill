@@ -26,9 +26,8 @@ believes, not what a regular expression matched.
 An agent working in a .NET repository discovers structure by grepping. For distinctive
 identifiers that is fine. For the ordinary ones it is close to useless, and the failure is
 quiet: a plausible-looking answer that is mostly noise, or a missed call site and the
-conclusion that a symbol is unused.
-
-And nothing on the market can see inside a Razor view at all.
+conclusion that a symbol is unused. And nothing on the market can see inside a Razor view
+at all.
 
 ## Why nothing else solves it
 
@@ -78,9 +77,8 @@ was. For comparison, loading the same solution into a live Roslyn workspace cost
 stays resident.
 
 **Polyglot, proved not promised.** A real `scip-typescript` 0.4.0 index over four
-TypeScript files imports beside the C# index, and both answer from one database.
-
-293 tests, all hermetic.
+TypeScript files imports beside the C# index, and both answer from one database. 293 tests,
+all hermetic.
 
 ## Upstream
 
@@ -182,7 +180,7 @@ through `vela import`. vela does not edit, refactor or rename. It reports.
 ## Etymology
 
 Vela is the sail of Argo Navis, the largest constellation ever catalogued, later broken into
-Carina the keel, Puppis the stern, and Vela the sails. A whole decomposed into its named
+Carina the keel, Puppis the stern, and Vela the sails: a whole decomposed into its named
 parts, which is what an index of a codebase is. The sails are also the part you navigate by.
 
 ## Licence
