@@ -107,6 +107,12 @@ As a Claude Code plugin:
 /plugin install vela@dbhq
 ```
 
+Or into any agent - Cursor, Copilot, Windsurf, Gemini, Cline and more - via the [skills.sh](https://skills.sh) CLI:
+
+```bash
+npx skills add dbhq-uk/vela-skill
+```
+
 Or locally, for Claude Code or Codex:
 
 ```bash
