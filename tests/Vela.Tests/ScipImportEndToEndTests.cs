@@ -505,6 +505,161 @@ public class ScipImportEndToEndTests
     }
 
     /// <summary>
+    /// The exact failure, live, on the repository vela is developed against: the cache
+    /// was rebuilt one morning and held 2,205 csharp documents, 307 razor and ZERO
+    /// typescript. A proven scip-typescript import had been wiped by a re-index,
+    /// silently, at exit 0, with index_health.degraded = 0 and import_health empty. The
+    /// index called itself complete while a whole language had vanished from it, which is
+    /// precisely what Constraint 3 forbids and the one thing this project promises never
+    /// to do.
+    ///
+    /// `vela index` rebuilds the database from nothing, so an import cannot survive by
+    /// sitting in it. It survives by being REMEMBERED: every .scip that has been imported
+    /// is recorded, and the rebuild replays each one. What this test pins is the promise
+    /// itself - after a rebuild the imported language is either still there, or the index
+    /// is degraded and names the .scip to re-import. Absent-and-clean is the state that
+    /// must be unreachable.
+    /// </summary>
+    [Fact]
+    public async Task Index_ReplaysAnImportRatherThanSilentlyDroppingTheLanguage()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var scip = Path.Combine(fx.Root, "mobile.scip");
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+
+        var before = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
+        Assert.Equal(0, before.ExitCode);
+        Assert.Contains("site.ts", before.Output, StringComparison.Ordinal);
+
+        // THE TEST: a rebuild.
+        var rebuilt = await InvokeAsync("index", "--solution", fx.SolutionPath);
+
+        // It says what it replayed, because an index that quietly re-runs somebody's
+        // import is as opaque as one that quietly drops it.
+        Assert.Contains("mobile.scip", rebuilt.Output, StringComparison.Ordinal);
+
+        var after = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
+
+        // Never absent-and-clean. Either the language is still answering, or the index
+        // says it is incomplete and names the file that would fix it.
+        var present = after.Output.Contains("site.ts", StringComparison.Ordinal);
+        var degradedAndNamed = after.ExitCode == IndexHealth.ExitDegraded
+                               && after.Output.Contains("INCOMPLETE", StringComparison.Ordinal)
+                               && after.Output.Contains("mobile.scip", StringComparison.Ordinal);
+        Assert.True(present || degradedAndNamed, after.Output);
+
+        // And what actually happens is the better of the two: the file is still there and
+        // still readable, so it is replayed and the language is simply still in the index.
+        Assert.True(present, after.Output);
+        Assert.Equal(0, after.ExitCode);
+        Assert.DoesNotContain("INCOMPLETE", after.Output, StringComparison.Ordinal);
+
+        // The C# half is unharmed by the replay.
+        var csharp = await InvokeAsync("refs", "ViewData", "--solution", fx.SolutionPath);
+        Assert.Equal(0, csharp.ExitCode);
+        Assert.Contains(".cshtml", csharp.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The half of the promise that is not "replay it": a .scip that is no longer there
+    /// cannot be replayed, so the index is degraded and names exactly what to re-import.
+    /// The failure this forbids is the same one - a language missing from an index that
+    /// calls itself complete.
+    /// </summary>
+    [Fact]
+    public async Task Index_DegradesAndNamesTheScipItCouldNotReplay()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var scip = Path.Combine(fx.Root, "mobile.scip");
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+
+        // The indexer's output was cleaned away, as build output is.
+        File.Delete(scip);
+
+        var rebuilt = await InvokeAsync("index", "--solution", fx.SolutionPath);
+        Assert.Equal(IndexHealth.ExitDegraded, rebuilt.ExitCode);
+        Assert.Contains("INCOMPLETE", rebuilt.Output, StringComparison.Ordinal);
+        Assert.Contains("mobile.scip", rebuilt.Output, StringComparison.Ordinal);
+
+        // Every answer carries it, because every answer is missing that language.
+        var after = await InvokeAsync("refs", "ViewData", "--solution", fx.SolutionPath);
+        Assert.Equal(IndexHealth.ExitDegraded, after.ExitCode);
+        Assert.Contains("INCOMPLETE", after.Output, StringComparison.Ordinal);
+        Assert.Contains("mobile.scip", after.Output, StringComparison.Ordinal);
+
+        // And re-importing it clears the record, exactly as settling a pending job does.
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+
+        var clean = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
+        Assert.Equal(0, clean.ExitCode);
+        Assert.DoesNotContain("INCOMPLETE", clean.Output, StringComparison.Ordinal);
+        Assert.Contains("site.ts", clean.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A replay reads whatever is on disk now, which need not be what was imported. The
+    /// honest thing is to import what is there and SAY the file has changed, rather than
+    /// to report a replay of something that no longer exists.
+    /// </summary>
+    [Fact]
+    public async Task Index_SaysWhenTheScipItReplayedHasChangedSinceItWasImported()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var scip = Path.Combine(fx.Root, "mobile.scip");
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+
+        // The indexer was re-run and the code had gained a function since.
+        File.WriteAllBytes(
+            scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet", "farewell").ToByteArray());
+
+        var rebuilt = await InvokeAsync("index", "--solution", fx.SolutionPath);
+        Assert.Equal(0, rebuilt.ExitCode);
+        Assert.Contains("mobile.scip", rebuilt.Output, StringComparison.Ordinal);
+        Assert.Contains("has CHANGED since it was imported", rebuilt.Output, StringComparison.Ordinal);
+
+        // What is in the index is what is in the file now, not what was imported before.
+        var farewell = await InvokeAsync("refs", "farewell", "--solution", fx.SolutionPath);
+        Assert.Equal(0, farewell.ExitCode);
+        Assert.Contains("site.ts", farewell.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// An imported document has to be distinguishable from one vela harvested, or nothing
+    /// in the database can say which .scip a row came from and a rebuild has nothing to
+    /// replay. document.source is that identity: empty for vela's own Roslyn harvest, and
+    /// the .scip's own path for everything else.
+    /// </summary>
+    [Fact]
+    public void Import_RecordsWhichSourceEachDocumentCameFrom()
+    {
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        ScipImporter.ImportFile(
+            db, RealTypeScriptIndex, "/home/devops/scentverdict", replace: false, source: "/tmp/one.scip");
+
+        Assert.Equal(4, Count(db, "SELECT COUNT(*) FROM document WHERE source = '/tmp/one.scip'"));
+        Assert.Equal(0, Count(db, "SELECT COUNT(*) FROM document WHERE source = ''"));
+    }
+
+    /// <summary>
     /// One document rooted where the caller says, defining one function per name given,
     /// standing in for what an indexer for some other language writes.
     /// </summary>

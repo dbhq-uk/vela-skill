@@ -307,7 +307,17 @@ public static class Program
             // ScipLoader.Load requires an empty schema: re-indexing into the last
             // build's database is a precondition violation, not an update.
             IndexPaths.EnsureDirectoryExists(path);
+
+            // Asked BEFORE the delete, because the answer is in the file that is about to
+            // go. This is what an imported language survives a rebuild by: nothing else in
+            // the database outlives this line. See ImportedSources for what its absence
+            // cost on the real repository.
+            var remembered = ImportedSources.ReadFrom(path);
+
             if (File.Exists(path)) File.Delete(path);
+
+            var replayed = new HashSet<string>(StringComparer.Ordinal);
+            var replayProblems = new List<string>();
 
             using (var db = new SqliteConnection(ConnectionStringFor(path)))
             {
@@ -319,14 +329,24 @@ public static class Program
                 ExternalDocuments.Write(db, external);
                 IndexHealth.Write(db, health);
 
+                output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
+
+                Replay(db, remembered, repositoryRoot, path, output, replayed, replayProblems);
+
                 // Each job vela cannot run itself, recorded under the .scip it is waiting
                 // for. That key is exactly the one `vela import` clears when it imports a
                 // file cleanly, so importing the file the job named settles the job with no
                 // further machinery and nothing left behind to go stale.
+                //
+                // A job whose .scip was just replayed is skipped: the replay has already
+                // written that source's verdict under the same key, and it is the true one.
+                // Writing "nothing has been imported from it" over the top would be the
+                // crying-wolf failure with the wolf standing in the room.
                 foreach (var pending in plan.Pending)
-                    IndexHealth.WriteImport(db, pending.Source, pending.Detail);
-
-                output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
+                {
+                    if (!replayed.Contains(pending.Source))
+                        IndexHealth.WriteImport(db, pending.Source, pending.Detail);
+                }
 
                 // Said plainly, and once. These files are not in the index and the
                 // number is worth knowing, but they were never this index's to hold, so
@@ -352,21 +372,27 @@ public static class Program
                     output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
             }
 
+            var outstanding = plan.Pending.Where(p => !replayed.Contains(p.Source)).ToList();
+
             if (config.FoundAt is not null)
             {
                 ReportCensus(output, config, repositoryRoot);
-                ReportPendingJobs(output, plan, repositoryRoot);
+                ReportPendingJobs(output, outstanding, repositoryRoot);
             }
 
-            var detail = plan.Pending.Count == 0
-                ? health.Detail
-                : Append(health.Detail, Summarise(
-                    plan.Pending.Select(p => Relative(repositoryRoot, p.Source) + ": " + p.Detail).ToList()));
+            var reasons = outstanding
+                .Select(p => Relative(repositoryRoot, p.Source) + ": " + p.Detail)
+                .Concat(replayProblems)
+                .ToList();
+
+            var detail = reasons.Count == 0 ? health.Detail : Append(health.Detail, Summarise(reasons));
 
             // A configured job that did not run degrades the index exactly as a project that
             // did not load does. That is the whole point of putting the jobs in a file: a
-            // config must never become a quiet way to lose a language.
-            if (health.Degraded || plan.Pending.Count > 0)
+            // config must never become a quiet way to lose a language. A .scip that was
+            // imported once and cannot be replayed is the same fact arriving from the other
+            // direction, and it degrades the index for the same reason.
+            if (health.Degraded || reasons.Count > 0)
             {
                 error.WriteLine("!! The index is INCOMPLETE. " + detail);
                 error.WriteLine("   Answers from it may be missing code. Do not treat an empty result as proof.");
@@ -493,16 +519,135 @@ public static class Program
     /// to come from. That is what makes it reportable rather than ignorable, which is the
     /// point - the alternative is a config file that can quietly lose a language.
     /// </summary>
-    private static void ReportPendingJobs(TextWriter output, IndexPlan plan, string repositoryRoot)
+    private static void ReportPendingJobs(
+        TextWriter output, IReadOnlyList<PendingJob> pending, string repositoryRoot)
     {
-        if (plan.Pending.Count == 0) return;
+        if (pending.Count == 0) return;
 
-        output.WriteLine($"{plan.Pending.Count} configured job(s) are not in this index. vela does not run "
+        output.WriteLine($"{pending.Count} configured job(s) are not in this index. vela does not run "
                        + "other indexers, so each one's .scip has to be produced and imported; until it is, "
                        + "this index is missing that language and says so on every answer:");
 
-        foreach (var pending in plan.Pending)
-            output.WriteLine($"  {Relative(repositoryRoot, pending.Source)}: {pending.Detail}");
+        foreach (var job in pending)
+            output.WriteLine($"  {Relative(repositoryRoot, job.Source)}: {job.Detail}");
+    }
+
+    /// <summary>
+    /// A .scip that was imported into the index this run is replacing, and is not there
+    /// any more. The prefix is a kind, like the emitter's own, so the reason is
+    /// classifiable rather than a sentence that has to be read to be sorted.
+    /// </summary>
+    private const string ImportLostPrefix = "import-lost: ";
+
+    /// <summary>A .scip that is still there and could not be read. Distinct from
+    /// <see cref="ImportLostPrefix"/> because the two want different things done about
+    /// them: one file has to be produced again, the other has to be looked at.</summary>
+    private const string ImportUnreadablePrefix = "import-unreadable: ";
+
+    /// <summary>
+    /// Puts back every .scip that had been imported into the index this run has just
+    /// destroyed and rebuilt.
+    ///
+    /// <b>Why the rebuild replays rather than merely listing what to re-import.</b> Both
+    /// were open. A list leaves the index genuinely missing the language until somebody
+    /// acts on it, which means `vela index` stops being a command that produces a usable
+    /// index, and it puts the burden on the person least likely to be watching - the one
+    /// who ran a routine re-index. Replaying restores what the user already asked for from
+    /// files they already produced, using the same importer and the same code path a
+    /// manual re-import would. Nothing is assumed away by doing it: the weaker behaviour is
+    /// still exactly what happens for a file that cannot be replayed, which is the only
+    /// place it is honest.
+    ///
+    /// <b>What it refuses to pretend.</b> A .scip on disk now need not be the one that was
+    /// imported - an indexer is normally re-run over changed code between one index and the
+    /// next - so the content hash is compared and a file that has changed is re-imported
+    /// and SAID to have changed. A file that has gone, or that will not read, degrades the
+    /// index and names itself, and that verdict is written under the same key `vela import`
+    /// clears, so producing the file and importing it settles it.
+    /// </summary>
+    private static void Replay(
+        SqliteConnection db,
+        RememberedImports remembered,
+        string repositoryRoot,
+        string indexPath,
+        TextWriter output,
+        HashSet<string> replayed,
+        List<string> problems)
+    {
+        if (remembered.RecordUnavailable)
+        {
+            output.WriteLine("The index this replaced was built before vela recorded which .scip files had "
+                           + "been imported into it, so there was nothing to replay. If a language was "
+                           + "imported into that index, import it again.");
+            return;
+        }
+
+        if (remembered.Sources.Count == 0) return;
+
+        var lines = new List<string>();
+
+        foreach (var record in remembered.Sources)
+        {
+            replayed.Add(record.Source);
+
+            if (!File.Exists(record.Source))
+            {
+                Lost(record, ImportLostPrefix + record.Source + ": it was imported into the index this run "
+                    + "replaced and is not there now, so the code it carried is not in this index. Produce "
+                    + "it again and run: vela import " + record.Source + ". If that language is no longer "
+                    + "wanted, delete " + indexPath + " and run vela index again, which starts from nothing.");
+                continue;
+            }
+
+            string hash;
+            ImportReport report;
+            try
+            {
+                hash = ImportedSources.HashOf(record.Source);
+                report = ScipImporter.ImportFile(
+                    db, record.Source, repositoryRoot, replace: false, source: record.Source);
+            }
+            catch (Exception ex)
+                when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                Lost(record, ImportUnreadablePrefix + record.Source + ": " + ex.Message
+                    + " It was imported into the index this run replaced, so the code it carried is not in "
+                    + "this index. Fix it and run: vela import " + record.Source);
+                continue;
+            }
+
+            ImportedSources.Write(db, new ImportedSource(
+                record.Source, DateTime.UtcNow, hash, report.Documents, report.Occurrences));
+
+            var detail = report.Degraded ? Summarise(report.Problems) : null;
+            IndexHealth.WriteImport(db, record.Source, detail);
+            if (detail is not null) problems.Add(Relative(repositoryRoot, record.Source) + ": " + detail);
+
+            var changed = !string.Equals(hash, record.ContentHash, StringComparison.Ordinal);
+            lines.Add($"  {Relative(repositoryRoot, record.Source)}: {report.Documents} document(s) and "
+                    + $"{report.Occurrences} occurrence(s)."
+                    + (changed
+                        ? " The file has CHANGED since it was imported, so this index holds what is in it "
+                          + $"now rather than the {record.Documents} document(s) it held before."
+                        : ""));
+        }
+
+        output.WriteLine($"Replayed {remembered.Sources.Count} imported .scip file(s) that the index this "
+                       + "run replaced had been built from. vela index rebuilds from nothing, so without "
+                       + "this every imported language would leave the index without a word being said:");
+        foreach (var line in lines) output.WriteLine(line);
+
+        void Lost(ImportedSource record, string problem)
+        {
+            problems.Add(problem);
+            IndexHealth.WriteImport(db, record.Source, problem);
+
+            // Kept, not forgotten. The file is still what this index was built from, so a
+            // later rebuild has to go on saying it is missing until somebody either
+            // imports it or throws the index away. Forgetting it here would make the
+            // SECOND rebuild silent, which is the failure this whole mechanism exists for.
+            ImportedSources.Write(db, record);
+        }
     }
 
     private static string Relative(string root, string path) =>
@@ -746,6 +891,15 @@ public static class Program
             // recorded under.
             var detail = report.Degraded ? Summarise(report.Problems) : null;
             IndexHealth.WriteImport(db, scipPath, detail);
+
+            // And the durable record of the import itself, which is what makes it survive
+            // the next `vela index`. import_health cannot serve: it holds only the imports
+            // that LOST something, and an import that went perfectly is exactly the one a
+            // rebuild must not throw away. Written whether or not this one was clean,
+            // because a degraded import is still an import and still has to be replayed.
+            ImportedSources.Write(db, new ImportedSource(
+                scipPath, DateTime.UtcNow, ImportedSources.HashOf(scipPath),
+                report.Documents, report.Occurrences));
 
             if (!report.Degraded) return 0;
 

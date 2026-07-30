@@ -19,11 +19,12 @@ public static class Schema
     /// existed, so it can never be a valid version. 1 was the schema without the
     /// generated column. 2 adds it. 3 adds external_document. 4 adds
     /// occurrence.scip_symbol. 5 adds document.position_encoding and an index on
-    /// occurrence.scip_symbol. 6 adds import_health. A future change bumps this and
-    /// nothing else: there is no migration, because re-indexing takes seconds and
-    /// rebuilds from the truth rather than from a guess about what the old rows meant.
+    /// occurrence.scip_symbol. 6 adds import_health. 7 adds document.source and
+    /// imported_source. A future change bumps this and nothing else: there is no
+    /// migration, because re-indexing takes seconds and rebuilds from the truth rather
+    /// than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 6;
+    public const int Version = 7;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -62,13 +63,35 @@ public static class Schema
             -- (UnspecifiedPositionEncoding) is what a real indexer writes when it
             -- declares nothing: scip-typescript 0.4.0 leaves the field unset on every
             -- document it emits.
+            --
+            -- source: WHERE THIS DOCUMENT CAME FROM, and the one value in it that is a
+            -- sentinel rather than a path:
+            --
+            --   '' means vela's own Roslyn harvest wrote this row. It is not "an unknown
+            --   source" and not "a .scip with no name": it is the harvest, which has no
+            --   file to point at because it read the compilation rather than a file.
+            --
+            -- Anything else is the absolute path of the .scip an import read, and it is
+            -- the same key that row's entry in imported_source and import_health carries.
+            --
+            -- It exists because without it nothing in the database could say that an
+            -- imported document was imported, and `vela index` therefore had nothing to
+            -- replay. Measured live: a cache rebuilt one morning held 2,205 csharp
+            -- documents, 307 razor and zero typescript, because a proven scip-typescript
+            -- import had been wiped by a re-index - silently, at exit 0, with
+            -- index_health.degraded = 0 and import_health empty. A whole language had
+            -- vanished from an index that called itself complete, which is exactly what
+            -- Constraint 3 forbids.
             CREATE TABLE IF NOT EXISTS document (
                 id           INTEGER PRIMARY KEY,
                 relative_path TEXT NOT NULL UNIQUE,
                 language      TEXT NOT NULL,
                 generated     INTEGER NOT NULL DEFAULT 0,
-                position_encoding INTEGER NOT NULL DEFAULT 0
+                position_encoding INTEGER NOT NULL DEFAULT 0,
+                source        TEXT NOT NULL DEFAULT ''
             );
+
+            CREATE INDEX IF NOT EXISTS ix_document_source ON document(source);
 
             -- Two names for one symbol, and they are not interchangeable.
             --
@@ -191,6 +214,35 @@ public static class Schema
                 source          TEXT NOT NULL PRIMARY KEY,
                 imported_at_utc TEXT NOT NULL,
                 detail          TEXT NOT NULL
+            );
+
+            -- Every .scip that has ever been imported into this index, whether or not it
+            -- went cleanly. This is the table that makes an import survive a rebuild.
+            --
+            -- import_health holds only the imports that LOST something, because presence
+            -- there is the degradation. That is the wrong record to replay from: an
+            -- import that went perfectly leaves no row, and a perfect import is exactly
+            -- the one a rebuild must not throw away. So the two are separate tables
+            -- keyed the same way - source is the absolute path of the .scip - and this
+            -- one records every import there has ever been.
+            --
+            -- `vela index` reads this table BEFORE it deletes the database, and replays
+            -- each file into the index it builds. content_hash is what makes the replay
+            -- honest: a file that has changed since is re-imported from what is on disk
+            -- now and SAID to have changed, rather than reported as though the index
+            -- still held what was imported. A file that is gone, or that will not read,
+            -- degrades the index and names itself, because the alternative is the
+            -- silence this whole table exists to end.
+            --
+            -- documents and occurrences are what that import contributed, so a replay
+            -- that comes back smaller is a fact a reader can check rather than one
+            -- nobody can see.
+            CREATE TABLE IF NOT EXISTS imported_source (
+                source          TEXT NOT NULL PRIMARY KEY,
+                imported_at_utc TEXT NOT NULL,
+                content_hash    TEXT NOT NULL,
+                documents       INTEGER NOT NULL,
+                occurrences     INTEGER NOT NULL
             );
             """;
         cmd.ExecuteNonQuery();

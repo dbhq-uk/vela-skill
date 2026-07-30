@@ -156,28 +156,35 @@ public static class ScipImporter
     /// the default because a silent overwrite of a document somebody else's index also
     /// claims is the failure <see cref="ImportReport.Problems"/> exists to make visible.
     /// </param>
+    /// <param name="source">
+    /// What the index will remember these documents came from, stored in document.source
+    /// and defaulting to the .scip's own absolute path. It is the identity of an import:
+    /// without it a rebuilt index cannot tell an imported document from one vela
+    /// harvested, and so cannot know that anything was ever imported at all. See
+    /// <see cref="ImportedSources"/> for what that cost, live.
+    /// </param>
     public static ImportReport ImportFile(
-        SqliteConnection db, string scipPath, string projectRoot, bool replace = false)
+        SqliteConnection db, string scipPath, string projectRoot, bool replace = false, string? source = null)
     {
         using var stream = File.OpenRead(scipPath);
-        return ImportStream(db, stream, projectRoot, replace);
+        return ImportStream(db, stream, projectRoot, replace, source ?? Path.GetFullPath(scipPath));
     }
 
     /// <summary>Imports an index already in memory. The streaming path is the one a
     /// file goes through; this is for an index that was built rather than read.</summary>
     public static ImportReport Import(
-        SqliteConnection db, Scip.Index index, string projectRoot, bool replace = false)
+        SqliteConnection db, Scip.Index index, string projectRoot, bool replace = false, string source = "")
     {
-        using var writer = new Writer(db, projectRoot, replace);
+        using var writer = new Writer(db, projectRoot, replace, source);
         writer.Begin(index.Metadata);
         foreach (var document in index.Documents) writer.Add(document);
         return writer.Commit();
     }
 
     private static ImportReport ImportStream(
-        SqliteConnection db, Stream stream, string projectRoot, bool replace)
+        SqliteConnection db, Stream stream, string projectRoot, bool replace, string source)
     {
-        using var writer = new Writer(db, projectRoot, replace);
+        using var writer = new Writer(db, projectRoot, replace, source);
 
         try
         {
@@ -280,7 +287,7 @@ public static class ScipImporter
         private int replacementOccurrences;
         private bool committed;
 
-        public Writer(SqliteConnection db, string projectRoot, bool replace)
+        public Writer(SqliteConnection db, string projectRoot, bool replace, string source)
         {
             this.db = db;
             this.projectRoot = Path.GetFullPath(projectRoot);
@@ -290,12 +297,13 @@ public static class ScipImporter
             insertDoc = db.CreateCommand();
             insertDoc.Transaction = tx;
             insertDoc.CommandText =
-                "INSERT INTO document(relative_path, language, generated, position_encoding) "
-                + "VALUES ($p, $l, $g, $e) RETURNING id";
+                "INSERT INTO document(relative_path, language, generated, position_encoding, source) "
+                + "VALUES ($p, $l, $g, $e, $src) RETURNING id";
             insertDoc.Parameters.Add("$p", SqliteType.Text);
             insertDoc.Parameters.Add("$l", SqliteType.Text);
             insertDoc.Parameters.Add("$g", SqliteType.Integer);
             insertDoc.Parameters.Add("$e", SqliteType.Integer);
+            insertDoc.Parameters.Add("$src", SqliteType.Text).Value = source;
 
             insertOcc = db.CreateCommand();
             insertOcc.Transaction = tx;

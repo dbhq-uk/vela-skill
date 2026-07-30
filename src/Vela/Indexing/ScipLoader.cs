@@ -70,9 +70,15 @@ public static class ScipLoader
         // Transaction is null while a transaction is active on the connection.
         using var insertDoc = db.CreateCommand();
         insertDoc.Transaction = tx;
+
+        // source is written as the empty sentinel explicitly rather than left to the
+        // column default, because this is the one place in vela that produces it and the
+        // reader should be able to see what it means here: '' is vela's own Roslyn
+        // harvest, which has no file to point at. Every other value in that column is the
+        // absolute path of a .scip an import read.
         insertDoc.CommandText =
-            "INSERT INTO document(relative_path, language, generated, position_encoding) "
-            + "VALUES ($p, $l, $g, $e) RETURNING id";
+            "INSERT INTO document(relative_path, language, generated, position_encoding, source) "
+            + "VALUES ($p, $l, $g, $e, '') RETURNING id";
         insertDoc.Parameters.Add("$p", SqliteType.Text);
         insertDoc.Parameters.Add("$l", SqliteType.Text);
         insertDoc.Parameters.Add("$g", SqliteType.Integer);
