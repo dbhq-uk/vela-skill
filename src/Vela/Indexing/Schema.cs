@@ -20,11 +20,12 @@ public static class Schema
     /// generated column. 2 adds it. 3 adds external_document. 4 adds
     /// occurrence.scip_symbol. 5 adds document.position_encoding and an index on
     /// occurrence.scip_symbol. 6 adds import_health. 7 adds document.source and
-    /// imported_source. A future change bumps this and nothing else: there is no
-    /// migration, because re-indexing takes seconds and rebuilds from the truth rather
+    /// imported_source. 8 adds project_input and its two child tables, the record of what
+    /// each project was built from. A future change bumps this and nothing else: there is
+    /// no migration, because re-indexing takes seconds and rebuilds from the truth rather
     /// than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 7;
+    public const int Version = 8;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -243,6 +244,79 @@ public static class Schema
                 content_hash    TEXT NOT NULL,
                 documents       INTEGER NOT NULL,
                 occurrences     INTEGER NOT NULL
+            );
+
+            -- WHAT EACH PROJECT WAS BUILT FROM. Nothing recorded this, so nothing could
+            -- check whether a project's code had moved on since the index was built, and
+            -- an incremental rebuild would have had to guess.
+            --
+            -- A full rebuild cannot be stale, because it reads everything. An incremental
+            -- one is a CLAIM that what it skipped has not changed, and if the claim is
+            -- wrong the index holds rows describing code that no longer exists, at line
+            -- numbers that have moved, while reporting itself complete. That is
+            -- Constraint 3's exact failure and it is worse than the slowness it replaces.
+            -- These three tables are what make the claim checkable.
+            --
+            -- project is the identity: the project file relative to the root the index is
+            -- built at, so it is the same string in any checkout on any machine. A
+            -- multi-targeted project is several compilations over one file and carries
+            -- its Roslyn name after a '#', because one row describing two compilations
+            -- would be wrong about at least one of them.
+            --
+            -- fingerprint is a SHA-256 over every input, taken from CONTENT and never
+            -- from modification times. index_health's freshness check compares mtimes and
+            -- is right to: it runs on every query and only has to raise a suspicion. A
+            -- decision about what NOT to re-read is a different question, and an mtime
+            -- changes when nothing did and stands still when something did.
+            --
+            -- schema_version and vela_version sit on the ROW rather than beside the table
+            -- because they are facts about the run that wrote it, and an incremental
+            -- rebuild writes some rows and leaves others. One value elsewhere would be
+            -- the version of the most recent run, which says nothing about the rows that
+            -- run did not touch.
+            CREATE TABLE IF NOT EXISTS project_input (
+                project        TEXT NOT NULL PRIMARY KEY,
+                name           TEXT NOT NULL,
+                fingerprint    TEXT NOT NULL,
+                inputs         INTEGER NOT NULL,
+                schema_version INTEGER NOT NULL,
+                vela_version   TEXT NOT NULL,
+                built_at_utc   TEXT NOT NULL
+            );
+
+            -- The inputs themselves, one row each, which is what makes a rebuild decision
+            -- auditable rather than merely made. The digest can say a project changed and
+            -- never which file did it.
+            --
+            -- kind is part of the key because one path can honestly arrive twice - an
+            -- .editorconfig is both an analyzer-config document and a file on disk - and
+            -- because a reader working out why a project rebuilt needs to know which
+            -- channel named it. The kinds are on ProjectFingerprint; 'additional' is the
+            -- one worth naming here, because that is where a .cshtml or .razor lives. A
+            -- view never reaches the compiler as a file, so hashing only the compiled
+            -- documents would have called a project unchanged after a view was rewritten.
+            --
+            -- content_hash is 64 hex characters, or 'not-read' for a reference whose path
+            -- is the evidence, or 'unreadable' for a file that would not open. Neither
+            -- sentinel can be confused with a hash.
+            CREATE TABLE IF NOT EXISTS project_input_document (
+                project      TEXT NOT NULL,
+                kind         TEXT NOT NULL,
+                path         TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                PRIMARY KEY (project, kind, path)
+            );
+
+            -- The project reference graph, which is the part a rebuild plan cannot work
+            -- out from anything else in this database. A project is not independent:
+            -- change a public member in one and every reference to it in the projects
+            -- downstream moves, though not one of their files was touched. Getting that
+            -- closure wrong is the silent-staleness failure, so the edges are stored
+            -- rather than inferred.
+            CREATE TABLE IF NOT EXISTS project_input_reference (
+                project    TEXT NOT NULL,
+                referenced TEXT NOT NULL,
+                PRIMARY KEY (project, referenced)
             );
             """;
         cmd.ExecuteNonQuery();

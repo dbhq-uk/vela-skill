@@ -30,12 +30,27 @@ namespace Vela.Harvest;
 /// travels beside the occurrence it belongs to. Keyed by reference, because two
 /// protobuf messages holding the same values are equal to each other and are still two
 /// different occurrences.
+///
+/// <paramref name="ProjectFingerprints"/> is the third: what each project was built from,
+/// which is the ledger a later run compares a tree against to work out what it can
+/// honestly skip. It travels here because the harvest already walks exactly these
+/// projects, so a project cannot be indexed without also being written down. See
+/// <see cref="Vela.Indexing.ProjectFingerprint"/>.
 /// </summary>
 public record EmitResult(
     Scip.Index Index,
     IReadOnlySet<string> GeneratedDocuments,
-    IReadOnlyDictionary<Scip.Occurrence, string>? DisplayNames = null)
+    IReadOnlyDictionary<Scip.Occurrence, string>? DisplayNames = null,
+    IReadOnlyList<Vela.Indexing.ProjectFingerprint>? ProjectFingerprints = null)
 {
+    /// <summary>
+    /// What each project was built from, and nothing at all for an index that did not
+    /// come from a Roslyn harvest. An imported .scip is opaque and arrives whole, so
+    /// there is no project to fingerprint and none is invented.
+    /// </summary>
+    public IReadOnlyList<Vela.Indexing.ProjectFingerprint> Fingerprints =>
+        ProjectFingerprints ?? Array.Empty<Vela.Indexing.ProjectFingerprint>();
+
     /// <summary>
     /// What vela calls this occurrence's symbol, falling back to the SCIP symbol when
     /// nothing said otherwise. The fallback is what an index read from somebody else's
@@ -102,6 +117,11 @@ public static class ScipEmitter
         // written once per document however many times the symbol is defined in it.
         var described = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
 
+        // What each project was built from. Recorded here because this loop already walks
+        // exactly the projects and exactly the documents a later run has to compare a tree
+        // against, so nothing can be indexed without also being written down.
+        var fingerprints = new List<Vela.Indexing.ProjectFingerprint>();
+
         foreach (var project in solution.Projects)
         {
             var compilation = await project.GetCompilationAsync(ct);
@@ -118,6 +138,12 @@ public static class ScipEmitter
             }
 
             RecordCompilationErrors(index, project, compilation, ct);
+
+            // Fingerprinted only once past the compilation check, so a project that
+            // contributed nothing to this index has no ledger entry and is rebuilt on
+            // every later run. A project vela could not compile is exactly the one
+            // nothing here can prove anything about.
+            fingerprints.Add(await Vela.Indexing.ProjectFingerprint.ForAsync(project, roots.ProjectRoot, ct));
 
             await foreach (var harvested in DocumentEnumerator.EnumerateAsync(project, ct))
             {
@@ -255,7 +281,11 @@ public static class ScipEmitter
             .Select(entry => entry.Key)
             .ToHashSet(StringComparer.Ordinal);
 
-        return new EmitResult(index, generated, displayNames);
+        // Ordered by identity, so the ledger is written in the same order on every run
+        // and every machine (Constraint 1).
+        fingerprints.Sort((left, right) => string.CompareOrdinal(left.Project, right.Project));
+
+        return new EmitResult(index, generated, displayNames, fingerprints);
     }
 
     /// <summary>

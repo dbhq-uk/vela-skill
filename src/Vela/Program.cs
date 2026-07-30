@@ -333,6 +333,13 @@ public static class Program
                 ExternalDocuments.Write(db, external);
                 IndexHealth.Write(db, health);
 
+                // What each project was built from, so a later run has something to
+                // compare a tree against rather than a guess. Nothing reads it yet, and
+                // it changes no answer this command gives; a rebuild that cannot check
+                // its own claim is the thing this record exists to make impossible.
+                ProjectInputs.Write(
+                    db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, health.BuiltAtUtc);
+
                 output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
 
                 Replay(db, remembered, repositoryRoot, path, output, replayed, replayProblems);
