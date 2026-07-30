@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.svg" alt="vela skill for Claude Code, by DBHQ" width="420">
+
 # vela
 
 **Your codebase has 2,760 matches for `Name`. Twenty-three of them are the one you meant.**
