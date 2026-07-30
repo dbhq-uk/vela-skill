@@ -29,7 +29,7 @@ Use vela when:
 vela index
 ```
 
-Builds the index for the solution in the current directory. Takes tens of seconds on a large solution and is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once a watched file under the repository root is newer than it.
+Builds the index for the solution in the current directory. It costs about what a build costs: roughly 8 seconds on a scaffolded Razor Pages app, and 2 minutes 12 seconds at 1.5GB peak on a real 375,608-line, ten-project solution. It is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once a watched file under the repository root is newer than it.
 
 **The watch is narrower than the index, so the absence of a banner is not proof the tree is unchanged.** What is watched is every `.cs`, `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`, `.slnx`, `.props` and `.targets` file under the repository root - the sources vela indexes, plus the project and solution files that decide what is compiled - and nothing under `bin`, `obj`, `.git`, `.vs`, `.idea`, `node_modules` or the index's own cache directory. A change anywhere else is invisible to the check: a checked-in generated artefact with another extension, a source file that only exists under an excluded directory, or a `Directory.Build.props` inside `obj`. If you have edited code yourself, or you know something ran that rewrites files, re-index rather than reading a quiet answer as confirmation the index is current.
 
@@ -110,3 +110,10 @@ Every verb also explains an empty answer rather than printing a bare zero, and t
 - It does not do semantic or similarity search. The index is exact.
 - It does not answer "what implements this interface". That is a SCIP relationship, and vela does not emit those yet.
 - It does not cover F#. Roslyn covers C# and Visual Basic only.
+- It does not run other languages' indexers. It imports their `.scip` output.
+
+## Where the detail is
+
+Every flag, exit code, output line and `vela.json` property is in
+[docs/reference.md](../../docs/reference.md). The full documentation index is
+[docs/README.md](../../docs/README.md).
