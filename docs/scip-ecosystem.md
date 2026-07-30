@@ -17,7 +17,7 @@ GitHub API or the project's own README on that date. How to re-check is at the b
 SCIP is no longer a Sourcegraph project. Some of the indexers moved to the new
 `scip-code` organisation and some did not, so the org in a URL is not a reliable guide to
 who maintains what. GitHub redirects the old paths, so `sourcegraph/scip-java` still
-resolves, but the canonical name is `scip-code/scip-java`.
+resolves, but the canonical name is [`scip-code/scip-java`](https://github.com/scip-code/scip-java).
 
 | Now in `scip-code` | Still under `sourcegraph` |
 |---|---|
@@ -27,17 +27,17 @@ resolves, but the canonical name is `scip-code/scip-java`.
 
 | Language | Tool | Repository | Maintainer | Latest |
 |---|---|---|---|---|
-| TypeScript, JavaScript | `scip-typescript` | `sourcegraph/scip-typescript` | Sourcegraph | v0.4.0, 2 Oct 2025 (commits to 24 Jul 2026) |
-| Python | `scip-python` | `sourcegraph/scip-python` | Sourcegraph, a Pyright fork | npm 0.6.6, no GitHub releases (commits to 30 Jul 2026) |
-| Java, Scala, Kotlin | `scip-java` | `scip-code/scip-java` | the `scip-code` org | v0.13.1, 2 Jul 2026 |
-| Go | `scip-go` | `scip-code/scip-go` | the `scip-code` org | v0.2.7, 25 May 2026 |
-| Rust | `rust-analyzer` | `rust-lang/rust-analyzer` | rust-lang, built in | n/a |
-| C, C++, CUDA | `scip-clang` | `sourcegraph/scip-clang` | Sourcegraph | v0.4.0, 23 Feb 2026 |
-| Ruby | `scip-ruby` | `sourcegraph/scip-ruby` | Sourcegraph, built on Sorbet | v0.4.7, 7 Nov 2025 |
-| PHP | `scip-php` | `davidrjenni/scip-php` | community, David Jenni | no releases (commits to 9 Jul 2026) |
-| Dart | `scip-dart` | `Workiva/scip-dart` | Workiva | 1.6.2, 28 May 2025 (commits to 3 Apr 2026) |
-| C#, Visual Basic | `scip-dotnet` | `sourcegraph/scip-dotnet` | Sourcegraph | v0.2.14, 5 May 2026 |
-| Debian packaging | `debian-lsp` | `jelmer/debian-lsp` | community, Jelmer Vernooij | v0.1.7, 30 Mar 2026 |
+| TypeScript, JavaScript | `scip-typescript` | [`sourcegraph/scip-typescript`](https://github.com/sourcegraph/scip-typescript) | Sourcegraph | v0.4.0, 2 Oct 2025 (commits to 24 Jul 2026) |
+| Python | `scip-python` | [`sourcegraph/scip-python`](https://github.com/sourcegraph/scip-python) | Sourcegraph, a Pyright fork | npm 0.6.6, no GitHub releases (commits to 30 Jul 2026) |
+| Java, Scala, Kotlin | `scip-java` | [`scip-code/scip-java`](https://github.com/scip-code/scip-java) | the `scip-code` org | v0.13.1, 2 Jul 2026 |
+| Go | `scip-go` | [`scip-code/scip-go`](https://github.com/scip-code/scip-go) | the `scip-code` org | v0.2.7, 25 May 2026 |
+| Rust | `rust-analyzer` | [`rust-lang/rust-analyzer`](https://github.com/rust-lang/rust-analyzer) | rust-lang, built in | n/a |
+| C, C++, CUDA | `scip-clang` | [`sourcegraph/scip-clang`](https://github.com/sourcegraph/scip-clang) | Sourcegraph | v0.4.0, 23 Feb 2026 |
+| Ruby | `scip-ruby` | [`sourcegraph/scip-ruby`](https://github.com/sourcegraph/scip-ruby) | Sourcegraph, built on Sorbet | v0.4.7, 7 Nov 2025 |
+| PHP | `scip-php` | [`davidrjenni/scip-php`](https://github.com/davidrjenni/scip-php) | community, David Jenni | no releases (commits to 9 Jul 2026) |
+| Dart | `scip-dart` | [`Workiva/scip-dart`](https://github.com/Workiva/scip-dart) | Workiva | 1.6.2, 28 May 2025 (commits to 3 Apr 2026) |
+| C#, Visual Basic | `scip-dotnet` | [`sourcegraph/scip-dotnet`](https://github.com/sourcegraph/scip-dotnet) | Sourcegraph | v0.2.14, 5 May 2026 |
+| Debian packaging | `debian-lsp` | [`jelmer/debian-lsp`](https://github.com/jelmer/debian-lsp) | community, Jelmer Vernooij | v0.1.7, 30 Mar 2026 |
 
 ### TypeScript and JavaScript
 
@@ -82,7 +82,7 @@ coursier bootstrap --standalone -o scip-java org.scip-code:scip-java:STABLE_VERS
   --main org.scip_code.scip_java.ScipJava
 ```
 
-Kotlin support is less mature than Java. The separate `sourcegraph/scip-kotlin` was
+Kotlin support is less mature than Java. The separate [`sourcegraph/scip-kotlin`](https://github.com/sourcegraph/scip-kotlin) was
 archived on 2 Jul 2026 and its work folded into `scip-java`.
 
 ### Go
@@ -169,7 +169,7 @@ what a repository is written in that no job covers.
 
 ## The protocol
 
-`scip-code/scip`, Apache 2.0, v0.9.0 (29 Jun 2026). The repository holds the protobuf
+[`scip-code/scip`](https://github.com/scip-code/scip), Apache 2.0, v0.9.0 (29 Jun 2026). The repository holds the protobuf
 schema (`scip.proto`), bindings for Go, Rust, TypeScript, Haskell, Java and Kotlin, and the
 `scip` CLI.
 
