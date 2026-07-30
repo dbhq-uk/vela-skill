@@ -169,13 +169,14 @@ through `vela import`. vela does not edit, refactor or rename. It reports.
 
 ## Documentation
 
-**[The documentation index](docs/README.md)** has everything. The short version:
-
-- [Getting started](docs/getting-started.md), a tutorial
-- [Answering real questions](docs/guides/querying.md), [indexing other
-  languages](docs/guides/multi-language.md), [running in CI](docs/guides/ci.md)
-- [Reference](docs/reference.md) and [the SCIP ecosystem](docs/scip-ecosystem.md)
-- [Architecture](docs/architecture.md) and [design notes](docs/design-notes.md)
+**[The documentation index](docs/README.md)** reaches everything. Start with
+[getting started](docs/getting-started.md) to learn it,
+[answering real questions](docs/guides/querying.md) to use it,
+[the reference](docs/reference.md) to look something up, and
+[architecture](docs/architecture.md) to understand it. There are also guides for
+[other languages](docs/guides/multi-language.md) and [CI](docs/guides/ci.md), a catalogue of
+[every other SCIP indexer](docs/scip-ecosystem.md), and the original
+[design notes](docs/design-notes.md).
 
 ## Etymology
 
