@@ -4,22 +4,35 @@ on: [push, pull_request]
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The suite scaffolds and harvests real projects, so it is minutes rather than
+    # seconds. Without a limit a hung MSBuild or a wedged `dotnet new` runs for the
+    # full six hours; this is generous against a cold NuGet cache and still catches
+    # a hang the same morning.
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '10.0.x'
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
-      - run: dotnet test -v normal
       # The tests scaffold real projects with `dotnet new webapp` / `dotnet new
       # blazor` and restore them, so this job needs network access to NuGet on
       # a cold cache. That is expected: fixture scaffolding is test setup, not
       # the tool under test.
+      #
+      # MSBuild verbosity stays at its default. `-v normal` buried the test results
+      # under tens of thousands of file-copy lines, which is how three real failures
+      # went unread for a week; the console logger below prints every test by name.
+      - name: Test
+        run: dotnet test --logger "console;verbosity=normal"
       - name: Assert Razor/Blazor generated-document coverage (the regression that would otherwise be silent)
-        run: dotnet test --filter "DocumentEnumeratorTests|IndexWithStats_ReportsTheCoverageThatMustNotRegress" -v normal
+        run: >-
+          dotnet test --no-build
+          --filter "DocumentEnumeratorTests|IndexWithStats_ReportsTheCoverageThatMustNotRegress"
+          --logger "console;verbosity=normal"
