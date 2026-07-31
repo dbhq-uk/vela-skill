@@ -23,11 +23,11 @@ public static class Schema
     /// imported_source. 8 adds project_input and its two child tables, the record of what
     /// each project was built from. 9 adds project_note and project_document, which are
     /// what let a project be SKIPPED without its problems and its documents being
-    /// forgotten, and index_health.rebuild. A future change bumps this and nothing else:
-    /// there is no migration, because re-indexing takes seconds and rebuilds from the
-    /// truth rather than from a guess about what the old rows meant.
+    /// forgotten, and index_health.rebuild. 10 adds index_identity. A future change bumps
+    /// this and nothing else: there is no migration, because re-indexing takes seconds and
+    /// rebuilds from the truth rather than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 9;
+    public const int Version = 10;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -373,6 +373,26 @@ public static class Schema
                 project       TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
                 PRIMARY KEY (project, relative_path)
+            );
+
+            -- WHICH SOLUTION THIS INDEX IS OF. Nothing recorded it, and the file name
+            -- cannot: an index is named <SolutionName>-<hash>.db, where the hash is a
+            -- SHA-256 of the absolute solution path, and a hash does not go backwards.
+            --
+            -- Two things needed it. `vela cache` could otherwise only show a reader a list
+            -- of hashes and ask them to guess which of their checkouts each one was. And an
+            -- index whose solution no longer exists is the one thing that can be evicted
+            -- without any risk of surprising anybody - it describes a repository that is not
+            -- there - which cannot be established without knowing what it was of.
+            --
+            -- The path is the one RealPath resolved, links followed and letter case read
+            -- back on the platforms that have one, because that is the spelling every other
+            -- part of vela keys on and two spellings of one solution would be two indexes.
+            --
+            -- One row, replaced whole, like index_health. An index is of one solution for
+            -- as long as it exists, and if it were ever of two nobody could say which.
+            CREATE TABLE IF NOT EXISTS index_identity (
+                solution_path TEXT NOT NULL
             );
             """;
         cmd.ExecuteNonQuery();

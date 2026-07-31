@@ -163,6 +163,7 @@ vela def    Perfume.Status
 vela refs   Perfume.Status        # includes .cshtml and .razor
 vela impact PerfumeService
 vela find   Repository
+vela cache                        # what the index cache holds, and how to clear it
 ```
 
 `def`, `refs` and `impact` match a **whole dotted segment**, case-sensitively: `Status`

@@ -76,6 +76,7 @@ public static class Program
             + "for example Status or Perfume.Status.";
 
         root.Add(BuildIndexCommand(solutionOption));
+        root.Add(BuildCacheCommand());
         root.Add(BuildImportCommand(solutionOption));
         root.Add(BuildFindCommand(solutionOption));
         root.Add(BuildHitCommand("def", "Where a symbol is defined",
@@ -377,6 +378,11 @@ public static class Program
                     ExternalDocuments.Write(db, external);
                     IndexHealth.Write(db, health);
 
+                    // Which solution this index is of. Nothing else in the database can
+                    // say: the file name carries a hash of the solution path, and a hash
+                    // does not go backwards. See IndexIdentity.
+                    IndexIdentity.Write(db, solution);
+
                     // What each project was built from, what each project could not do, and
                     // which documents each one contributed to. Together they are what lets a
                     // LATER run skip a project without forgetting any of it: a rebuild that
@@ -512,6 +518,12 @@ public static class Program
                     health = health with { Rebuild = DescribeRebuild(rebuild) };
                     IndexHealth.Write(db, health);
 
+                    // Rewritten rather than assumed unchanged: the copy this run is
+                    // writing into carries whatever the last one recorded, and an index
+                    // reached through a second spelling of one solution would otherwise
+                    // keep the first spelling forever.
+                    IndexIdentity.Write(db, solution);
+
                     ReportRebuild(output, rebuild, written, path);
 
                     // An import survives an incremental rebuild by not being touched, where it
@@ -535,6 +547,14 @@ public static class Program
                 // that order.
                 building.Commit();
             }
+
+            // Housekeeping, and only here. The new index is in place, so nothing this
+            // removes can be the one this run was asked for; and this is the one verb that
+            // was always going to write to the cache directory, so it is the only place
+            // where removing something from it is not a surprise. A query never evicts
+            // anything: it is read-only and stays read-only, and the moment somebody runs
+            // one is the moment they are most likely to be about to use another index.
+            SweepCache(output, error, path);
 
             var outstanding = plan.Pending.Where(p => !replayed.Contains(p.Source)).ToList();
 
@@ -564,6 +584,194 @@ public static class Program
             }
 
             return 0;
+        });
+
+        return command;
+    }
+
+    /// <summary>
+    /// The cache housekeeping one `vela index` run does, and every word it says about it.
+    ///
+    /// Silent when it removed nothing, which is the ordinary case and has to stay quiet: a
+    /// verb that reports its housekeeping on every invocation is a verb whose output stops
+    /// being read, and this one already has a banner that matters more.
+    ///
+    /// It cannot fail the command. An index was asked for and an index was built; a cache
+    /// directory that will not tidy up is worth a line and nothing more, and the exit code
+    /// belongs to the index (Constraint 3 is about the answer, not about the disk).
+    /// </summary>
+    private static void SweepCache(TextWriter output, TextWriter error, string keepPath)
+    {
+        try
+        {
+            var maximum = IndexCache.ConfiguredMaximumBytes(out var complaint);
+            if (complaint is not null) error.WriteLine(complaint);
+
+            var report = IndexCache.Sweep(
+                IndexPaths.CacheDirectory(), keepPath, maximum, DateTime.UtcNow);
+
+            foreach (var evicted in report.Removed)
+            {
+                output.WriteLine($"Removed the cached index {evicted.Index.Path} "
+                               + $"({IndexCache.Describe(evicted.Index.Bytes)}): {evicted.Reason}. "
+                               + "Indexing that solution again rebuilds it.");
+            }
+
+            if (report.Refused > 0)
+            {
+                output.WriteLine($"{report.Refused} cached index(es) could not be removed, most likely "
+                               + "because another process has one open. Nothing was lost; they will be "
+                               + "considered again on the next index.");
+            }
+
+            if (report.Removed.Count > 0)
+            {
+                output.WriteLine($"The index cache now holds {IndexCache.Describe(report.TotalBytes)}. "
+                               + "Run vela cache to see what is in it.");
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                      or InvalidOperationException)
+        {
+            error.WriteLine("The index cache could not be tidied up: " + ex.Message
+                          + ". The index this run built is unaffected.");
+        }
+    }
+
+    /// <summary>
+    /// `vela cache`: what the cache directory holds, and the one place a user can remove
+    /// any of it by name.
+    ///
+    /// The listing exists because nothing else could answer "what is this 983MB". An index
+    /// is named for a hash of its solution's path, and a hash does not go backwards, so
+    /// without the record `vela index` now writes the directory is a list of files nobody
+    /// can attribute to anything. A policy whose input a user cannot see is a policy they
+    /// cannot trust, and this is the verb that shows it.
+    /// </summary>
+    private static Command BuildCacheCommand()
+    {
+        var command = new Command("cache", "What the index cache holds, and how to clear it");
+
+        command.SetAction(parseResult =>
+        {
+            var output = parseResult.InvocationConfiguration.Output;
+            var directory = IndexPaths.CacheDirectory();
+            var held = IndexCache.List(directory);
+
+            output.WriteLine($"Index cache: {directory}");
+
+            if (held.Count == 0)
+            {
+                output.WriteLine("0 index(es), 0B. Nothing is cached yet.");
+                return 0;
+            }
+
+            // Padded to the widest, so the sizes and the dates form columns a reader can
+            // run an eye down. A cache with one index in it is a list of one and pays
+            // nothing for this.
+            var nameWidth = held.Max(index => Path.GetFileName(index.Path).Length);
+            var sizeWidth = held.Max(index => IndexCache.Describe(index.Bytes).Length);
+
+            foreach (var index in held)
+            {
+                // The solution is what a reader recognises. The file name carries a hash
+                // and tells them nothing until they already know the answer.
+                var solution = index.SolutionPath switch
+                {
+                    null => "of an unrecorded solution (built by an older vela, or unreadable)",
+                    var path when !File.Exists(path) => $"of {path}, WHICH IS NOT THERE",
+                    var path => "of " + path
+                };
+
+                output.WriteLine($"  {Path.GetFileName(index.Path).PadRight(nameWidth)}  "
+                               + $"{IndexCache.Describe(index.Bytes).PadLeft(sizeWidth)}  "
+                               + $"built {index.BuiltAtUtc:yyyy-MM-dd HH:mm} UTC  {solution}");
+            }
+
+            var total = held.Sum(index => index.Bytes);
+            var maximum = IndexCache.ConfiguredMaximumBytes(out _);
+
+            output.WriteLine($"{held.Count} index(es), {IndexCache.Describe(total)}.");
+            output.WriteLine(maximum <= 0
+                ? $"Size-based eviction is off ({IndexCache.MaximumBytesVariable} is 0), so nothing is "
+                  + "removed except an index whose solution has gone."
+                : $"vela index removes an index whose solution has gone, and above "
+                  + $"{IndexCache.Describe(maximum)} it removes the least recently built - never one "
+                  + $"built in the last {IndexCache.MinimumAge.TotalDays:0} days, and never the one it "
+                  + $"just wrote. Set {IndexCache.MaximumBytesVariable} to change the budget, or to 0 "
+                  + "to turn that off.");
+
+            return 0;
+        });
+
+        command.Add(BuildCacheClearCommand());
+        return command;
+    }
+
+    private static Command BuildCacheClearCommand()
+    {
+        var allOption = new Option<bool>("--all") { Description = "Remove every cached index." };
+        var orphanedOption = new Option<bool>("--orphaned")
+        {
+            Description = "Remove every cached index whose solution is no longer on disk."
+        };
+        var solutionOption = new Option<string>("--solution")
+        {
+            Description = "Remove the cached index for one solution."
+        };
+
+        var command = new Command("clear", "Remove cached indexes") { allOption, orphanedOption, solutionOption };
+
+        command.SetAction(parseResult =>
+        {
+            var output = parseResult.InvocationConfiguration.Output;
+            var error = parseResult.InvocationConfiguration.Error;
+
+            var all = parseResult.GetValue(allOption);
+            var orphaned = parseResult.GetValue(orphanedOption);
+            var solution = parseResult.GetValue(solutionOption);
+
+            // Nothing is guessed. Deleting an index is not undoable in the sense that
+            // matters - it costs the minutes a rebuild costs - so the verb refuses rather
+            // than picking a default and hoping it was what was meant.
+            if (!all && !orphaned && string.IsNullOrWhiteSpace(solution))
+            {
+                error.WriteLine("Say which. Pass --all, --orphaned, or --solution <path to the .sln>.");
+                error.WriteLine("Run vela cache to see what is held. Nothing was removed.");
+                return ExitCannotAnswer;
+            }
+
+            var held = IndexCache.List(IndexPaths.CacheDirectory());
+
+            var chosen = held.Where(index =>
+                all
+                || (orphaned && index.IsOrphaned)
+                || (!string.IsNullOrWhiteSpace(solution)
+                    && string.Equals(index.Path, IndexPaths.ForSolution(solution), StringComparison.Ordinal)))
+                .ToList();
+
+            if (chosen.Count == 0)
+            {
+                output.WriteLine("Nothing matched, so nothing was removed. Run vela cache to see what is held.");
+                return 0;
+            }
+
+            var report = IndexCache.Clear(chosen);
+
+            foreach (var index in report.Removed)
+                output.WriteLine($"Removed {index.Path} ({IndexCache.Describe(index.Bytes)}).");
+
+            foreach (var index in report.Refused)
+            {
+                error.WriteLine($"Could not remove {index.Path}, most likely because another process has "
+                              + "it open. It is still there.");
+            }
+
+            output.WriteLine($"{report.Removed.Count} index(es) removed, "
+                           + $"{IndexCache.Describe(report.Removed.Sum(index => index.Bytes))} freed. "
+                           + "Indexing those solutions again rebuilds them.");
+
+            return report.Refused.Count > 0 ? ExitCannotAnswer : 0;
         });
 
         return command;
@@ -1288,7 +1496,11 @@ public static class Program
             // existing index writes no such record at all: staleness is measured from
             // built_at_utc, and refreshing it would tell a reader the C# half had been
             // compared against the disk when it had not.
-            if (isNew) IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, Degraded: false, null));
+            if (isNew)
+            {
+                IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, Degraded: false, null));
+                IndexIdentity.Write(db, solution);
+            }
 
             // This import's own verdict, under this import's own name, replacing
             // whatever this same file contributed last time. The verb used to OR its
