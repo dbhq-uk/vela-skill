@@ -1,12 +1,20 @@
 using Google.Protobuf;
 using Microsoft.Data.Sqlite;
 using Vela.Indexing;
+using Vela.Tests.Fixtures;
 using Xunit;
 
 namespace Vela.Tests;
 
 public class ScipImporterTests
 {
+    /// <summary>
+    /// The repository vela is indexing, in these tests. Synthetic on every platform and
+    /// never touched on disk; see <see cref="Synthetic"/> for why it is not written
+    /// "/repo" by hand.
+    /// </summary>
+    private static readonly string Repo = Synthetic.Root("repo");
+
     // ================================================================================
     // The display name derivation.
     //
@@ -160,7 +168,7 @@ public class ScipImporterTests
 
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
 
         index.Documents.Add(DocumentWithOccurrenceAt(
@@ -171,7 +179,7 @@ public class ScipImporterTests
             "utf32.py", line, Scip.PositionEncoding.Utf32CodeUnitOffsetFromLineStart, 2));
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
 
         var stored = Column(db, "SELECT o.start_char FROM occurrence o JOIN document d ON d.id = o.document_id ORDER BY d.relative_path");
         Assert.Equal(new[] { 3, 3, 3 }, stored);
@@ -187,7 +195,7 @@ public class ScipImporterTests
 
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
         index.Documents.Add(DocumentWithOccurrenceAt(
             "utf8.go", line, Scip.PositionEncoding.Utf8CodeUnitOffsetFromLineStart, 5));
@@ -195,7 +203,7 @@ public class ScipImporterTests
             "utf32.py", line, Scip.PositionEncoding.Utf32CodeUnitOffsetFromLineStart, 2));
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
 
         // Ordered by path, so utf32.py sorts before utf8.go.
         Assert.Equal(
@@ -213,7 +221,7 @@ public class ScipImporterTests
         // it is reported rather than assumed away (Constraint 3).
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
         var doc = DocumentWithOccurrenceAt(
             "gone.py", "", Scip.PositionEncoding.Utf32CodeUnitOffsetFromLineStart, 2);
@@ -221,7 +229,7 @@ public class ScipImporterTests
         index.Documents.Add(doc);
 
         using var db = Fresh();
-        var report = ScipImporter.Import(db, index, "/repo");
+        var report = ScipImporter.Import(db, index, Repo);
 
         Assert.Equal(1, report.UnconvertedDocuments);
     }
@@ -244,7 +252,7 @@ public class ScipImporterTests
         // so the number is counted and reported (Constraint 3).
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
 
         // Declared nothing at all, which is what a real scip-typescript index looks like.
@@ -267,7 +275,7 @@ public class ScipImporterTests
         });
 
         using var db = Fresh();
-        var report = ScipImporter.Import(db, index, "/repo");
+        var report = ScipImporter.Import(db, index, Repo);
 
         Assert.Equal(3, report.Documents);
         Assert.Equal(1, report.UnspecifiedEncodingDocuments);
@@ -295,7 +303,7 @@ public class ScipImporterTests
         // one would answer with all four.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
 
         foreach (var path in new[] { "a.ts", "b.ts" })
@@ -311,7 +319,7 @@ public class ScipImporterTests
         }
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
 
         Assert.Equal(2, Convert.ToInt32(Scalar(db, "SELECT COUNT(DISTINCT symbol) FROM occurrence")));
 
@@ -341,7 +349,7 @@ public class ScipImporterTests
         // two rules a descriptor gets.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
 
         var doc = new Scip.Document { RelativePath = "src/ScentVerdict.Mobile/src/useApi.ts" };
@@ -349,7 +357,7 @@ public class ScipImporterTests
         index.Documents.Add(doc);
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
 
         Assert.Equal(
             "src.ScentVerdict_Mobile.src.useApi.local2",
@@ -365,7 +373,7 @@ public class ScipImporterTests
         // the short name - so `refs count` reaches it.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
 
         var doc = new Scip.Document { RelativePath = "App/Counter.cs", Language = "csharp" };
@@ -384,7 +392,7 @@ public class ScipImporterTests
         index.Documents.Add(doc);
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
 
         // The document it lives in is still what makes it document-scoped, and it stays
         // there even though the enclosing symbol repeats most of it: an indexer that
@@ -408,13 +416,13 @@ public class ScipImporterTests
         {
             Metadata = new Scip.Metadata
             {
-                ProjectRoot = new Uri("/repo/src/Mobile/").AbsoluteUri
+                ProjectRoot = Synthetic.RootUri("repo/src/Mobile")
             }
         };
         index.Documents.Add(new Scip.Document { RelativePath = "src/api.ts", Language = "typescript" });
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
 
         Assert.Equal("src/Mobile/src/api.ts", Scalar(db, "SELECT relative_path FROM document")?.ToString());
     }
@@ -445,7 +453,7 @@ public class ScipImporterTests
 
         using var db = Fresh();
 
-        var ex = Assert.Throws<InvalidDataException>(() => ScipImporter.Import(db, index, "/repo"));
+        var ex = Assert.Throws<InvalidDataException>(() => ScipImporter.Import(db, index, Repo));
         Assert.Contains("project_root", ex.Message, StringComparison.Ordinal);
 
         // Refused, so nothing at all was written: the index is exactly as it was.
@@ -462,12 +470,12 @@ public class ScipImporterTests
         // resolved without inventing a directory.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = "/repo/src/Mobile" }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.Root("repo/src/Mobile") }
         };
         index.Documents.Add(new Scip.Document { RelativePath = "src/api.ts", Language = "typescript" });
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
 
         Assert.Equal("src/Mobile/src/api.ts", Scalar(db, "SELECT relative_path FROM document")?.ToString());
     }
@@ -481,12 +489,12 @@ public class ScipImporterTests
         // it must not be is absent without a word.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/elsewhere/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("elsewhere") }
         };
         index.Documents.Add(new Scip.Document { RelativePath = "Shared/Thing.go", Language = "go" });
 
         using var db = Fresh();
-        var report = ScipImporter.Import(db, index, "/repo");
+        var report = ScipImporter.Import(db, index, Repo);
 
         Assert.Equal(0, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM document")));
         Assert.Contains(report.Problems, p => p.Contains("Shared/Thing.go", StringComparison.Ordinal));
@@ -504,7 +512,7 @@ public class ScipImporterTests
         // rather than counted - and `vela index --stats` already prints it.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/elsewhere/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("elsewhere") }
         };
 
         // Twelve, so the truncation that lost them is in play.
@@ -512,7 +520,7 @@ public class ScipImporterTests
             index.Documents.Add(new Scip.Document { RelativePath = $"Shared/Thing{i}.go", Language = "go" });
 
         using var db = Fresh();
-        var report = ScipImporter.Import(db, index, "/repo");
+        var report = ScipImporter.Import(db, index, Repo);
 
         // Still a gap in the index, still degraded, still named in the report: this adds
         // a record, it does not soften the verdict.
@@ -522,12 +530,12 @@ public class ScipImporterTests
 
         var external = ExternalDocuments.Read(db);
         Assert.Equal(12, external.Count);
-        Assert.Contains("/elsewhere/Shared/Thing11.go", external);
+        Assert.Contains(Synthetic.Printed("elsewhere") + "/Shared/Thing11.go", external);
 
         // And the same .scip imported again does not record them twice. The health
         // contribution is replaced by source; this list would otherwise grow without
         // bound in exactly the way that record did.
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
         Assert.Equal(12, ExternalDocuments.Read(db).Count);
     }
 
@@ -545,8 +553,8 @@ public class ScipImporterTests
         var second = SingleDocumentIndex("b.ts", "scip-typescript npm p 1.0 src/`b.ts`/two().");
 
         using var db = Fresh();
-        ScipImporter.Import(db, first, "/repo");
-        ScipImporter.Import(db, second, "/repo");
+        ScipImporter.Import(db, first, Repo);
+        ScipImporter.Import(db, second, Repo);
 
         Assert.Equal(2, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM document")));
         Assert.Equal(2, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM occurrence")));
@@ -558,8 +566,8 @@ public class ScipImporterTests
         var index = SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one().");
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
-        var report = ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two()."), "/repo");
+        ScipImporter.Import(db, index, Repo);
+        var report = ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two()."), Repo);
 
         Assert.Equal(1, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM document")));
         Assert.Contains(report.Problems, p => p.Contains("a.ts", StringComparison.Ordinal));
@@ -585,7 +593,7 @@ public class ScipImporterTests
         // sides at the moment it derives the name, so it is the only place that can tell.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
 
         var doc = new Scip.Document { RelativePath = "a.ts", Language = "typescript" };
@@ -606,7 +614,7 @@ public class ScipImporterTests
         index.Documents.Add(doc);
 
         using var db = Fresh();
-        var report = ScipImporter.Import(db, index, "/repo");
+        var report = ScipImporter.Import(db, index, Repo);
 
         Assert.Equal(new[] { "a_b.two", "src.utils.one" }, report.CollidingDisplayNames);
 
@@ -628,7 +636,7 @@ public class ScipImporterTests
         // is the thing no rule intended.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
 
         var doc = new Scip.Document { RelativePath = "a.cs", Language = "csharp" };
@@ -649,7 +657,7 @@ public class ScipImporterTests
         index.Documents.Add(doc);
 
         using var db = Fresh();
-        var report = ScipImporter.Import(db, index, "/repo");
+        var report = ScipImporter.Import(db, index, Repo);
 
         Assert.Empty(report.CollidingDisplayNames);
     }
@@ -666,10 +674,10 @@ public class ScipImporterTests
         // degraded, which is honest and useless. Re-running the indexer after the code
         // changed is the only workflow anybody has.
         using var db = Fresh();
-        ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), "/repo");
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), Repo);
 
         var report = ScipImporter.Import(
-            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two()."), "/repo", replace: true);
+            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two()."), Repo, replace: true);
 
         Assert.False(report.Degraded, string.Join("; ", report.Problems));
         Assert.Equal(1, report.ReplacedDocuments);
@@ -696,12 +704,12 @@ public class ScipImporterTests
         var shared = "scip-typescript npm p 1.0 src/`x.ts`/shared().";
 
         using var db = Fresh();
-        ScipImporter.Import(db, SingleDocumentIndex("a.ts", shared), "/repo");
-        ScipImporter.Import(db, SingleDocumentIndex("b.ts", shared), "/repo");
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", shared), Repo);
+        ScipImporter.Import(db, SingleDocumentIndex("b.ts", shared), Repo);
 
         Assert.Equal(new[] { "src.x.shared" }, Strings(db, "SELECT symbol FROM symbol_fts"));
 
-        ScipImporter.Import(db, SingleDocumentIndex("a.ts", shared), "/repo", replace: true);
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", shared), Repo, replace: true);
 
         Assert.Equal(2, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM occurrence")));
         Assert.Equal(new[] { "src.x.shared" }, Strings(db, "SELECT symbol FROM symbol_fts"));
@@ -716,7 +724,7 @@ public class ScipImporterTests
         // here, so the numbers are printed and neither is assumed.
         var big = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
         var wide = new Scip.Document { RelativePath = "a.ts", Language = "typescript" };
         foreach (var name in new[] { "one", "two", "three" })
@@ -731,10 +739,10 @@ public class ScipImporterTests
         big.Documents.Add(wide);
 
         using var db = Fresh();
-        ScipImporter.Import(db, big, "/repo");
+        ScipImporter.Import(db, big, Repo);
 
         var report = ScipImporter.Import(
-            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), "/repo", replace: true);
+            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), Repo, replace: true);
 
         Assert.Equal(1, report.ReplacedDocuments);
         Assert.Equal(3, report.ReplacedOccurrences);
@@ -754,13 +762,13 @@ public class ScipImporterTests
         // with the second would keep whichever came last and say nothing.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
         index.Documents.Add(SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one().").Documents[0]);
         index.Documents.Add(SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two().").Documents[0]);
 
         using var db = Fresh();
-        var report = ScipImporter.Import(db, index, "/repo", replace: true);
+        var report = ScipImporter.Import(db, index, Repo, replace: true);
 
         Assert.Equal(1, report.Documents);
         Assert.Equal(0, report.ReplacedDocuments);
@@ -775,9 +783,9 @@ public class ScipImporterTests
         // index also claims is exactly the failure ImportReport.Problems exists to make
         // visible, so replacing is something the caller asks for by name.
         using var db = Fresh();
-        ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), "/repo");
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), Repo);
         var report = ScipImporter.Import(
-            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two()."), "/repo");
+            db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/two()."), Repo);
 
         Assert.Equal(0, report.ReplacedDocuments);
         Assert.True(report.Degraded);
@@ -791,11 +799,11 @@ public class ScipImporterTests
         // silence." The whole import is one transaction, so a payload that runs out
         // half way through leaves nothing behind at all.
         using var db = Fresh();
-        ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), "/repo");
+        ScipImporter.Import(db, SingleDocumentIndex("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."), Repo);
 
         var good = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
         for (var i = 0; i < 50; i++)
             good.Documents.Add(SingleDocumentIndex($"d{i}.ts", "scip-typescript npm p 1.0 src/`x.ts`/f().").Documents[0]);
@@ -806,7 +814,7 @@ public class ScipImporterTests
 
         try
         {
-            Assert.Throws<InvalidDataException>(() => ScipImporter.ImportFile(db, truncated, "/repo"));
+            Assert.Throws<InvalidDataException>(() => ScipImporter.ImportFile(db, truncated, Repo));
             Assert.Equal(1, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM document")));
         }
         finally
@@ -822,7 +830,7 @@ public class ScipImporterTests
         {
             Metadata = new Scip.Metadata
             {
-                ProjectRoot = new Uri("/repo/").AbsoluteUri,
+                ProjectRoot = Synthetic.RootUri("repo"),
                 ToolInfo = new Scip.ToolInfo { Name = "scip-typescript", Version = "0.4.0" }
             }
         };
@@ -835,7 +843,7 @@ public class ScipImporterTests
         try
         {
             using var db = Fresh();
-            var report = ScipImporter.ImportFile(db, path, "/repo");
+            var report = ScipImporter.ImportFile(db, path, Repo);
 
             Assert.Equal(5, report.Documents);
             Assert.Equal("scip-typescript", report.Tool);
@@ -858,14 +866,14 @@ public class ScipImporterTests
         // silence is visible.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
         var doc = new Scip.Document { RelativePath = "a.ts", Language = "typescript" };
         doc.Occurrences.Add(new Scip.Occurrence { Range = { 1, 2, 3 } });
         index.Documents.Add(doc);
 
         using var db = Fresh();
-        var report = ScipImporter.Import(db, index, "/repo");
+        var report = ScipImporter.Import(db, index, Repo);
 
         Assert.Equal(1, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM occurrence")));
         Assert.Equal("", Scalar(db, "SELECT symbol FROM occurrence")?.ToString());
@@ -884,7 +892,7 @@ public class ScipImporterTests
         // successful import and is uniformly wrong.
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
         var doc = new Scip.Document { RelativePath = "a.ts", Language = "typescript" };
         doc.Occurrences.Add(new Scip.Occurrence
@@ -900,7 +908,7 @@ public class ScipImporterTests
         index.Documents.Add(doc);
 
         using var db = Fresh();
-        ScipImporter.Import(db, index, "/repo");
+        ScipImporter.Import(db, index, Repo);
 
         Assert.Equal(new[] { 12, 20 }, Column(db, "SELECT start_line FROM occurrence ORDER BY start_line"));
         Assert.Equal(new[] { 4, 2 }, Column(db, "SELECT start_char FROM occurrence ORDER BY start_line"));
@@ -940,7 +948,7 @@ public class ScipImporterTests
     {
         var index = new Scip.Index
         {
-            Metadata = new Scip.Metadata { ProjectRoot = new Uri("/repo/").AbsoluteUri }
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
         };
         var doc = new Scip.Document { RelativePath = path, Language = "typescript" };
         doc.Occurrences.Add(new Scip.Occurrence

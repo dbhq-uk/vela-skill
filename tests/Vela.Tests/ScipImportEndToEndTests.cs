@@ -427,7 +427,8 @@ public class ScipImportEndToEndTests
         // The indexer was run in the wrong place, so its document cannot be placed under
         // vela's root at all and the import is honestly degraded.
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex("/elsewhere", "Shared/Thing.ts", "greet").ToByteArray());
+        File.WriteAllBytes(
+            scip, ForeignIndex(Synthetic.Root("elsewhere"), "Shared/Thing.ts", "greet").ToByteArray());
 
         var failed = await InvokeAsync("import", scip, "--solution", fx.SolutionPath);
         Assert.Equal(IndexHealth.ExitDegraded, failed.ExitCode);
