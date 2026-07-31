@@ -213,12 +213,13 @@ public static class ScipEmitter
                 var model = compilation.GetSemanticModel(harvested.Tree);
                 var root = await harvested.Tree.GetRootAsync(ct);
 
-                // Seed a document for every view this tree was generated from, before
-                // looking at any symbol. A view that binds no symbols at all
-                // (_ValidationScriptsPartial.cshtml is pure markup) must still appear,
-                // as an empty document: an empty document is honest, a missing one
-                // says the view does not exist.
-                SeedSourceDocuments(harvested.Tree, root, byOriginalPath, index, roots, Note, contributed);
+                // Seed a document for every view this tree was generated from, and for
+                // the file the tree itself is, before looking at any symbol. A source
+                // file that binds no symbols at all must still appear, as an empty
+                // document: an empty document is honest, a missing one says the file
+                // does not exist.
+                SeedSourceDocuments(
+                    harvested, root, byOriginalPath, index, roots, Note, contributed);
 
                 foreach (var node in root.DescendantNodes())
                 {
@@ -562,13 +563,32 @@ public static class ScipEmitter
     /// the targets of its #line directives, plus the #pragma checksum the Razor
     /// generator emits naming the view itself. The checksum is what covers a view with
     /// no C# in it at all, which produces no #line mappings of its own.
-    /// For ordinary C# there is neither, and the file gets its document from its first
-    /// occurrence instead.
+    ///
+    /// An ordinary .cs or .vb file has neither, so the file itself is seeded as well.
+    /// Without that a file gets its document from its first symbol-bearing node, and a
+    /// file that holds none - an empty one, or one holding only a licence header or a
+    /// note saying where the code went - was absent from the index altogether. `outline`
+    /// on it then reported a file vela had never seen, when the file is on disk and the
+    /// truthful answer is that it exists and defines nothing. That is the same reasoning
+    /// the checksum path already applies to a view: an empty document is honest, a
+    /// missing one says the file does not exist.
+    ///
+    /// Only for a tree the compiler read from disk. A source-generated tree names a path
+    /// that exists only inside the compilation, and one that contributes no symbol has
+    /// nothing to say about any file a reader can open; seeding it would put a document
+    /// in the index for a file nobody can look at. Generated trees that DO contribute
+    /// still get their documents the way they always did, from the occurrences
+    /// themselves.
     /// </summary>
     private static void SeedSourceDocuments(
-        SyntaxTree tree, SyntaxNode root, Dictionary<string, Scip.Document?> map,
+        HarvestedDocument harvested, SyntaxNode root, Dictionary<string, Scip.Document?> map,
         Scip.Index index, Roots roots, Action<string> note, ISet<string> contributed)
     {
+        var tree = harvested.Tree;
+
+        if (!harvested.IsGenerated && !string.IsNullOrEmpty(tree.FilePath))
+            GetOrAddDocument(map, index, tree.FilePath, roots, note, contributed);
+
         foreach (var trivia in root.GetLeadingTrivia())
         {
             if (trivia.GetStructure() is not PragmaChecksumDirectiveTriviaSyntax checksum) continue;
