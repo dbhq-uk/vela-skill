@@ -717,9 +717,11 @@ public static class ScipEmitter
     /// </summary>
     private sealed record Roots(string ProjectRoot, IReadOnlyList<string> ExternalRoots)
     {
-        public static Roots Resolve(string solutionDirectory) => new(
-            Vela.Indexing.ProjectRoot.ForSolutionDirectory(solutionDirectory),
-            ExternalRootDirectories(solutionDirectory));
+        public static Roots Resolve(string solutionDirectory)
+        {
+            var projectRoot = Vela.Indexing.ProjectRoot.ForSolutionDirectory(solutionDirectory);
+            return new Roots(projectRoot, ExternalRootDirectories(solutionDirectory, projectRoot));
+        }
 
         /// <summary>
         /// Whether a file vela could not place under project_root belongs to somebody
@@ -738,6 +740,10 @@ public static class ScipEmitter
         /// project is outside; and a submodule puts its parent repository outside,
         /// because the innermost .git wins. All three are the user's own code, absent
         /// from the index, and under Constraint 3 they have to stay loud.
+        ///
+        /// Which is why a directory the index itself sits inside never reaches this list:
+        /// see <see cref="ExternalRootDirectories"/> for the configuration that names one
+        /// and for what it would otherwise swallow.
         /// </summary>
         public bool IsExternal(string path) =>
             ExternalRoots.Any(root => RelativeWithinRoot(root, path) is not null);
@@ -758,8 +764,39 @@ public static class ScipEmitter
         /// when it names a different one. Anything that cannot be resolved is left out,
         /// and files from it then stay loud: reporting a gap that is not one is
         /// recoverable, silently dropping first-party code is not.
+        ///
+        /// <b>A folder that swallows the index is not one of them.</b> Every entry here is
+        /// a directory somebody's configuration named, and a configuration can name a
+        /// directory the repository itself sits inside: NuGet resolves a relative
+        /// globalPackagesFolder against the directory of the nuget.config that declared it,
+        /// so `value="."` or `value=".."` is enough, and DOTNET_ROOT can say the same thing
+        /// by hand. Left alone, the classification then inverts. Every first-party file
+        /// outside project_root - the linked file, the project above the .sln, the parent
+        /// of a submodule, which are precisely the cases <see cref="IsExternal"/> exists to
+        /// keep loud - is inside a "package folder", so it is called somebody else's,
+        /// dropped from the index, and NOT counted as a gap: health clean, no banner, exit
+        /// 0, code missing. That is the silent drop Constraint 3 forbids, arrived at from
+        /// the one direction the classification could not see.
+        ///
+        /// So a candidate that contains project_root is refused outright rather than
+        /// trusted for the files that happen to look package-shaped. Refusing is the safe
+        /// direction in both readings: if the folder really is a package cache that the
+        /// repository sits inside, its files are reported as gaps, which is a wrong banner
+        /// somebody can see, read and fix; if it is not, first-party code stays in the
+        /// index or is reported missing. The other order round loses code with no signal at
+        /// all.
+        ///
+        /// What this does NOT catch, and a reader should know it: a folder that overlaps
+        /// first-party code without containing project_root, such as
+        /// `globalPackagesFolder="../shared"` alongside
+        /// `&lt;Compile Include="..\shared\Foo.cs" /&gt;`. Deciding that needs the compile
+        /// set, which this classification does not have - it is asked one path at a time,
+        /// after the fact - and no property of the path itself distinguishes the two. The
+        /// containment test covers every value that makes the repository's own tree
+        /// external, which is the reachable shape of the fault.
         /// </summary>
-        private static IReadOnlyList<string> ExternalRootDirectories(string solutionDirectory)
+        private static IReadOnlyList<string> ExternalRootDirectories(
+            string solutionDirectory, string projectRoot)
         {
             var roots = new List<string>();
 
@@ -773,7 +810,10 @@ public static class ScipEmitter
             var running = DotnetInstallDirectory();
             if (running is not null) roots.Add(running);
 
-            return roots;
+            // RelativeWithinRoot answers "is project_root inside this candidate", and it
+            // answers "." for the two being the same directory, so a folder that IS the
+            // index root is refused along with every folder above it.
+            return roots.Where(root => RelativeWithinRoot(root, projectRoot) is null).ToList();
         }
 
         /// <summary>
