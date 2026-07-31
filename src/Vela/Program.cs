@@ -676,10 +676,15 @@ public static class Program
             {
                 // The solution is what a reader recognises. The file name carries a hash
                 // and tells them nothing until they already know the answer.
+                // Three states and not two. "Deleted" and "somewhere vela cannot reach
+                // right now" both answer false to File.Exists and mean opposite things -
+                // one index is rubbish and the other is the one you will want back when
+                // the drive is plugged in - so the listing says which it is looking at.
                 var solution = index.SolutionPath switch
                 {
                     null => "of an unrecorded solution (built by an older vela, or unreadable)",
-                    var path when !File.Exists(path) => $"of {path}, WHICH IS NOT THERE",
+                    var path when index.IsOrphaned => $"of {path}, WHICH IS NOT THERE",
+                    var path when !File.Exists(path) => $"of {path}, WHICH VELA CANNOT REACH",
                     var path => "of " + path
                 };
 
@@ -693,8 +698,8 @@ public static class Program
 
             output.WriteLine($"{held.Count} index(es), {IndexCache.Describe(total)}.");
             output.WriteLine(maximum <= 0
-                ? $"Size-based eviction is off ({IndexCache.MaximumBytesVariable} is 0), so nothing is "
-                  + "removed except an index whose solution has gone."
+                ? $"Automatic eviction is off ({IndexCache.MaximumBytesVariable} is 0), so vela removes "
+                  + "nothing from here on its own. vela cache clear still removes what you name."
                 : $"vela index removes an index whose solution has gone, and above "
                   + $"{IndexCache.Describe(maximum)} it removes the least recently built - never one "
                   + $"built in the last {IndexCache.MinimumAge.TotalDays:0} days, and never the one it "

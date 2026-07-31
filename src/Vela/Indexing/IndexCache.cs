@@ -22,9 +22,12 @@ namespace Vela.Indexing;
 ///      and a policy nobody can see the input to is a policy nobody can trust.
 ///   2. `vela cache clear` removes what the user names: one solution's index,
 ///      every orphan, or everything.
-///   3. `vela index` removes ORPHANS - an index whose solution file is no longer on disk.
-///      This is the one automatic rule that cannot surprise anybody, because the thing it
-///      describes is gone.
+///   3. `vela index` removes ORPHANS - an index whose solution has really been deleted:
+///      the directory that held it answered, and the .sln is not in it. That "really" is
+///      the whole of the rule. A solution vela merely cannot reach - an unplugged drive, a
+///      stale mount, a locked volume, a directory it may not traverse - looks identical to
+///      a deleted one through `File.Exists`, and is not one. See
+///      <see cref="CachedIndex.IsOrphaned"/>.
 ///   4. `vela index` removes the LEAST RECENTLY BUILT indexes, and only while the whole
 ///      cache is over a size budget. Never the index the run just wrote, and never one
 ///      built within the last week. Both exclusions exist to stop the case that would be a
@@ -65,8 +68,11 @@ public static class IndexCache
     public const long DefaultMaximumBytes = 2L * 1024 * 1024 * 1024;
 
     /// <summary>
-    /// Overrides <see cref="DefaultMaximumBytes"/>. 0 turns size-based eviction off
-    /// entirely, leaving only the orphan rule, which removes nothing anybody could want.
+    /// Overrides <see cref="DefaultMaximumBytes"/>. 0 turns AUTOMATIC EVICTION off, orphan
+    /// rule included: a user who sets this to zero has said they do not want vela deleting
+    /// their indexes, and the sensible reading of that is all of it rather than the part
+    /// vela happens to think is uncontroversial. `vela cache clear` still removes anything
+    /// they name, which is the version of this they asked for.
     /// </summary>
     public const string MaximumBytesVariable = "VELA_CACHE_MAX_BYTES";
 
@@ -169,7 +175,10 @@ public static class IndexCache
     /// The index this run just wrote, which is never removed whatever the arithmetic says.
     /// </param>
     /// <param name="maximumBytes">
-    /// The budget. 0 or less turns the size rule off and leaves only the orphan rule.
+    /// The budget. 0 or less turns automatic eviction off entirely - both rules, not one of
+    /// them: somebody who has switched eviction off is telling vela not to delete their
+    /// indexes, and "except the ones I think you do not want" is not what they said.
+    /// `vela cache clear --orphaned` is still there for the day they want it.
     /// </param>
     /// <param name="nowUtc">
     /// Passed in rather than read, so the age rule can be tested without waiting a week.
@@ -180,6 +189,10 @@ public static class IndexCache
         var held = List(cacheDirectory);
         var removed = new List<EvictedIndex>();
         var refused = 0;
+
+        // Nothing at all, before anything is even looked at. Orphan removal is skipped with
+        // the size rule and not in spite of it: see the parameter.
+        if (maximumBytes <= 0) return new EvictionReport(removed, refused, TotalBytes(held), maximumBytes);
 
         var survivors = new List<CachedIndex>();
 
@@ -199,8 +212,6 @@ public static class IndexCache
                 survivors.Add(index);
             }
         }
-
-        if (maximumBytes <= 0) return new EvictionReport(removed, refused, TotalBytes(survivors), maximumBytes);
 
         // Oldest first, and the tie broken on the path, so the same cache evicts the same
         // index on every run and every machine (Constraint 1). Two indexes built in the
@@ -352,11 +363,66 @@ public static class IndexCache
 public sealed record CachedIndex(string Path, string? SolutionPath, long Bytes, DateTime BuiltAtUtc)
 {
     /// <summary>
-    /// The solution this index is of is not on disk. An index vela cannot identify at all
-    /// is NOT an orphan: not knowing what something is for is not the same as knowing it is
-    /// for nothing, and only the second is a reason to delete it.
+    /// The solution this index is of has really been deleted. An index vela cannot identify
+    /// at all is NOT an orphan: not knowing what something is for is not the same as knowing
+    /// it is for nothing, and only the second is a reason to delete it.
     /// </summary>
-    public bool IsOrphaned => SolutionPath is not null && !File.Exists(SolutionPath);
+    public bool IsOrphaned => SolutionPath is not null && HasReallyGone(SolutionPath);
+
+    /// <summary>
+    /// Positive evidence that a solution was deleted, rather than the absence of evidence
+    /// that it is there.
+    ///
+    /// <c>File.Exists</c> alone cannot tell those apart. It returns false for an unmounted
+    /// volume, a stale NFS mount, a FileVault or BitLocker volume that has not been
+    /// unlocked, a container started without a bind mount, a network share that is down,
+    /// and a directory the caller has no permission to traverse. Every one of those is a
+    /// solution that is FINE and will answer again in a minute, and deleting its index on
+    /// that basis is a deletion the user cannot undo and did not ask for: an index for a
+    /// repository on an external drive would go the next time they indexed anything else,
+    /// and plugging the drive back in would not bring it back.
+    ///
+    /// So the directory that held the solution has to answer first. It must exist and it
+    /// must be readable, and only then does "the .sln is not in it" mean the solution was
+    /// deleted. An unplugged drive fails at the directory, and nothing is removed.
+    ///
+    /// The cost of this is real and is the right way round: a checkout deleted along with
+    /// the directory it lived in - <c>rm -rf ~/src/app</c>, a removed worktree - is no
+    /// longer automatically an orphan, because from here it is indistinguishable from a
+    /// volume that has not come up. Those indexes are still listed by `vela cache`, still
+    /// removable with `vela cache clear`, and still evictable under the size budget once
+    /// they are a week old. Keeping one costs disk somebody can see and reclaim; deleting
+    /// one that mattered costs a rebuild nobody chose.
+    /// </summary>
+    private static bool HasReallyGone(string solutionPath)
+    {
+        if (File.Exists(solutionPath)) return false;
+
+        // Fully qualified: this record has a Path property of its own, and it is not
+        // System.IO.Path.
+        var directory = System.IO.Path.GetDirectoryName(solutionPath);
+        if (string.IsNullOrEmpty(directory)) return false;
+        if (!Directory.Exists(directory)) return false;
+
+        try
+        {
+            // Enumeration, and not Directory.Exists on its own, because a directory can be
+            // stat-able and still unreadable: chmod 000 leaves the directory visible to its
+            // parent while every File.Exists inside it answers false. Reading a single entry
+            // is enough to prove the caller can see what is in there, and it does not
+            // materialise a large directory to find out.
+            using var entries = Directory.EnumerateFileSystemEntries(directory).GetEnumerator();
+            entries.MoveNext();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+
+        // Asked again now the directory has answered, so a mount that finished coming up
+        // between the two questions is not called gone on the strength of the first.
+        return !File.Exists(solutionPath);
+    }
 }
 
 /// <summary>One index removed, and the sentence saying why.</summary>

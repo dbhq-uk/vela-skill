@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Runtime.Versioning;
 using Vela.Indexing;
 using Vela.Tests.Fixtures;
 using Xunit;
@@ -103,21 +104,20 @@ public class IndexCacheTests
     public async Task CacheClearOrphaned_RemovesOnlyTheIndexWhoseSolutionHasGone()
     {
         using var kept = FixtureSolution.CreateLibrary();
+        using var doomed = FixtureSolution.CreateLibrary();
         using var cache = new TempCacheHome();
         using var budget = new CacheBudget(null);
 
         Assert.Equal(0, (await InvokeAsync("index", "--solution", kept.SolutionPath)).ExitCode);
 
-        // Indexed, then the whole solution taken away, which is what a deleted checkout or
-        // a removed worktree looks like from the cache directory. No further `vela index`
-        // runs here, deliberately: one would sweep the orphan itself, and this test is
-        // about the verb rather than about the sweep.
-        string orphanedIndexPath;
-        using (var doomed = FixtureSolution.CreateLibrary())
-        {
-            Assert.Equal(0, (await InvokeAsync("index", "--solution", doomed.SolutionPath)).ExitCode);
-            orphanedIndexPath = IndexPaths.ForSolution(doomed.SolutionPath);
-        }
+        // Indexed, then the solution file deleted where it stood. That is the case vela can
+        // be SURE about, and the only one it acts on: the directory the solution lived in is
+        // right there and readable, and the .sln is not in it. No further `vela index` runs
+        // here, deliberately: one would sweep the orphan itself, and this test is about the
+        // verb rather than about the sweep.
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", doomed.SolutionPath)).ExitCode);
+        var orphanedIndexPath = IndexPaths.ForSolution(doomed.SolutionPath);
+        File.Delete(doomed.SolutionPath);
 
         Assert.True(File.Exists(orphanedIndexPath));
 
@@ -133,17 +133,17 @@ public class IndexCacheTests
     {
         // The one thing that runs without being asked for, and the one that cannot
         // surprise anybody: the solution it describes is not on disk any more, so it is
-        // not an index somebody was about to use.
+        // not an index somebody was about to use. "Not on disk" means the directory that
+        // held it answered and the file is not in it - see the two tests below for what
+        // vela refuses to conclude from a directory that did not answer at all.
         using var kept = FixtureSolution.CreateLibrary();
+        using var doomed = FixtureSolution.CreateLibrary();
         using var cache = new TempCacheHome();
         using var budget = new CacheBudget(null);
 
-        string orphaned;
-        using (var doomed = FixtureSolution.CreateLibrary())
-        {
-            Assert.Equal(0, (await InvokeAsync("index", "--solution", doomed.SolutionPath)).ExitCode);
-            orphaned = IndexPaths.ForSolution(doomed.SolutionPath);
-        }
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", doomed.SolutionPath)).ExitCode);
+        var orphaned = IndexPaths.ForSolution(doomed.SolutionPath);
+        File.Delete(doomed.SolutionPath);
 
         var result = await InvokeAsync("index", "--solution", kept.SolutionPath);
 
@@ -151,6 +151,104 @@ public class IndexCacheTests
         Assert.False(File.Exists(orphaned));
         Assert.Contains("is not there", result.Output);
         Assert.True(File.Exists(IndexPaths.ForSolution(kept.SolutionPath)));
+    }
+
+    [Fact]
+    public async Task Index_KeepsAnIndexWhoseSolutionIsUnreachableRatherThanGone()
+    {
+        // The external drive is unplugged, or the NFS mount is stale, or the container is
+        // missing a bind mount, or the volume has not been unlocked yet. File.Exists on the
+        // .sln says exactly what it says for a file somebody deleted, and acting on that
+        // destroys an index whose solution is fine and will be back in a moment.
+        using var kept = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+        using var budget = new CacheBudget(null);
+
+        var unplugged = FixtureSolution.CreateLibrary();
+        var elsewhere = unplugged.Root + "-unplugged";
+
+        try
+        {
+            Assert.Equal(0, (await InvokeAsync("index", "--solution", unplugged.SolutionPath)).ExitCode);
+            var index = IndexPaths.ForSolution(unplugged.SolutionPath);
+
+            Directory.Move(unplugged.Root, elsewhere);
+            Assert.False(Directory.Exists(unplugged.Root), "the fixture is out of reach, not deleted");
+
+            var result = await InvokeAsync("index", "--solution", kept.SolutionPath);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(File.Exists(index), "an unreachable solution is not evidence of a deleted one");
+            Assert.DoesNotContain("is not there", result.Output);
+
+            // Plugged back in, and the index is still the one that was built for it.
+            Directory.Move(elsewhere, unplugged.Root);
+            Assert.True(File.Exists(index));
+
+            var listed = await InvokeAsync("cache");
+            Assert.Contains(RealPath.Of(unplugged.SolutionPath), listed.Output);
+        }
+        finally
+        {
+            unplugged.Dispose();
+            try { Directory.Delete(elsewhere, recursive: true); } catch { /* temp dir, best effort */ }
+        }
+    }
+
+    [UnixOnlyFact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task Index_KeepsAnIndexWhoseSolutionDirectoryCannotBeRead()
+    {
+        // The other half of the same fact. A directory the caller cannot traverse answers
+        // "no such file" for everything inside it, and vela knows nothing about what is in
+        // there - which is not the same as knowing there is nothing in there.
+        using var kept = FixtureSolution.CreateLibrary();
+        using var unreadable = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+        using var budget = new CacheBudget(null);
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", unreadable.SolutionPath)).ExitCode);
+        var index = IndexPaths.ForSolution(unreadable.SolutionPath);
+
+        var mode = File.GetUnixFileMode(unreadable.Root);
+        File.SetUnixFileMode(unreadable.Root, UnixFileMode.None);
+
+        try
+        {
+            Assert.False(File.Exists(unreadable.SolutionPath), "the file is there; the caller cannot see it");
+
+            var result = await InvokeAsync("index", "--solution", kept.SolutionPath);
+
+            Assert.Equal(0, result.ExitCode);
+            Assert.True(File.Exists(index), "a directory vela cannot read is not evidence of anything");
+            Assert.DoesNotContain("is not there", result.Output);
+        }
+        finally
+        {
+            File.SetUnixFileMode(unreadable.Root, mode);
+        }
+    }
+
+    [Fact]
+    public async Task Index_RemovesNoOrphanWhenEvictionIsTurnedOff()
+    {
+        // VELA_CACHE_MAX_BYTES=0 turns off automatic eviction, not one rule of it. Somebody
+        // who has switched it off does not expect vela to delete an index on their behalf,
+        // and `vela cache clear --orphaned` is still there for the day they want it.
+        using var kept = FixtureSolution.CreateLibrary();
+        using var doomed = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+        using var budget = new CacheBudget("0");
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", doomed.SolutionPath)).ExitCode);
+        var orphaned = IndexPaths.ForSolution(doomed.SolutionPath);
+        File.Delete(doomed.SolutionPath);
+
+        var result = await InvokeAsync("index", "--solution", kept.SolutionPath);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.True(File.Exists(orphaned), "eviction was turned off");
+        Assert.DoesNotContain("is not there", result.Output);
     }
 
     [Fact]

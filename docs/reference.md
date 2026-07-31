@@ -257,20 +257,22 @@ Index cache: /home/dan/.cache/vela
 2 index(es), 279.25MB.
 vela index removes an index whose solution has gone, and above 2GB it removes the least
 recently built - never one built in the last 7 days, and never the one it just wrote. Set
-VELA_CACHE_MAX_BYTES to change the budget, or to 0 to turn that off.
+VELA_CACHE_MAX_BYTES to change the budget, or to 0 to turn eviction off.
 ```
 
 An index is named for a **hash** of its solution's path, and a hash does not go backwards,
 so the solution each one is of is read from inside the index. One built by a vela older than
 this listing says `of an unrecorded solution`; rebuilding it names it. One whose solution has
-been deleted or moved says `WHICH IS NOT THERE`.
+been deleted says `WHICH IS NOT THERE`, and one whose solution is somewhere vela cannot look
+right now - an unmounted drive, a directory it may not read - says `WHICH VELA CANNOT REACH`.
+The second is not the first, and only the first is ever removed automatically.
 
 #### `vela cache clear`
 
 | Option | Meaning |
 |---|---|
 | `--all` | Remove every cached index. |
-| `--orphaned` | Remove every cached index whose solution is no longer on disk. |
+| `--orphaned` | Remove every cached index whose solution has been deleted. An index whose solution vela merely cannot reach is not one of these; see [what removes a cached index](#what-removes-a-cached-index). |
 | `--solution <path>` | Remove the cached index for one solution. |
 
 At least one is required. Removing an index is not free - it costs whatever a rebuild costs -
@@ -619,11 +621,29 @@ and reason on the run that applies them:
 
 | Rule | When |
 |---|---|
-| Orphans | The index's solution file is no longer on disk. |
+| Orphans | The index's solution file has been deleted: the directory that held it answered, and the `.sln` is not in it. |
 | Least recently built | The whole cache is over `VELA_CACHE_MAX_BYTES`, default 2GB. Never the index the run just wrote, and never one built within the last 7 days. |
 
-Set `VELA_CACHE_MAX_BYTES=0` to leave only the orphan rule, which removes nothing anybody
-could want: it describes a repository that is not there.
+**An unreachable solution is not a deleted one**, and the orphan rule is careful about the
+difference. "The file is not there" is also what an unmounted external drive says, and a
+stale NFS mount, a network share that is down, a FileVault or BitLocker volume nobody has
+unlocked yet, a container started without its bind mount, and a directory this user may not
+traverse. So vela asks the solution's own directory first: unless that directory exists and
+can be read, the index stays. Unplug the drive holding `/mnt/ext/repo/App.sln` and its index
+survives every `vela index` you run meanwhile; plug it back in and it is still there.
+
+The price is paid in the other direction, deliberately. A checkout deleted along with the
+directory it lived in - `rm -rf ~/src/app`, a worktree removed - is not automatically an
+orphan any more, because from the cache directory it is indistinguishable from a volume that
+has not come up. That index is still listed by `vela cache`, still removable by hand, and
+still evictable under the size budget once it is a week old. It costs disk you can see;
+the other way round costs a rebuild you did not choose.
+
+Set `VELA_CACHE_MAX_BYTES=0` to turn automatic eviction off **entirely**, orphan rule
+included. Setting it to zero says "do not delete my indexes", and vela takes that at its
+word rather than keeping the one rule it happens to think is uncontroversial.
+[`vela cache clear --orphaned`](#vela-cache-clear) still removes orphans whenever you ask
+for them.
 
 "Least recently **built**" and not "least recently used" is deliberate. The obvious reading
 would be the file's access time, and `relatime` and `noatime` are the norm on Linux and
