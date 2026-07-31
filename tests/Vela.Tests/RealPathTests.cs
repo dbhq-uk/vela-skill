@@ -54,6 +54,20 @@ public class RealPathTests
         Assert.Equal(Path.Combine(RealPath.Of(tree.Root), "not-there-yet.scip"), RealPath.Of(missing));
     }
 
+    /// <summary>
+    /// The signature says a string, so null is a caller's bug and is said out loud rather
+    /// than handed back as a null the caller's own signature promised it would never see.
+    /// Nothing reaches this today; a path key that is quietly null much later, in a hash or
+    /// a database row, is exactly the kind of thing that takes a day to trace back here.
+    /// The empty string is different: it is a value, not a mistake, and is kept.
+    /// </summary>
+    [Fact]
+    public void ANullPathIsRefused_AndAnEmptyOneIsKept()
+    {
+        Assert.Throws<ArgumentNullException>(() => RealPath.Of(null!));
+        Assert.Equal("", RealPath.Of(""));
+    }
+
     [SymbolicLinkFact]
     public void ALinkResolvesToItsTarget()
     {

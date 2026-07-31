@@ -46,7 +46,17 @@ public static class RealPath
     /// followed, and on a case-insensitive platform every component spelled the way the
     /// filesystem spells it.
     /// </summary>
-    public static string Of(string path) => Of(path, hops: 0);
+    public static string Of(string path)
+    {
+        // The signature already says a string, so a null is a caller's bug rather than a
+        // path. Handing it back would put a null where every caller's own signature
+        // promises there is a path, and it would surface as one much later, in a hash or a
+        // database row, with nothing left pointing here. The empty string is not the same
+        // thing: it is a value, and it is kept.
+        ArgumentNullException.ThrowIfNull(path);
+
+        return Of(path, hops: 0);
+    }
 
     /// <summary>
     /// The runtime follows a chain of links for us and gives up at forty. This counts
@@ -61,7 +71,7 @@ public static class RealPath
 
     private static string Of(string path, int hops)
     {
-        if (string.IsNullOrEmpty(path)) return path;
+        if (path.Length == 0) return path;
 
         string full;
         try
