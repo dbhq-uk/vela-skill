@@ -22,6 +22,7 @@ place. This page is for looking things up.
 
 ```
 vela index                     Build the index for a solution
+vela cache                     What the index cache holds, and how to clear it
 vela import <index>            Add a .scip index from another language's indexer
 vela find <pattern>            Symbol search by name
 vela def <symbol>              Where a symbol is defined
@@ -33,8 +34,11 @@ vela impact <symbol>           Callers and blast radius
 ### `vela index`
 
 Loads the solution through MSBuild, harvests the compilation with Roslyn, and writes a
-SQLite index. Rebuilds from nothing every time: the old database file is deleted first,
-unless you pass [`--incremental`](#--incremental), which is off by default.
+SQLite index. Rebuilds from nothing every time, unless you pass
+[`--incremental`](#--incremental), which is off by default.
+
+The new index is built beside the old one and renamed over it at the end, so
+[a failed rebuild keeps the index you had](#a-failed-rebuild-keeps-the-index-you-had).
 
 | Option | Meaning |
 |---|---|
@@ -241,6 +245,41 @@ report `its own inputs changed` for a project you did not touch and fall back to
 rebuild. It converges: the run after it does not. It errs towards rebuilding, which is the
 safe direction, and it says out loud that it did.
 
+### `vela cache`
+
+What the index cache holds, and the one place to remove any of it by name.
+
+```
+$ vela cache
+Index cache: /home/dan/.cache/vela
+  ScentVerdict-3f1a9c02b7d64e58.db  277.94MB  built 2026-07-30 08:12 UTC  of /home/dan/src/scentverdict/ScentVerdict.sln
+  Vela-0ffb846e14f2a4c7.db            1.31MB  built 2026-07-31 09:04 UTC  of /home/dan/src/vela-skill/Vela.sln
+2 index(es), 279.25MB.
+vela index removes an index whose solution has gone, and above 2GB it removes the least
+recently built - never one built in the last 7 days, and never the one it just wrote. Set
+VELA_CACHE_MAX_BYTES to change the budget, or to 0 to turn eviction off.
+```
+
+An index is named for a **hash** of its solution's path, and a hash does not go backwards,
+so the solution each one is of is read from inside the index. One built by a vela older than
+this listing says `of an unrecorded solution`; rebuilding it names it. One whose solution has
+been deleted says `WHICH IS NOT THERE`, and one whose solution is somewhere vela cannot look
+right now - an unmounted drive, a directory it may not read - says `WHICH VELA CANNOT REACH`.
+The second is not the first, and only the first is ever removed automatically.
+
+#### `vela cache clear`
+
+| Option | Meaning |
+|---|---|
+| `--all` | Remove every cached index. |
+| `--orphaned` | Remove every cached index whose solution has been deleted. An index whose solution vela merely cannot reach is not one of these; see [what removes a cached index](#what-removes-a-cached-index). |
+| `--solution <path>` | Remove the cached index for one solution. |
+
+At least one is required. Removing an index is not free - it costs whatever a rebuild costs -
+so the verb refuses to guess rather than picking a default, and exits `1` when told nothing.
+It also exits `1` when an index would not delete, which on Windows is what one another
+process has open looks like; the index is still there and it says so.
+
 ### `vela import`
 
 Reads a `.scip` file produced by any language's SCIP indexer into the same database, so
@@ -326,7 +365,7 @@ commit it was built from.
 | Code | Meaning |
 |---|---|
 | `0` | The question was answered, and the index behind the answer reports no problem. |
-| `1` | The question could not be answered at all: no solution found, no index built yet, a `.scip` that is not there, a config that cannot be honoured, or an index whose schema version this build cannot read. |
+| `1` | The question could not be answered at all: no solution found, no index built yet, a `.scip` that is not there, a config that cannot be honoured, an index whose schema version this build cannot read, or a `vela cache clear` that was told nothing or could not remove what it was told. |
 | `3` | An answer was produced, and the index behind it is known to be missing code, out of date, or unverifiable. |
 
 `3` is the interesting one. It is deliberately not `1`, because the answer above it is
@@ -484,6 +523,23 @@ missing because of them. Run vela index --stats to list them.
 A file vela cannot attribute to a package or the SDK is a different matter and goes to the
 banner.
 
+Where the package cache is, is read from `nuget.config` rather than assumed. vela merges the
+documented chain - machine-wide configuration, then the user-level file, then every
+`nuget.config` from the filesystem root down to the solution's own directory, nearest
+winning - and honours `NUGET_PACKAGES`, `globalPackagesFolder` and `fallbackPackageFolders`,
+with `<clear />` and relative paths resolved against the file that declared them. Nothing
+shells out to `dotnet` or `nuget`: Constraint 1 requires the answer to follow from what is on
+disk. Four things are deliberately not covered, and each of them fails towards a false gap
+you can see rather than towards code silently dropped: a `nuget.config` **below** the
+solution directory, `%VAR%` expansion inside a value, `repositoryPath` (the packages.config
+era setting), and `--configfile` (an argument, not a fact on disk).
+
+For classification vela takes the union of every folder any of those channels named,
+including `~/.nuget/packages`, rather than only the single winner NuGet's precedence
+produces. The precedence answers "where will the next restore write"; vela is asking "could
+this file be a restored package", and a configured folder does not empty the default of the
+packages already in it.
+
 **Languages no job covers**, when a `vela.json` exists.
 
 ```
@@ -547,9 +603,88 @@ absolute solution path, so two checkouts of the same repository have separate in
 vela refuses to run if that directory resolves to somewhere inside the solution's own tree.
 Indexing must never write into the repository being indexed.
 
-The index carries a schema version (currently 9). If you upgrade vela and the shape has
+The index carries a schema version (currently 10). If you upgrade vela and the shape has
 changed, every verb refuses to answer and tells you to re-index rather than querying a
 database it cannot read. The index is a cache, so it is rebuilt rather than migrated.
+
+### What removes a cached index
+
+Until this existed, nothing ever did. `~/.cache/vela` on the machine vela is developed on
+had reached 983MB across five databases, and it could only grow: index a few solutions, or
+one solution under two spellings, and a user who never thinks about the cache eventually
+notices their disk.
+
+**By hand, whenever you like:** [`vela cache clear`](#vela-cache-clear).
+
+**Automatically, during `vela index` and nowhere else**, two rules, both announced by name
+and reason on the run that applies them:
+
+| Rule | When |
+|---|---|
+| Orphans | The index's solution file has been deleted: the directory that held it answered, and the `.sln` is not in it. |
+| Least recently built | The whole cache is over `VELA_CACHE_MAX_BYTES`, default 2GB, **and removing brings it back under**. Never the index the run just wrote, and never one built within the last 7 days. |
+
+**Nothing is removed that does not get the cache under the budget.** The index the run just
+wrote and everything built in the last 7 days are weight the size rule cannot shed, so a
+cache whose immovable part is already over the budget stays over it however much else goes.
+A 2.5GB monorepo index under the default 2GB budget is that cache: the four unrelated
+150MB indexes sitting beside it can all be deleted and the total is still 2.5GB. vela
+measures what it may remove against what removing it would achieve, finds nothing worth
+taking, removes nothing, and says so on that run - once, plainly - because a cache that
+cannot be brought under its budget is something only the person who set the budget can
+resolve.
+
+**An unreachable solution is not a deleted one**, and the orphan rule is careful about the
+difference. "The file is not there" is also what an unmounted external drive says, and a
+stale NFS mount, a network share that is down, a FileVault or BitLocker volume nobody has
+unlocked yet, a container started without its bind mount, and a directory this user may not
+traverse. So vela asks the solution's own directory first: unless that directory exists and
+can be read, the index stays. Unplug the drive holding `/mnt/ext/repo/App.sln` and its index
+survives every `vela index` you run meanwhile; plug it back in and it is still there.
+
+The price is paid in the other direction, deliberately. A checkout deleted along with the
+directory it lived in - `rm -rf ~/src/app`, a worktree removed - is not automatically an
+orphan any more, because from the cache directory it is indistinguishable from a volume that
+has not come up. That index is still listed by `vela cache`, still removable by hand, and
+still evictable under the size budget once it is a week old. It costs disk you can see;
+the other way round costs a rebuild you did not choose.
+
+Set `VELA_CACHE_MAX_BYTES=0` to turn automatic eviction off **entirely**, orphan rule
+included. Setting it to zero says "do not delete my indexes", and vela takes that at its
+word rather than keeping the one rule it happens to think is uncontroversial.
+[`vela cache clear --orphaned`](#vela-cache-clear) still removes orphans whenever you ask
+for them.
+
+"Least recently **built**" and not "least recently used" is deliberate. The obvious reading
+would be the file's access time, and `relatime` and `noatime` are the norm on Linux and
+macOS, so an index queried every day can carry a months-old access time and would be evicted
+for being popular. Recording a last-used timestamp instead would turn every query into a
+write, which gives up the read-only property outright. What is used instead is the file's
+modification time, which is when that index was last built or imported into.
+
+**A query never removes anything.** It is read-only and stays read-only, and the moment
+somebody runs one is the moment they are most likely to be about to use another index.
+
+**An index being read is never destroyed under its reader.** On Linux and macOS, unlinking a
+file another process has open leaves that process reading it to the end. On Windows the
+delete fails outright, and vela reports that and leaves the index alone.
+
+### A failed rebuild keeps the index you had
+
+`vela index` builds into `<index>.db.building` beside the index and renames it over the top
+when the new one is finished. A run that is interrupted - Ctrl-C, an OOM kill, a full disk,
+a project that throws halfway through the harvest - therefore costs the time it had spent
+and nothing else: the index you had is byte-identical, still answers, and still reports
+itself healthy. The rename is within one directory, so it is atomic and no reader ever sees
+a half-written database.
+
+`--incremental` works the same way, on a copy: the plan is read from the index on disk, the
+copy is taken from that same file, and the rows it reuses are carried into the copy.
+
+The build file does not survive its run. If a process is killed outright and cannot clean up
+after itself, the next `vela index` for that solution removes what it finds and carries on -
+the name is derived from the index's own, so there is exactly one such file and it is always
+in a place the next run can predict.
 
 ### The repository root
 
@@ -602,6 +737,33 @@ degraded, which is a warning nobody reads.
 
 It is timestamps only. No file is read and nothing is hashed, so the check cannot say
 whether the symbol you asked about was the one that changed.
+
+### Deletions and renames
+
+The timestamp walk stats the files that are **there**, so on its own it can only ever notice
+something newer than the index. So every query also compares the files the index records
+having been built from - the compiled sources, and the `.cshtml` and `.razor` behind the
+generated documents - against the tree, and says so when one of them has gone:
+
+```
+!! The index is INCOMPLETE. stale index: 1 file(s) the index was built from are no longer on
+disk, the first of them 'Leaf/Standalone.cs'. Answers may name files that cannot be opened,
+and code that has moved is recorded under the path it moved from. Run vela index.
+```
+
+A rename is a deletion plus an addition, so this catches renames too - and it is the only
+thing that can, because moving a file keeps its modification time and the new path is
+therefore not newer than the index.
+
+The same two filters apply as to the timestamp walk, and for the same reasons: only the
+watched extensions, and nothing under `bin`, `obj`, `.git`, `.vs`, `.idea` or `node_modules`.
+`dotnet clean` therefore says nothing.
+
+Nothing is read and nothing is hashed here either: it is one `File.Exists` per file the index
+was built from. Measured on a generated 2,500-file solution, the median `vela def` went from
+0.225s to 0.275s, of which the check itself is 29ms - 6.7ms to read the 2,502 rows and 22ms
+to ask the filesystem about them. It scales with the number of files the index was built
+from and with nothing else.
 
 ## vela.json
 

@@ -23,6 +23,26 @@ public static class IndexPaths
     /// repository it is indexing would violate Constraint 2, so this is a loud
     /// failure rather than a quiet, surprising one.
     /// </exception>
+    /// <summary>
+    /// The directory every index lives in, resolved the same way <see cref="ForSolution"/>
+    /// resolves it and with the same environment behind it.
+    ///
+    /// It carries none of the guard below, deliberately: that guard is about not writing an
+    /// index INTO the repository it is of, and this answers a question that has no
+    /// repository in it - what the cache holds, and what may be removed from it. There is
+    /// nothing to compare against, so there is nothing to refuse.
+    ///
+    /// It does not create the directory. A cache directory that is not there holds no
+    /// indexes, which is a perfectly good answer to give.
+    /// </summary>
+    public static string CacheDirectory()
+    {
+        var cache = Environment.GetEnvironmentVariable("XDG_CACHE_HOME")
+                    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache");
+
+        return RealPath.Of(Path.Combine(cache, "vela"));
+    }
+
     public static string ForSolution(string solutionPath)
     {
         // RealPath rather than Path.GetFullPath, because this hash is the ONLY thing that
@@ -85,6 +105,27 @@ public static class IndexPaths
         var prefix = trimmedRoot + Path.DirectorySeparatorChar;
         return candidate.StartsWith(prefix, comparison);
     }
+
+    /// <summary>
+    /// The file a rebuild builds into before it is anything anybody should read: the
+    /// index's own path with a suffix, so it lands in the same directory and therefore on
+    /// the same filesystem, which is what makes the move into place a rename rather than
+    /// a copy.
+    ///
+    /// <b>Why the name is derived rather than random.</b> A process killed outright -
+    /// SIGKILL, an OOM kill, a power cut - cannot delete what it was writing, so a build
+    /// file outliving its run is a case that has to be handled rather than prevented. A
+    /// derived name means the next rebuild of the same solution finds exactly one such
+    /// file, in a place it can predict, and owns it. A random one would leave a fresh
+    /// piece of debris in the cache directory for every kill, with nothing able to say
+    /// which of them were dead.
+    ///
+    /// The trade is that two `vela index` runs against one solution at the same time
+    /// would build into the same file. They already could not be run at the same time -
+    /// both write one database, and the loser's work is discarded whichever name it used -
+    /// so nothing is given up that was there.
+    /// </summary>
+    public static string TemporaryFor(string indexPath) => indexPath + ".building";
 
     /// <summary>
     /// Creates the cache directory that holds the given index path, if it does not

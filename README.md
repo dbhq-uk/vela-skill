@@ -79,7 +79,7 @@ was. For comparison, loading the same solution into a live Roslyn workspace cost
 stays resident.
 
 **Polyglot, proved not promised.** A real `scip-typescript` 0.4.0 index over four
-TypeScript files imports beside the C# index, and both answer from one database. 359 tests,
+TypeScript files imports beside the C# index, and both answer from one database. 420 tests,
 all hermetic.
 
 ## Upstream
@@ -163,6 +163,7 @@ vela def    Perfume.Status
 vela refs   Perfume.Status        # includes .cshtml and .razor
 vela impact PerfumeService
 vela find   Repository
+vela cache                        # what the index cache holds, and how to clear it
 ```
 
 `def`, `refs` and `impact` match a **whole dotted segment**, case-sensitively: `Status`

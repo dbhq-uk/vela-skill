@@ -197,6 +197,90 @@ public class StalenessTests
         }
     }
 
+    [Fact]
+    public void ScanForMissing_FindsAFileTheIndexWasBuiltFromThatIsNotThere()
+    {
+        using var temp = new TempDirectory();
+        File.WriteAllText(System.IO.Path.Combine(temp.Path, "Present.cs"), "");
+
+        var scan = Staleness.ScanForMissing(temp.Path, new[] { "Present.cs", "Gone.cs" });
+
+        Assert.Equal(1, scan.MissingCount);
+        Assert.Equal("Gone.cs", scan.FirstMissing);
+        Assert.Equal(2, scan.FilesChecked);
+    }
+
+    [Fact]
+    public void ScanForMissing_NamesTheOrdinallyFirstMissingFileWhateverOrderItWasGiven()
+    {
+        // The same tree and the same index must produce the same sentence on every run and
+        // every machine, whichever order the rows came back in (Constraint 1).
+        using var temp = new TempDirectory();
+
+        var forwards = Staleness.ScanForMissing(temp.Path, new[] { "a/One.cs", "b/Two.cs" });
+        var backwards = Staleness.ScanForMissing(temp.Path, new[] { "b/Two.cs", "a/One.cs" });
+
+        Assert.Equal("a/One.cs", forwards.FirstMissing);
+        Assert.Equal(forwards.FirstMissing, backwards.FirstMissing);
+    }
+
+    [Fact]
+    public void ScanForMissing_IgnoresBuildOutputAndExtensionsTheWalkNeverWatched()
+    {
+        // The watched set for a deletion is exactly the watched set for an edit, and for
+        // the same reason: build output is regenerated on its own schedule and is not what
+        // the index describes, so `dotnet clean` must not leave every query degraded
+        // forever. A warning that fires on an ordinary command is a warning nobody reads.
+        using var temp = new TempDirectory();
+
+        var scan = Staleness.ScanForMissing(temp.Path, new[]
+        {
+            "App/obj/Debug/net10.0/App.AssemblyInfo.cs",
+            "App/bin/Debug/Generated.cs",
+            "App/stylecop.json",
+            "App/BannedSymbols.txt"
+        });
+
+        Assert.Equal(0, scan.MissingCount);
+        Assert.Equal(0, scan.FilesChecked);
+        Assert.Null(scan.FirstMissing);
+    }
+
+    [Fact]
+    public void Check_DegradesAndNamesTheFileThatHasGone()
+    {
+        using var temp = new TempDirectory();
+        var builtAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var health = Staleness.Check(
+            new HealthRecord(builtAt, null, Degraded: false, null),
+            temp.Path,
+            indexPath: null,
+            indexedFiles: new[] { "src/Perfume.cs" });
+
+        Assert.True(health.Degraded);
+        Assert.Contains("src/Perfume.cs", health.Detail);
+    }
+
+    [Fact]
+    public void Check_KeepsAnExistingDegradationWhenAFileHasAlsoGone()
+    {
+        // A build-time failure and a deleted file are two different things wrong with one
+        // answer, and replacing either with the other would hide it.
+        using var temp = new TempDirectory();
+        var builtAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var health = Staleness.Check(
+            new HealthRecord(builtAt, null, Degraded: true, "compile-error: 'Leaf'"),
+            temp.Path,
+            indexPath: null,
+            indexedFiles: new[] { "src/Perfume.cs" });
+
+        Assert.True(health.Degraded);
+        Assert.Contains("compile-error: 'Leaf'", health.Detail);
+        Assert.Contains("src/Perfume.cs", health.Detail);
+    }
+
     private sealed class TempDirectory : IDisposable
     {
         public string Path { get; }
