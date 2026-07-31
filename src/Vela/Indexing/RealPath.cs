@@ -105,21 +105,6 @@ public static class RealPath
     }
 
     /// <summary>
-    /// True when two paths name the same file, which on a case-insensitive filesystem is
-    /// not the same question as whether two strings are equal.
-    /// </summary>
-    public static bool Same(string left, string right) =>
-        string.Equals(Of(left), Of(right), Comparison);
-
-    /// <summary>
-    /// Linux is the platform whose default filesystem is case-sensitive; Windows and macOS
-    /// are not. The same distinction <see cref="IndexPaths"/> draws, for the same reason.
-    /// </summary>
-    internal static StringComparison Comparison => OperatingSystem.IsLinux()
-        ? StringComparison.Ordinal
-        : StringComparison.OrdinalIgnoreCase;
-
-    /// <summary>
     /// The component as the filesystem spells it, on a filesystem that would have found it
     /// however it was spelled. The requested spelling is kept when the entry is not there,
     /// when the platform is case-sensitive, or when the name contains a character .NET's
