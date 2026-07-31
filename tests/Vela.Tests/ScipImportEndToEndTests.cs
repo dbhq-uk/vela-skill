@@ -506,6 +506,100 @@ public class ScipImportEndToEndTests
     }
 
     /// <summary>
+    /// A file deleted from the indexed project, all the way through the CLI.
+    ///
+    /// --replace used to print that it could not do this, and the sentence it printed was
+    /// already false: schema 7 added document.source and every imported document has
+    /// carried the .scip it came from ever since. So a document a previous import of this
+    /// same file left behind stayed in the index for good, and `refs` went on answering
+    /// from a file that had been deleted months earlier.
+    /// </summary>
+    [Fact]
+    public async Task ImportWithReplace_ThroughTheCli_RemovesTheDocumentsThisScipNoLongerNames()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var scip = Path.Combine(fx.Root, "mobile.scip");
+        File.WriteAllBytes(scip, ForeignIndex(
+            fx.Root,
+            ("App/wwwroot/js/site.ts", new[] { "greet" }),
+            ("App/wwwroot/js/legacy.ts", new[] { "retired" })).ToByteArray());
+
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+        Assert.Contains("1 result(s)",
+            (await InvokeAsync("refs", "retired", "--solution", fx.SolutionPath)).Output,
+            StringComparison.Ordinal);
+
+        // legacy.ts was deleted from the project, so the indexer's next run does not name
+        // it at all.
+        File.WriteAllBytes(scip, ForeignIndex(
+            fx.Root, ("App/wwwroot/js/site.ts", new[] { "greet" })).ToByteArray());
+
+        var replaced = await InvokeAsync("import", "--replace", scip, "--solution", fx.SolutionPath);
+        Assert.Equal(0, replaced.ExitCode);
+
+        // A --replace that SHRINKS the index says how many documents went, not only how
+        // many arrived.
+        Assert.Contains("Removed 1 document", replaced.Output, StringComparison.Ordinal);
+        Assert.Contains("1 occurrence", replaced.Output, StringComparison.Ordinal);
+
+        // And the sentence that said this was impossible is not printed any more.
+        Assert.DoesNotContain("is still in the index", replaced.Output, StringComparison.Ordinal);
+
+        // The document is really gone: nothing answers from it, and the orphaned
+        // full-text name went with it rather than surviving for `find` to offer.
+        var gone = await InvokeAsync("refs", "retired", "--solution", fx.SolutionPath);
+        Assert.Contains("0 result(s)", gone.Output, StringComparison.Ordinal);
+        Assert.Contains("0 symbol(s)",
+            (await InvokeAsync("find", "retired", "--solution", fx.SolutionPath)).Output,
+            StringComparison.Ordinal);
+
+        // The C# half of the index, which this .scip never named and never contributed,
+        // is exactly as it was.
+        var csharp = await InvokeAsync("refs", "ViewData", "--solution", fx.SolutionPath);
+        Assert.Equal(0, csharp.ExitCode);
+        Assert.Contains(".cshtml", csharp.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("INCOMPLETE", csharp.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The edge that must not be silent: a .scip that names no documents at all, imported
+    /// with --replace over one that did. Everything that source contributed goes, which
+    /// may be exactly right, so it is stated out loud rather than left as an index that
+    /// quietly lost a language.
+    /// </summary>
+    [Fact]
+    public async Task ImportWithReplace_ThroughTheCli_SaysWhenAnEmptyScipEmptiesItsSource()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var scip = Path.Combine(fx.Root, "mobile.scip");
+        File.WriteAllBytes(scip, ForeignIndex(
+            fx.Root, ("App/wwwroot/js/site.ts", new[] { "greet" })).ToByteArray());
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+
+        // The indexer run produced nothing at all.
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root).ToByteArray());
+
+        var replaced = await InvokeAsync("import", "--replace", scip, "--solution", fx.SolutionPath);
+        Assert.Equal(0, replaced.ExitCode);
+        Assert.Contains("Removed 1 document", replaced.Output, StringComparison.Ordinal);
+        Assert.Contains("names no documents", replaced.Output, StringComparison.Ordinal);
+
+        // The C# half is untouched, so an empty .scip empties its own source and nobody
+        // else's.
+        var csharp = await InvokeAsync("refs", "ViewData", "--solution", fx.SolutionPath);
+        Assert.Equal(0, csharp.ExitCode);
+        Assert.Contains(".cshtml", csharp.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
     /// The exact failure, live, on the repository vela is developed against: the cache
     /// was rebuilt one morning and held 2,205 csharp documents, 307 razor and ZERO
     /// typescript. A proven scip-typescript import had been wiped by a re-index,
@@ -664,7 +758,14 @@ public class ScipImportEndToEndTests
     /// One document rooted where the caller says, defining one function per name given,
     /// standing in for what an indexer for some other language writes.
     /// </summary>
-    private static Scip.Index ForeignIndex(string root, string relativePath, params string[] names)
+    private static Scip.Index ForeignIndex(string root, string relativePath, params string[] names) =>
+        ForeignIndex(root, (relativePath, names));
+
+    /// <summary>
+    /// A .scip naming any number of files, which is the only shape in which a run of the
+    /// indexer can DROP a file the previous run named.
+    /// </summary>
+    private static Scip.Index ForeignIndex(string root, params (string Path, string[] Names)[] documents)
     {
         var index = new Scip.Index
         {
@@ -675,18 +776,26 @@ public class ScipImportEndToEndTests
             }
         };
 
-        var doc = new Scip.Document { RelativePath = relativePath, Language = "typescript" };
-        for (var i = 0; i < names.Length; i++)
+        foreach (var (relativePath, names) in documents)
         {
-            doc.Occurrences.Add(new Scip.Occurrence
+            var doc = new Scip.Document { RelativePath = relativePath, Language = "typescript" };
+            var module = Path.GetFileName(relativePath);
+            for (var i = 0; i < names.Length; i++)
             {
-                Symbol = $"scip-typescript npm app 1.0.0 `site.ts`/{names[i]}().",
-                SymbolRoles = (int)Scip.SymbolRole.Definition,
-                SingleLineRange = new Scip.SingleLineRange { Line = 3 + i, StartCharacter = 9, EndCharacter = 14 }
-            });
+                doc.Occurrences.Add(new Scip.Occurrence
+                {
+                    Symbol = $"scip-typescript npm app 1.0.0 `{module}`/{names[i]}().",
+                    SymbolRoles = (int)Scip.SymbolRole.Definition,
+                    SingleLineRange = new Scip.SingleLineRange
+                    {
+                        Line = 3 + i, StartCharacter = 9, EndCharacter = 14
+                    }
+                });
+            }
+
+            index.Documents.Add(doc);
         }
 
-        index.Documents.Add(doc);
         return index;
     }
 

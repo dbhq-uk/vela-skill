@@ -793,6 +793,151 @@ public class ScipImporterTests
     }
 
     [Fact]
+    public void Import_WithReplace_DeletesTheDocumentsThisSourceNoLongerNames()
+    {
+        // What --replace used to leave behind, and told the user it could not help. A
+        // file deleted from a TypeScript project is gone from the next .scip that
+        // project's indexer writes, so nothing in the new file names it and the old
+        // document sat in the index forever: `refs` answered from a file that no longer
+        // exists and `find` offered names nothing carried. document.source records which
+        // import contributed which document, so the deletion is a lookup rather than a
+        // guess.
+        using var db = Fresh();
+        ScipImporter.Import(
+            db,
+            MultiDocumentIndex(
+                ("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."),
+                ("gone.ts", "scip-typescript npm p 1.0 src/`gone.ts`/vanished().")),
+            Repo,
+            source: "/tmp/ts.scip");
+
+        var report = ScipImporter.Import(
+            db,
+            MultiDocumentIndex(("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one().")),
+            Repo,
+            replace: true,
+            source: "/tmp/ts.scip");
+
+        Assert.False(report.Degraded, string.Join("; ", report.Problems));
+        Assert.Equal(1, report.RemovedDocuments);
+        Assert.Equal(1, report.RemovedOccurrences);
+
+        Assert.Equal(new[] { "a.ts" }, Strings(db, "SELECT relative_path FROM document"));
+        Assert.Equal(new[] { "src.a.one" }, Strings(db, "SELECT symbol FROM occurrence"));
+
+        // The same rule the replacement path already keeps: a name left with nothing
+        // carrying it is not left in the full-text index for `find` to offer.
+        Assert.Equal(new[] { "src.a.one" }, Strings(db, "SELECT symbol FROM symbol_fts ORDER BY symbol"));
+    }
+
+    [Fact]
+    public void Import_WithReplace_TouchesOnlyTheDocumentsItsOwnSourceContributed()
+    {
+        // The deletion is scoped by source and by nothing else. vela's own Roslyn
+        // harvest writes '' into document.source, and another .scip writes its own path,
+        // so neither can be swept away by a replace of a third. Getting this wrong would
+        // make --replace a way to delete the C# half of a polyglot index in silence.
+        using var db = Fresh();
+        ScipImporter.Import(
+            db, SingleDocumentIndex("harvested.cs", "scip-dotnet nuget App 1.0 App/Svc#Run()."), Repo);
+        ScipImporter.Import(
+            db, SingleDocumentIndex("other.ts", "scip-typescript npm p 1.0 src/`other.ts`/kept()."),
+            Repo, source: "/tmp/other.scip");
+        ScipImporter.Import(
+            db, MultiDocumentIndex(
+                ("mine.ts", "scip-typescript npm p 1.0 src/`mine.ts`/mine()."),
+                ("dropped.ts", "scip-typescript npm p 1.0 src/`dropped.ts`/dropped().")),
+            Repo, source: "/tmp/mine.scip");
+
+        var report = ScipImporter.Import(
+            db, MultiDocumentIndex(("mine.ts", "scip-typescript npm p 1.0 src/`mine.ts`/mine().")),
+            Repo, replace: true, source: "/tmp/mine.scip");
+
+        Assert.Equal(1, report.RemovedDocuments);
+        Assert.Equal(
+            new[] { "harvested.cs", "mine.ts", "other.ts" },
+            Strings(db, "SELECT relative_path FROM document ORDER BY relative_path"));
+    }
+
+    [Fact]
+    public void Import_WithReplace_OfAnIndexNamingNothingRemovesEverythingThatSourceGaveAndSaysSo()
+    {
+        // The honest edge. A .scip that names no documents at all is a legitimate thing
+        // to import over a previous one - the project it indexed may really have emptied
+        // - and it is also what a broken indexer run produces. Either way everything that
+        // source contributed goes, so the numbers have to come back rather than the index
+        // quietly losing a language.
+        using var db = Fresh();
+        ScipImporter.Import(
+            db,
+            MultiDocumentIndex(
+                ("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."),
+                ("b.ts", "scip-typescript npm p 1.0 src/`b.ts`/two().")),
+            Repo,
+            source: "/tmp/ts.scip");
+
+        var empty = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
+        };
+
+        var report = ScipImporter.Import(db, empty, Repo, replace: true, source: "/tmp/ts.scip");
+
+        Assert.Equal(0, report.Documents);
+        Assert.Equal(2, report.RemovedDocuments);
+        Assert.Equal(2, report.RemovedOccurrences);
+        Assert.Equal(0, Convert.ToInt32(Scalar(db, "SELECT COUNT(*) FROM document")));
+        Assert.Empty(Strings(db, "SELECT symbol FROM symbol_fts"));
+    }
+
+    [Fact]
+    public void Import_WithReplace_AndNoSourceOfItsOwnClaimsNothingToDelete()
+    {
+        // '' in document.source is not "an unknown source": it is vela's own Roslyn
+        // harvest, which read a compilation rather than a file. An import that cannot say
+        // which file it came from therefore has no documents of its own to abandon, and
+        // sweeping on '' would delete the entire C# index on the first --replace.
+        using var db = Fresh();
+        ScipImporter.Import(
+            db, MultiDocumentIndex(
+                ("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."),
+                ("b.ts", "scip-typescript npm p 1.0 src/`b.ts`/two().")),
+            Repo);
+
+        var report = ScipImporter.Import(
+            db, MultiDocumentIndex(("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one().")),
+            Repo, replace: true);
+
+        Assert.Equal(0, report.RemovedDocuments);
+        Assert.Equal(0, report.RemovedOccurrences);
+        Assert.Equal(
+            new[] { "a.ts", "b.ts" }, Strings(db, "SELECT relative_path FROM document ORDER BY relative_path"));
+    }
+
+    [Fact]
+    public void Import_WithoutReplace_NeverRemovesADocumentItsSourceNoLongerNames()
+    {
+        // Removing rows is what --replace is asked for by name to do. The default import
+        // adds, and an import that started deleting on its own would be the silent
+        // overwrite the default exists to refuse.
+        using var db = Fresh();
+        ScipImporter.Import(
+            db, MultiDocumentIndex(
+                ("a.ts", "scip-typescript npm p 1.0 src/`a.ts`/one()."),
+                ("b.ts", "scip-typescript npm p 1.0 src/`b.ts`/two().")),
+            Repo, source: "/tmp/ts.scip");
+
+        var report = ScipImporter.Import(
+            db, MultiDocumentIndex(("c.ts", "scip-typescript npm p 1.0 src/`c.ts`/three().")),
+            Repo, source: "/tmp/ts.scip");
+
+        Assert.Equal(0, report.RemovedDocuments);
+        Assert.Equal(
+            new[] { "a.ts", "b.ts", "c.ts" },
+            Strings(db, "SELECT relative_path FROM document ORDER BY relative_path"));
+    }
+
+    [Fact]
     public void ImportFile_LeavesTheIndexUntouchedWhenTheFileCannotBeParsed()
     {
         // "A .scip that cannot be parsed degrades the index; it never half-imports in
@@ -958,6 +1103,24 @@ public class ScipImporterTests
             Range = { 0, 0, 3 }
         });
         index.Documents.Add(doc);
+        return index;
+    }
+
+    /// <summary>
+    /// One .scip naming several files, which is what an index of a real project looks
+    /// like and the only shape in which a document can be dropped from one run to the
+    /// next.
+    /// </summary>
+    private static Scip.Index MultiDocumentIndex(params (string Path, string Symbol)[] documents)
+    {
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
+        };
+
+        foreach (var (path, symbol) in documents)
+            index.Documents.Add(SingleDocumentIndex(path, symbol).Documents[0]);
+
         return index;
     }
 

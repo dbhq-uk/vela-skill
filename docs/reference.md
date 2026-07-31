@@ -289,7 +289,7 @@ Reads a `.scip` file produced by any language's SCIP indexer into the same datab
 |---|---|
 | `<index>` | Path to the `.scip`. Looked for in the current directory first, then under the repository root, which is where `vela index` names a job's `.scip`. |
 | `--solution <path>` | As for `vela index`. |
-| `--replace` | Import over a previous import of the same `.scip`: delete the documents this index carries, with their occurrences, and write them again. Only the paths this `.scip` itself names are touched, whoever contributed them, and vela reports how many it replaced. |
+| `--replace` | Import over a previous import of the same `.scip`, so the index holds what that file says now and nothing left over from the last time it was read. The paths it names are deleted with their occurrences and written again, whoever contributed them; the documents an earlier import of the same file put in the index and this one no longer names are removed. vela reports how many were replaced and how many went. |
 
 `import` adds. `index` deletes and rebuilds. So the order is `vela index` and then
 `vela import`, and a later `vela index` replays what was imported rather than losing it.

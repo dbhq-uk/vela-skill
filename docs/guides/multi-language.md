@@ -203,15 +203,33 @@ Imported 2 document(s) and 21 occurrence(s) from /home/you/velatut/web/index.sci
 by scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
 Replaced 2 document(s) already in the index: 17 occurrence(s) removed and 21 written in
 their place.
-Only the paths this .scip names were touched. A document a previous import of it held and
-this one does not name is still in the index, unchanged: run vela index to rebuild from
-nothing.
+The paths this .scip names were rewritten, whoever contributed them. A document from any
+other source that it does not name is untouched.
 ```
 
 If the replacement holds fewer occurrences than what it replaced, vela says so. That is what
 re-running the indexer over code that lost a symbol looks like, and it is also what a broken
 indexer run looks like; vela cannot tell the two apart from the inside, so it states the
 fact and assumes neither.
+
+### Deleting a file
+
+`--replace` also removes what the previous import of the same `.scip` left behind. Delete
+`web/src/cart.ts`, re-run `scip-typescript`, and the new file simply does not name that
+document. vela records which `.scip` every imported document came from, so it can take the
+abandoned row out rather than leave `refs` answering from a file you deleted:
+
+```
+Imported 1 document(s) and 12 occurrence(s) from /home/you/velatut/web/index.scip, produced
+by scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
+Removed 1 document(s) with 9 occurrence(s): a previous import of this .scip put them in the
+index and this one no longer names them. The index is smaller than it was.
+```
+
+Only that `.scip`'s own documents are ever removed this way. vela's C# harvest and any
+other imported `.scip` are keyed separately and are not touched. If the new file names no
+documents at all, everything that source contributed goes and vela says so in as many
+words, because an emptied language must never be a silent one.
 
 ## Why the excludes are the feature
 
