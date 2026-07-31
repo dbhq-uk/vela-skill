@@ -25,7 +25,15 @@ public static class IndexPaths
     /// </exception>
     public static string ForSolution(string solutionPath)
     {
-        var full = Path.GetFullPath(solutionPath);
+        // RealPath rather than Path.GetFullPath, because this hash is the ONLY thing that
+        // makes `vela index` and `vela refs` talk about the same database, and the two
+        // verbs need not have been given the same spelling of the same solution. Only the
+        // index verb resolves its argument any further, so a query naming the solution
+        // through a symbolic link - or, on Windows and macOS, with a different letter case
+        // - hashed to a different name and was told "No index for ...", with the fix being
+        // the command the user had just run. GetFullPath cannot answer that: it removes
+        // '.', '..' and a relative prefix and stops.
+        var full = RealPath.Of(solutionPath);
         var solutionDir = Path.GetFullPath(Path.GetDirectoryName(full) ?? full);
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..16].ToLowerInvariant();
         var name = Path.GetFileNameWithoutExtension(full);

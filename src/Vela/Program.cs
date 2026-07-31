@@ -786,9 +786,19 @@ public static class Program
         resolvedSolution = "";
         config = VelaConfig.Default;
 
+        // Resolved through RealPath, not Path.GetFullPath, and resolved HERE because this
+        // is the one door a solution path comes in by. Everything downstream is derived
+        // from it - the repository root, the cache key, the paths Roslyn reports for its
+        // documents, the directory the staleness walk starts at, and the .scip a pending
+        // job is keyed on - so they are consistent with each other only if they are all
+        // derived from one spelling. Symbolic links are what makes that more than
+        // pedantry: on macOS the temp directory is reached through /var, which is a link
+        // to /private/var, and Directory.GetCurrentDirectory answers with the resolved
+        // form while a --solution argument keeps whichever form the caller typed. See
+        // <see cref="RealPath"/> for what that cost.
         var start = string.IsNullOrWhiteSpace(solution)
-            ? Directory.GetCurrentDirectory()
-            : Path.GetDirectoryName(Path.GetFullPath(solution)) ?? Directory.GetCurrentDirectory();
+            ? RealPath.Of(Directory.GetCurrentDirectory())
+            : Path.GetDirectoryName(RealPath.Of(solution)) ?? RealPath.Of(Directory.GetCurrentDirectory());
 
         try
         {
@@ -803,7 +813,7 @@ public static class Program
 
         if (!string.IsNullOrWhiteSpace(solution))
         {
-            resolvedSolution = solution;
+            resolvedSolution = RealPath.Of(solution);
             return true;
         }
 
@@ -820,7 +830,7 @@ public static class Program
             return false;
         }
 
-        resolvedSolution = config.Solution;
+        resolvedSolution = RealPath.Of(config.Solution);
         return true;
     }
 
@@ -1297,11 +1307,14 @@ public static class Program
     /// </summary>
     private static string? ResolveScipPath(string argument, string repositoryRoot)
     {
-        if (File.Exists(argument)) return Path.GetFullPath(argument);
+        // RealPath rather than Path.GetFullPath on both, because the pending job's key is
+        // built from the repository root the same way and neither side may resolve a link
+        // - or a letter case, on a filesystem that ignores one - that the other keeps.
+        if (File.Exists(argument)) return RealPath.Of(argument);
 
         // Path.Combine returns an absolute argument unchanged, so an absolute path that
         // is not there fails here rather than being resolved into something else.
-        var underRoot = Path.GetFullPath(Path.Combine(repositoryRoot, argument));
+        var underRoot = RealPath.Of(Path.Combine(repositoryRoot, argument));
         return File.Exists(underRoot) ? underRoot : null;
     }
 
