@@ -561,8 +561,13 @@ public class ScipMonikerTests
         var model = body.GetSemanticModel(tree);
         var moniker = new ScipMoniker();
 
+        // RS1039 reads the static type as SyntaxNode and concludes the call can only
+        // return null. It cannot know the node is always a declaration of some kind, and
+        // the assertions below would all fail if any of these five came back null.
+#pragma warning disable RS1039
         ISymbol Declared<T>(Func<T, bool> predicate) where T : SyntaxNode =>
             model.GetDeclaredSymbol(tree.GetRoot().DescendantNodes().OfType<T>().Single(predicate))!;
+#pragma warning restore RS1039
 
         var total = Declared<VariableDeclaratorSyntax>(v => v.Identifier.ValueText == "total");
         var label = Declared<LabeledStatementSyntax>(_ => true);

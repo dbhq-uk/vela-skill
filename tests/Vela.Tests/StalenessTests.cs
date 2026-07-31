@@ -1,4 +1,6 @@
+using System.Runtime.Versioning;
 using Vela.Indexing;
+using Vela.Tests.Fixtures;
 using Xunit;
 
 /// <summary>
@@ -157,7 +159,8 @@ public class StalenessTests
         File.SetLastWriteTimeUtc(path, timeUtc);
     }
 
-    [Fact]
+    [UnixOnlyFact]
+    [UnsupportedOSPlatform("windows")]
     public void Check_WhenADirectoryCannotBeRead_DegradesRatherThanReportingFresh()
     {
         // A directory the walk cannot list may hold a file newer than the index, so a

@@ -3,14 +3,17 @@ using Vela.Harvest;
 using Vela.Tests.Fixtures;
 using Xunit;
 
-public class RazorMapperTests
+// Both tests only read the fixture, so they share one harvest of it.
+public class RazorMapperTests : IClassFixture<HarvestedWebApp>
 {
+    private readonly HarvestedWebApp _webApp;
+
+    public RazorMapperTests(HarvestedWebApp webApp) => _webApp = webApp;
+
     [Fact]
     public async Task MapToOriginal_OnGeneratedRazorDocument_ReturnsTheCshtmlPath()
     {
-        using var fx = FixtureSolution.CreateWebApp();
-        var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
-        var project = load.Solution.Projects.Single();
+        var project = _webApp.Project;
 
         HarvestedDocument? indexPage = null;
         await foreach (var d in DocumentEnumerator.EnumerateAsync(project, default))
@@ -39,9 +42,7 @@ public class RazorMapperTests
     [Fact]
     public async Task MapToOriginal_OnOrdinaryCSharp_ReturnsTheFileItself()
     {
-        using var fx = FixtureSolution.CreateWebApp();
-        var load = await WorkspaceLoader.LoadAsync(fx.SolutionPath, default);
-        var project = load.Solution.Projects.Single();
+        var project = _webApp.Project;
         var doc = project.Documents.First(d => d.FilePath!.EndsWith(".cs"));
         var tree = (await doc.GetSyntaxTreeAsync())!;
 
