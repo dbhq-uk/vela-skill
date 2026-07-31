@@ -11,7 +11,12 @@ namespace Vela.Tests;
 /// cache itself on an absolute path, and every one of those keys is only an identity if
 /// two ways of naming one file produce one string. Path.GetFullPath does not give that:
 /// it removes '.', '..' and a relative prefix and stops.
+///
+/// One test here points XDG_CACHE_HOME at a directory of its own, and an environment
+/// variable is process-wide, so the class sits in the collection that runs alone. The rest
+/// of these tests are milliseconds each, so joining it costs nothing.
 /// </summary>
+[Collection(EnvironmentSensitive.Name)]
 public class RealPathTests
 {
     [Fact]
@@ -92,6 +97,73 @@ public class RealPathTests
 
         Assert.Equal(RealPath.Of(Path.Combine(real, "repo")), RealPath.Of(inner));
         Assert.DoesNotContain("outer", RealPath.Of(inner), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The user-visible bug the case half of this fix exists for: `vela index App.sln` and
+    /// `vela refs`, run from a directory the shell spelled with a different case, hashed to
+    /// two different cache names, and the second was told there was no index for a solution
+    /// the user had just indexed. Two spellings of one file are one index.
+    ///
+    /// Nothing else in the suite reaches this: the symbolic-link tests cannot, because they
+    /// prove a different half, and deleting the body of the case correction left every one
+    /// of them green on all three platforms.
+    /// </summary>
+    [CaseInsensitivePlatformFact]
+    public void TwoSpellingsOfOneSolution_AreOneIndex()
+    {
+        using var tree = new TempTree();
+
+        var repo = Path.Combine(tree.Root, "Repo");
+        Directory.CreateDirectory(repo);
+        var solution = Path.Combine(repo, "App.sln");
+        File.WriteAllText(solution, "");
+
+        // The same file, named the way a second command in the same session named it.
+        var shouted = Path.Combine(tree.Root, "REPO", "APP.SLN");
+
+        // XDG_CACHE_HOME is process-wide, which is why this class sits in the collection
+        // that runs alone, and it is pinned here so the two answers cannot straddle
+        // another test changing it.
+        var cacheRoot = Path.Combine(Path.GetTempPath(), "vela-cache-" + Guid.NewGuid().ToString("N")[..8]);
+        var previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
+        string asCreated, asShouted;
+        try
+        {
+            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", cacheRoot);
+            asCreated = IndexPaths.ForSolution(solution);
+            asShouted = IndexPaths.ForSolution(shouted);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", previous);
+        }
+
+        Assert.Equal(asCreated, asShouted);
+
+        // And corrected TO the spelling on disk, not merely to some agreed one: the cache
+        // file is named after the solution, and it is named the way the solution is.
+        Assert.StartsWith("App-", Path.GetFileName(asShouted), StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The same fact one layer down, where every other key vela holds is decided: a
+    /// pending job's source, an import's health record, a document's path.
+    /// </summary>
+    [CaseInsensitivePlatformFact]
+    public void TwoSpellingsOfOneFile_ResolveToOneString()
+    {
+        using var tree = new TempTree();
+
+        var directory = Path.Combine(tree.Root, "Repo", "Src");
+        Directory.CreateDirectory(directory);
+        var file = Path.Combine(directory, "Index.scip");
+        File.WriteAllText(file, "");
+
+        var shouted = Path.Combine(tree.Root, "REPO", "src", "INDEX.SCIP");
+
+        Assert.Equal(RealPath.Of(file), RealPath.Of(shouted));
+        Assert.EndsWith(Path.Combine("Repo", "Src", "Index.scip"), RealPath.Of(shouted), StringComparison.Ordinal);
     }
 
     /// <summary>
