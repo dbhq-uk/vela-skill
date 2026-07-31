@@ -363,6 +363,56 @@ public class ScipEmitterTests : IClassFixture<HarvestedWebApp>
     }
 
     [Fact]
+    public async Task EmitAsync_KeepsAnEmptyCSharpFileAsAnEmptyDocument()
+    {
+        // A .cs file gets its document from the first symbol it bears, so a file that
+        // bears none had no document at all and left the index entirely. `outline` on it
+        // then said vela had never seen the file, when the file is right there and the
+        // truthful answer is that it defines nothing. An empty document says that; a
+        // missing one says the file does not exist.
+        var root = SyntheticRoot();
+        var empty = Path.Combine(root, "App", "Empty.cs");
+
+        var solution = SyntheticSolution(root, "", empty);
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+
+        var doc = Assert.Single(
+            emitted.Index.Documents.Where(d => d.RelativePath == "App/Empty.cs"));
+        Assert.Empty(doc.Occurrences);
+        Assert.Empty(doc.Symbols);
+
+        // The file is on disk as far as the compilation is concerned, so it is openable
+        // and must not be marked generated, which is what suppresses a path in refs.
+        Assert.DoesNotContain("App/Empty.cs", emitted.GeneratedDocuments);
+
+        // Attributed to the project that compiled it, or an incremental rebuild would
+        // not know whose document it is to replace.
+        Assert.Contains("App/Empty.cs", emitted.DocumentsByProject.Values.SelectMany(d => d));
+    }
+
+    [Fact]
+    public async Task EmitAsync_KeepsACommentsOnlyCSharpFileAsAnEmptyDocument()
+    {
+        // The same file in its commoner form: a licence header, a TODO, a file somebody
+        // emptied and left a note in. Roslyn parses it to a compilation unit with no
+        // symbol-bearing node, which is the same nothing an empty file parses to.
+        var root = SyntheticRoot();
+        var notes = Path.Combine(root, "App", "Notes.cs");
+
+        var solution = SyntheticSolution(root, """
+            // Copyright (c) somebody.
+            /* Everything that was here moved to Thing.cs. */
+            """, notes);
+
+        var emitted = await ScipEmitter.EmitAsync(solution, Array.Empty<string>(), default);
+
+        var doc = Assert.Single(
+            emitted.Index.Documents.Where(d => d.RelativePath == "App/Notes.cs"));
+        Assert.Empty(doc.Occurrences);
+        Assert.Equal("csharp", doc.Language);
+    }
+
+    [Fact]
     public async Task EmitAsync_RecordsFilesOutsideTheProjectRootInsteadOfEmittingDotDotPaths()
     {
         var root = SyntheticRoot();
@@ -1075,17 +1125,24 @@ public class ScipEmitterTests : IClassFixture<HarvestedWebApp>
     /// An in-memory solution holding one generated-looking C# file. Nothing is written
     /// to disk: the emitter only ever reads paths, never their contents.
     /// </summary>
-    internal static Solution SyntheticSolution(string root, string source)
+    /// <param name="documentPath">
+    /// Where the file claims to live, for the tests that care what the compilation calls
+    /// it rather than only what its #line directives point at. Defaults to the generated
+    /// path the Razor tests want.
+    /// </param>
+    internal static Solution SyntheticSolution(string root, string source, string? documentPath = null)
     {
         var workspace = new AdhocWorkspace();
         var projectId = ProjectId.CreateNewId();
         var documentId = DocumentId.CreateNewId(projectId);
 
+        var path = documentPath ?? Path.Combine(root, "App", "obj", "Generated.cs");
+
         var document = DocumentInfo.Create(
             documentId,
-            "Generated.cs",
+            Path.GetFileName(path),
             loader: TextLoader.From(TextAndVersion.Create(SourceText.From(source), VersionStamp.Default)),
-            filePath: Path.Combine(root, "App", "obj", "Generated.cs"));
+            filePath: path);
 
         var project = ProjectInfo.Create(
             projectId,
