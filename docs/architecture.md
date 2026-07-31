@@ -431,7 +431,7 @@ occurrences          : 2670
 `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count,
 and CI runs it as a separate named step so a failure says what broke.
 
-414 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
+420 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
 The fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
 NuGet cache needs network for test setup.
 

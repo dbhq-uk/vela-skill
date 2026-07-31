@@ -12,7 +12,7 @@ Guidance for AI agents (and people) working in this repository.
 .claude-plugin/plugin.json     # plugin manifest
 skills/vela/SKILL.md           # the skill (agent-facing instructions)
 src/Vela/                      # the CLI: Config, Harvest, Indexing, Query, Scip
-tests/Vela.Tests/              # 414 tests, hermetic
+tests/Vela.Tests/              # 420 tests, hermetic
 install.sh / install-codex.sh  # local installers (Claude / Codex)
 docs/                          # see docs/README.md for the index
 ```
