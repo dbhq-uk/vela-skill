@@ -68,6 +68,18 @@ namespace Vela.Indexing;
 /// a symbol looks like, and it is also what a broken indexer run looks like. The two are
 /// indistinguishable from here, so both numbers are printed and neither is assumed.
 /// </param>
+/// <param name="RemovedDocuments">
+/// Documents this import DELETED without writing anything in their place: rows a previous
+/// import of the same .scip put in the index that this one no longer names, which only
+/// --replace removes. A file deleted from the indexed project looks like exactly this,
+/// and until document.source was put to work here there was nothing to match such a row
+/// against, so it stayed in the index for good and `refs` went on answering from a file
+/// that was no longer there.
+/// </param>
+/// <param name="RemovedOccurrences">
+/// How many occurrences those documents held. A --replace that shrinks the index is a
+/// fact worth reporting, so what LEFT is counted as plainly as what arrived.
+/// </param>
 /// <param name="CollidingDisplayNames">
 /// Display names this import reached from more than one distinct SCIP symbol, ordered
 /// ordinally. These are the names where a query over-answers: `refs` on one of them
@@ -86,6 +98,8 @@ public sealed record ImportReport(
     int ReplacedDocuments,
     int ReplacedOccurrences,
     int ReplacementOccurrences,
+    int RemovedDocuments,
+    int RemovedOccurrences,
     IReadOnlyList<string> CollidingDisplayNames,
     IReadOnlyList<string> Problems)
 {
@@ -149,12 +163,18 @@ public static class ScipImporter
     /// leaves the index exactly as it was rather than half-imported.
     /// </exception>
     /// <param name="replace">
-    /// Import over a previous import of the same file: a document whose path this index
-    /// already holds is deleted, with its occurrences and any full-text name left with
-    /// nothing carrying it, and written again from this .scip. Only the paths this .scip
-    /// itself names are touched. False refuses such a document and reports it, which is
-    /// the default because a silent overwrite of a document somebody else's index also
-    /// claims is the failure <see cref="ImportReport.Problems"/> exists to make visible.
+    /// Import over a previous import of the same file, which is the whole of what this
+    /// .scip contributes and not merely the paths it still names. A document whose path
+    /// this index already holds is deleted, with its occurrences, and written again from
+    /// this .scip; and a document carrying this <paramref name="source"/> that this .scip
+    /// no longer names is deleted outright, because a file removed from the indexed
+    /// project looks like exactly that and nothing else would ever take it out. Either
+    /// way a full-text name left with nothing carrying it goes too.
+    ///
+    /// False refuses a colliding document and reports it, which is the default because a
+    /// silent overwrite of a document somebody else's index also claims is the failure
+    /// <see cref="ImportReport.Problems"/> exists to make visible, and because removing
+    /// rows is something a caller asks for by name.
     /// </param>
     /// <param name="source">
     /// What the index will remember these documents came from, stored in document.source
@@ -268,6 +288,14 @@ public static class ScipImporter
         private readonly SqliteCommand insertFts;
         private readonly SqliteCommand insertExternal;
         private readonly bool replace;
+
+        /// <summary>
+        /// What this import writes into document.source, and the key the abandonment
+        /// sweep deletes on. See <see cref="RemoveAbandonedDocuments"/> for why an empty
+        /// one claims nothing.
+        /// </summary>
+        private readonly string source;
+
         private readonly HashSet<string> seenSymbols = new(StringComparer.Ordinal);
         private readonly HashSet<string> takenPaths = new(StringComparer.Ordinal);
         private readonly HashSet<string> writtenPaths = new(StringComparer.Ordinal);
@@ -287,6 +315,8 @@ public static class ScipImporter
         private int replacedDocuments;
         private int replacedOccurrences;
         private int replacementOccurrences;
+        private int removedDocuments;
+        private int removedOccurrences;
         private bool committed;
 
         public Writer(SqliteConnection db, string projectRoot, bool replace, string source)
@@ -300,6 +330,7 @@ public static class ScipImporter
             // with nothing but the banner to show for it.
             this.projectRoot = RealPath.Of(projectRoot);
             this.replace = replace;
+            this.source = source;
             tx = db.BeginTransaction();
 
             insertDoc = db.CreateCommand();
@@ -610,6 +641,101 @@ public static class ScipImporter
         }
 
         /// <summary>
+        /// Deletes the documents THIS SOURCE put in the index that this run of it no
+        /// longer names, with their occurrences, in the same transaction as everything
+        /// else.
+        ///
+        /// This is what --replace could not do, and what it told the user it could not do:
+        /// "nothing in the database records which import contributed which document, so
+        /// deleting it would mean deleting on a guess". That stopped being true at schema
+        /// 7. document.source records the .scip every imported row came from, there is an
+        /// index on it, and so the row a deleted file left behind can be found by asking
+        /// rather than by guessing. Until it was asked, a file removed from a TypeScript
+        /// project stayed in the index for good: `refs` answered from a path that had not
+        /// existed for months and `find` offered names nothing carried, and the only way
+        /// out was to throw the whole index away.
+        ///
+        /// <b>An empty source claims nothing.</b> '' in document.source is not "unknown":
+        /// it is vela's own Roslyn harvest, which read a compilation rather than a file.
+        /// An import that cannot name the file it came from therefore has no documents of
+        /// its own to abandon, and sweeping on '' would delete the entire C# half of the
+        /// index on the first --replace. Every import through the CLI resolves a real
+        /// absolute path, so this only guards the in-memory overload.
+        ///
+        /// The display names go into the same set <see cref="SweepOrphanedNames"/> works
+        /// from, for the same reason: whether a name still belongs in the full-text index
+        /// cannot be known until the whole import has been written, because another
+        /// document may still carry it.
+        /// </summary>
+        private void RemoveAbandonedDocuments()
+        {
+            if (!replace || source.Length == 0) return;
+
+            using (var create = db.CreateCommand())
+            {
+                create.Transaction = tx;
+                create.CommandText = "CREATE TEMP TABLE written_path(path TEXT PRIMARY KEY)";
+                create.ExecuteNonQuery();
+            }
+
+            using (var insert = db.CreateCommand())
+            {
+                insert.Transaction = tx;
+                insert.CommandText = "INSERT OR IGNORE INTO written_path(path) VALUES ($p)";
+                insert.Parameters.Add("$p", SqliteType.Text);
+
+                foreach (var path in writtenPaths)
+                {
+                    insert.Parameters["$p"].Value = path;
+                    insert.ExecuteNonQuery();
+                }
+            }
+
+            // One phrase, three times, so the three statements cannot drift apart and
+            // delete different sets: the names of a document, then its occurrences, then
+            // the document.
+            const string Abandoned = """
+                SELECT id FROM document
+                WHERE source = $src
+                  AND relative_path NOT IN (SELECT path FROM written_path)
+                """;
+
+            using (var names = db.CreateCommand())
+            {
+                names.Transaction = tx;
+                names.CommandText =
+                    "SELECT DISTINCT symbol FROM occurrence "
+                    + $"WHERE symbol <> '' AND document_id IN ({Abandoned})";
+                names.Parameters.AddWithValue("$src", source);
+                using var reader = names.ExecuteReader();
+                while (reader.Read()) replacedNames.Add(reader.GetString(0));
+            }
+
+            using (var deleteOccurrences = db.CreateCommand())
+            {
+                deleteOccurrences.Transaction = tx;
+                deleteOccurrences.CommandText = $"DELETE FROM occurrence WHERE document_id IN ({Abandoned})";
+                deleteOccurrences.Parameters.AddWithValue("$src", source);
+                removedOccurrences = deleteOccurrences.ExecuteNonQuery();
+            }
+
+            using (var deleteDocuments = db.CreateCommand())
+            {
+                deleteDocuments.Transaction = tx;
+                deleteDocuments.CommandText = $"DELETE FROM document WHERE id IN ({Abandoned})";
+                deleteDocuments.Parameters.AddWithValue("$src", source);
+                removedDocuments = deleteDocuments.ExecuteNonQuery();
+            }
+
+            using (var drop = db.CreateCommand())
+            {
+                drop.Transaction = tx;
+                drop.CommandText = "DROP TABLE written_path";
+                drop.ExecuteNonQuery();
+            }
+        }
+
+        /// <summary>
         /// Removes the full-text rows for names that the replacement left nothing
         /// carrying. An orphan there answers `vela find` with a name no occurrence in the
         /// index has, which is the discovery verb inventing a symbol.
@@ -729,12 +855,17 @@ public static class ScipImporter
 
         public ImportReport Commit()
         {
+            // Before the name sweep, never after: the abandoned documents' names are
+            // candidates for it, and a name only this import's deleted rows carried is an
+            // orphan exactly like one a replacement dropped.
+            RemoveAbandonedDocuments();
             SweepOrphanedNames();
             tx.Commit();
             committed = true;
             return new ImportReport(
                 tool, documents, occurrences, unnamed, unconverted, unspecifiedEncoding, unparsed,
                 replacedDocuments, replacedOccurrences, replacementOccurrences,
+                removedDocuments, removedOccurrences,
                 collidingNames.ToList(), problems);
         }
 

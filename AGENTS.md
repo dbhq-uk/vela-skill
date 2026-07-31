@@ -68,6 +68,8 @@ documents            : 23
 occurrences          : 2670
   in razor views     : 22
   definitions        : 182
+sources              : 1   (where each document came from)
+  roslyn harvest     : 23 document(s), 2670 occurrence(s)
 ```
 
 The `razor views` count must equal the number of `.cshtml` files on disk, and `in razor views` must be non-zero - seven empty Razor documents would satisfy the first count and mean the mapping has collapsed. `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count.
@@ -75,6 +77,6 @@ The `razor views` count must equal the number of `.cshtml` files on disk, and `i
 And the suite, which must stay green:
 
 ```bash
-dotnet test          # 423 passed, 3 skipped, 0 failed on Linux. The skips are the
+dotnet test          # 432 passed, 3 skipped, 0 failed on Linux. The skips are the
                      # platform-specific facts, which trade places on Windows.
 ```

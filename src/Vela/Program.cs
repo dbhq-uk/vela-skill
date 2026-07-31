@@ -269,7 +269,8 @@ public static class Program
         var statsOption = new Option<bool>("--stats")
         {
             Description = "After indexing, print document, generated-document, Razor, occurrence "
-                        + "and definition counts."
+                        + "and definition counts, what each source contributed - vela's own harvest "
+                        + "and each imported .scip, by name - and every document that was left out."
         };
 
         // Off by default, and it will stay off until this version has been proven in use.
@@ -1456,11 +1457,15 @@ public static class Program
     /// index it was merged into no longer exists either.
     ///
     /// --replace is the one thing here that removes rows: it re-imports a .scip over a
-    /// previous import of the same file, deleting the documents that file carries and
-    /// writing them again. It is asked for by name, it touches only the paths the .scip
-    /// itself names, and it says how many documents and occurrences went and how many
-    /// came, because a replace that shrinks the index is a fact and a replace nobody
-    /// expected is a defect.
+    /// previous import of the same file, so the index ends up holding what that file says
+    /// now and nothing left over from the last time it was read. The paths it names are
+    /// deleted and written again. The documents an earlier import of the SAME file
+    /// contributed and this one no longer names are deleted outright, because a file
+    /// removed from the indexed project looks like exactly that: document.source records
+    /// which .scip every imported document came from, so this is a lookup rather than a
+    /// guess. It is asked for by name, and it says how many documents and occurrences went
+    /// and how many came, because a replace that shrinks the index is a fact and a replace
+    /// nobody expected is a defect.
     ///
     /// Constraint 3 runs through the whole verb. A file that will not parse leaves the
     /// index exactly as it was and says so; a document that cannot be placed under
@@ -1482,10 +1487,11 @@ public static class Program
         // short of `vela index`, which rebuilds the whole C# half.
         var replaceOption = new Option<bool>("--replace")
         {
-            Description = "Import over a previous import of the same .scip: delete the documents this "
-                        + "index carries, with their occurrences, and write them again. Only the paths "
-                        + "this .scip itself names are touched, whoever contributed them, and how many "
-                        + "were replaced is reported."
+            Description = "Import over a previous import of the same .scip, so the index holds what this "
+                        + "file says and nothing left over from the last one. The paths it names are "
+                        + "rewritten, whoever contributed them; the documents an earlier import of this "
+                        + "same file left behind and this one no longer names are removed, with their "
+                        + "occurrences. How many were replaced and how many went is reported."
         };
 
         var command = new Command("import", "Add a .scip index from another language's indexer")
@@ -1497,6 +1503,7 @@ public static class Program
         {
             var output = parseResult.InvocationConfiguration.Output;
             var error = parseResult.InvocationConfiguration.Error;
+            var replace = parseResult.GetValue(replaceOption);
 
             // Through the same resolver `vela index` uses, so a repository whose vela.json
             // names its solution can import without repeating --solution, and so a config
@@ -1557,8 +1564,7 @@ public static class Program
             ImportReport report;
             try
             {
-                report = ScipImporter.ImportFile(
-                    db, scipPath, repositoryRoot, parseResult.GetValue(replaceOption));
+                report = ScipImporter.ImportFile(db, scipPath, repositoryRoot, replace);
             }
             catch (Exception ex)
                 when (ex is InvalidDataException or IOException or UnauthorizedAccessException
@@ -1602,13 +1608,40 @@ public static class Program
                                    + "cut short, the index now matches the shorter run.");
                 }
 
-                // What --replace does NOT do. A document a previous import of this file
-                // held and this one no longer names is still in the index, because
-                // nothing in the database records which import contributed which
-                // document, so deleting it would mean deleting on a guess.
-                output.WriteLine("Only the paths this .scip names were touched. A document a previous "
-                               + "import of it held and this one does not name is still in the index, "
-                               + "unchanged: run vela index to rebuild from nothing.");
+                // What --replace touches, said exactly. The paths this .scip names are
+                // rewritten whoever contributed them; what a previous import of this same
+                // file left behind is dealt with by the block below; and a document from
+                // any other source that this .scip does not name is not this import's to
+                // touch.
+                output.WriteLine("The paths this .scip names were rewritten, whoever contributed them. A "
+                               + "document from any other source that it does not name is untouched.");
+            }
+
+            // The other half of a replace, and the half that used to be impossible. A
+            // file deleted from the indexed project is absent from the next .scip that
+            // project's indexer writes, and document.source is what says the row it left
+            // behind came from this file rather than from vela's own harvest or from
+            // somebody else's import. An index that SHRINKS is a fact worth reporting: it
+            // is what a deleted file looks like, and it is also what an indexer run that
+            // was cut short looks like, and the two cannot be told apart from here.
+            if (report.RemovedDocuments > 0)
+            {
+                output.WriteLine($"Removed {report.RemovedDocuments} document(s) with "
+                               + $"{report.RemovedOccurrences} occurrence(s): a previous import of this "
+                               + ".scip put them in the index and this one no longer names them. The "
+                               + "index is smaller than it was.");
+            }
+
+            // The edge that must not be silent. Emptying a source is a legitimate thing to
+            // ask for and it is also what a broken indexer run produces, so the fact that
+            // this file named nothing at all is stated rather than left to be inferred
+            // from a zero in the line above.
+            if (replace && report.Documents == 0)
+            {
+                output.WriteLine("This .scip names no documents at all, so --replace took out everything "
+                               + "the index held from it and put nothing back. If the indexer was meant to "
+                               + "produce something, its run is where to look; nothing else in the index "
+                               + "was affected.");
             }
 
             // Said plainly and once, in the same voice `vela index` uses for the

@@ -43,7 +43,7 @@ The new index is built beside the old one and renamed over it at the end, so
 | Option | Meaning |
 |---|---|
 | `--solution <path>` | Path to the `.sln`. Defaults to the only `.sln` in the current directory. |
-| `--stats` | After indexing, print document, generated-document, Razor, occurrence and definition counts, and list every document that was left out. |
+| `--stats` | After indexing, print document, generated-document, Razor, occurrence and definition counts, what each source contributed, and list every document that was left out. |
 | `--incremental` | Rebuild only the projects whose inputs changed, and every project downstream of them. **Off by default.** See [`--incremental`](#--incremental). |
 
 `--stats` output on a `dotnet new webapp` scaffold:
@@ -55,6 +55,8 @@ documents            : 23
 occurrences          : 2670
   in razor views     : 22
   definitions        : 182
+sources              : 1   (where each document came from)
+  roslyn harvest     : 23 document(s), 2670 occurrence(s)
 ```
 
 `razor views` must equal the number of `.cshtml` and `.razor` files on disk, and
@@ -64,6 +66,17 @@ regression that is otherwise silent, so validate a change to the harvester with 
 Two further lines appear when the counts warrant them. `No Razor views are indexed.` means
 source-generated documents are not reaching the index at all. `Razor views are indexed but
 carry no occurrences` means the documents arrived and the `#line` mapping did not.
+
+The `sources` block says which pass put each document in the index. `roslyn harvest` is
+vela's own read of the compilation; every other line is a `.scip` [`vela import`](#vela-import)
+read, named by its absolute path. On a polyglot index it is the only place the split is
+visible:
+
+```
+sources              : 2   (where each document came from)
+  roslyn harvest     : 23 document(s), 2670 occurrence(s)
+  imported .scip     : 4 document(s), 702 occurrence(s)   /home/you/mobile.scip
+```
 
 `vela index` rebuilds the C# half from nothing, and it replays every `.scip` that had been
 imported into the index it replaced. See [`vela import`](#vela-import).
@@ -289,7 +302,7 @@ Reads a `.scip` file produced by any language's SCIP indexer into the same datab
 |---|---|
 | `<index>` | Path to the `.scip`. Looked for in the current directory first, then under the repository root, which is where `vela index` names a job's `.scip`. |
 | `--solution <path>` | As for `vela index`. |
-| `--replace` | Import over a previous import of the same `.scip`: delete the documents this index carries, with their occurrences, and write them again. Only the paths this `.scip` itself names are touched, whoever contributed them, and vela reports how many it replaced. |
+| `--replace` | Import over a previous import of the same `.scip`, so the index holds what that file says now and nothing left over from the last time it was read. The paths it names are deleted with their occurrences and written again, whoever contributed them; the documents an earlier import of the same file put in the index and this one no longer names are removed. vela reports how many were replaced and how many went. |
 
 `import` adds. `index` deletes and rebuilds. So the order is `vela index` and then
 `vela import`, and a later `vela index` replays what was imported rather than losing it.
