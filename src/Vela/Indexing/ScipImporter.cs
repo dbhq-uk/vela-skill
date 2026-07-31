@@ -167,7 +167,9 @@ public static class ScipImporter
         SqliteConnection db, string scipPath, string projectRoot, bool replace = false, string? source = null)
     {
         using var stream = File.OpenRead(scipPath);
-        return ImportStream(db, stream, projectRoot, replace, source ?? Path.GetFullPath(scipPath));
+        // The same identity a pending job is keyed on, so it has to be resolved the same
+        // way. Callers that pass a source have already resolved it themselves.
+        return ImportStream(db, stream, projectRoot, replace, source ?? RealPath.Of(scipPath));
     }
 
     /// <summary>Imports an index already in memory. The streaming path is the one a
@@ -290,7 +292,13 @@ public static class ScipImporter
         public Writer(SqliteConnection db, string projectRoot, bool replace, string source)
         {
             this.db = db;
-            this.projectRoot = Path.GetFullPath(projectRoot);
+            // Resolved, because the root a foreign indexer wrote into project_root and the
+            // root vela derived from its own solution path have to be comparable. They are
+            // not when one of them went through a symbolic link and the other did not:
+            // GetRelativePath then answers with '..', every document is reported as lying
+            // outside the repository, and the whole language is dropped from the index
+            // with nothing but the banner to show for it.
+            this.projectRoot = RealPath.Of(projectRoot);
             this.replace = replace;
             tx = db.BeginTransaction();
 
@@ -398,6 +406,12 @@ public static class ScipImporter
                     + "file import differently depending on where vela was run from. Nothing was "
                     + "imported. Re-run the indexer, which normally writes an absolute file: URI here.");
             }
+
+            // Only now, never before the check above. RealPath resolves against the process
+            // directory exactly as Path.GetFullPath does, so applying it first would turn
+            // a relative project_root into an absolute one and quietly reinstate the
+            // non-determinism this refusal exists to prevent.
+            foreignRoot = RealPath.Of(foreignRoot);
 
             tool = metadata?.ToolInfo?.Name ?? "";
         }

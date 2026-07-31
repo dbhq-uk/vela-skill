@@ -562,6 +562,25 @@ asking git, so the answer cannot be changed by a git configuration vela did not 
 That is what the index is rooted at, so a `repo/src/App.sln` layout still covers
 `repo/tests/`.
 
+### How paths are written, on every platform
+
+Paths in the index are separated by `/` on Linux, macOS and Windows alike, because
+[scip.proto](https://github.com/sourcegraph/scip/blob/main/scip.proto) requires it of
+`Document.relative_path`. That is what `outline` prints and what it matches on. A path typed
+with `\` is accepted and normalised, so `vela outline App\Pages\Index.cshtml` and
+`vela outline App/Pages/Index.cshtml` are one question on Windows.
+
+Absolute paths - the solution you name, the `.scip` you import, the cache the index lives in
+- are resolved before they are used as identities: symbolic links are followed, and on
+Windows and macOS the letter case the filesystem actually stores is read back. So naming one
+solution two ways gets one index rather than two, and importing a `.scip` settles the job
+waiting for it however that path was written. On Linux the case is left exactly as typed,
+because `Foo.cs` and `foo.cs` really are two files there.
+
+The practical consequence: an index built through a symlinked checkout and one built through
+its target are the same index, and `vela index` followed by `vela refs` cannot disagree
+about which database they mean.
+
 ## Freshness
 
 The index is a snapshot. Every query compares its build time against the modification times

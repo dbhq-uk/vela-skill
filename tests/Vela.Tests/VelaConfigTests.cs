@@ -425,9 +425,22 @@ public class VelaConfigTests
         var pending = Assert.Single(plan.Pending);
 
         // Keyed by the absolute path of the .scip the job expects, which is exactly the
-        // key `vela import` clears, so importing that file clears the job and nothing
-        // else has to remember it.
-        Assert.Equal(Path.Combine(tree.Root, "src", "Mobile", "index.scip"), pending.Source);
+        // key `vela import` clears, so importing that file clears the job and nothing else
+        // has to remember it.
+        //
+        // Proven by marking the file the job is talking about and reading the mark back
+        // THROUGH the key. The expectation used to be computed with RealPath.Of, the
+        // resolution this key is made of, so it agreed with whatever that resolution did,
+        // including nothing at all, and no regression in it could fail this test. Reading
+        // the file the key names asks the filesystem instead, and only one file in this
+        // tree carries the mark. Written after the plan, so the job is still pending.
+        var expected = Path.Combine(tree.Root, "src", "Mobile", "index.scip");
+        var mark = Guid.NewGuid().ToString("N");
+        File.WriteAllText(expected, mark);
+
+        Assert.True(Path.IsPathRooted(pending.Source));
+        Assert.EndsWith(Path.Combine("src", "Mobile", "index.scip"), pending.Source, StringComparison.Ordinal);
+        Assert.Equal(mark, File.ReadAllText(pending.Source));
         Assert.Contains("typescript", pending.Detail, StringComparison.Ordinal);
         Assert.Contains("scip-typescript", pending.Detail, StringComparison.Ordinal);
         Assert.Contains("vela import", pending.Detail, StringComparison.Ordinal);
@@ -782,6 +795,82 @@ public class VelaConfigEndToEndTests
         Assert.Equal(0, clean.ExitCode);
         Assert.DoesNotContain("INCOMPLETE", clean.Output, StringComparison.Ordinal);
         Assert.Contains("app.ts", clean.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// And it has to settle when the repository is reached through a symbolic link, which
+    /// is the same identity failure arriving by a different road.
+    ///
+    /// This is a product bug rather than a platform quirk, which is why the test is here
+    /// and not skipped on Linux. Path.GetFullPath removes '.', '..' and a relative prefix
+    /// and stops: it does not resolve links. So the pending row went in under the link's
+    /// spelling while the import cleared it under the target's, and the job could never be
+    /// settled - every answer printing INCOMPLETE for an import that had already been run.
+    ///
+    /// macOS hits it with no symbolic link of the user's own, because Path.GetTempPath
+    /// there is under /var and /var is a link to /private/var, which is how CI found it.
+    /// The link made here is the same shape and reproduces it on any platform, so the
+    /// assertion is being made where it is cheapest to run as well as where it was found.
+    /// </summary>
+    [SymbolicLinkFact]
+    public async Task Import_SettlesTheJobWhenTheRepositoryIsReachedThroughASymbolicLink()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        var mobile = Path.Combine(fx.Root, "src", "Mobile");
+        Directory.CreateDirectory(mobile);
+        File.WriteAllText(Path.Combine(fx.Root, "vela.json"), """
+            {
+              "version": 1,
+              "jobs": [
+                { "language": "csharp", "indexer": "vela", "root": "." },
+                { "language": "razor",  "indexer": "vela", "root": "." },
+                { "language": "typescript", "indexer": "scip-typescript", "root": "src/Mobile" }
+              ]
+            }
+            """);
+
+        // The repository, named the way a user with a symlinked checkout names it. Every
+        // path below goes through the link and never through the target.
+        var link = Path.Combine(Path.GetTempPath(), "vela-link-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateSymbolicLink(link, fx.Root);
+
+        try
+        {
+            var solution = Path.Combine(link, Path.GetFileName(fx.SolutionPath));
+
+            var indexed = await InvokeAsync("index", "--solution", solution);
+            Assert.Equal(IndexHealth.ExitDegraded, indexed.ExitCode);
+
+            var scip = Path.Combine(link, "src", "Mobile", "index.scip");
+            File.WriteAllBytes(scip, ForeignIndex(fx.Root, "src/Mobile/app.ts", "greet").ToByteArray());
+
+            var previous = Directory.GetCurrentDirectory();
+            (int ExitCode, string Output) imported;
+            try
+            {
+                // Standing inside the link, which is where the user who ran the indexer
+                // is standing, and naming the file the way `vela index` printed it.
+                Directory.SetCurrentDirectory(Path.Combine(link, "src"));
+                imported = await InvokeAsync("import", "src/Mobile/index.scip", "--solution", solution);
+            }
+            finally
+            {
+                Directory.SetCurrentDirectory(previous);
+            }
+
+            Assert.Equal(0, imported.ExitCode);
+
+            var clean = await InvokeAsync("refs", "greet", "--solution", solution);
+            Assert.Equal(0, clean.ExitCode);
+            Assert.DoesNotContain("INCOMPLETE", clean.Output, StringComparison.Ordinal);
+            Assert.Contains("app.ts", clean.Output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(link);
+        }
     }
 
     /// <summary>The three ways a reader can honestly write the path of a .scip that sits

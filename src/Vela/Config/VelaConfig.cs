@@ -48,8 +48,16 @@ public sealed record IndexJob(
     public bool IsVela => string.Equals(Indexer, VelaIndexer, StringComparison.Ordinal);
 
     /// <summary>The absolute path of the `.scip` this job is expected to produce.</summary>
+    /// <summary>
+    /// The .scip this job produces, as the one absolute path that identifies it. Resolved
+    /// through <see cref="RealPath"/> and not <see cref="Path.GetFullPath(string)"/>,
+    /// because `vela import` clears the pending row under exactly this key and the two
+    /// have to be the same string: a symbolic link anywhere above the repository, or a
+    /// different letter case on Windows or macOS, otherwise left the job unsettleable and
+    /// every answer printing INCOMPLETE for an import that had already happened.
+    /// </summary>
     public string ScipPath(string repositoryRoot) =>
-        Path.GetFullPath(Path.Combine(repositoryRoot, Root, Index));
+        RealPath.Of(Path.Combine(repositoryRoot, Root, Index));
 
     /// <summary>That same path relative to the repository, which is what a command line
     /// printed for a human to run should say.</summary>

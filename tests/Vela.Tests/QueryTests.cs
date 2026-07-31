@@ -2021,6 +2021,38 @@ public class QueryTests
         Assert.Empty(AmbiguityRows(result.Output));
     }
 
+    /// <summary>
+    /// A path typed with backslashes is the same path.
+    ///
+    /// scip.proto requires relative_path to use '/' on every platform, and vela's own
+    /// emitter normalises to it, so no document in any index has a backslash in its path
+    /// even on Linux. A Windows shell completes a path with backslashes, which matched
+    /// nothing and printed "No document with the path ... is in the index" - vela telling
+    /// a user it had never seen a file it holds. That is a wrong answer rather than an
+    /// error, which is why it is asserted on every platform and not only on Windows.
+    /// </summary>
+    [Fact]
+    public async Task Outline_MatchesAPathTypedWithTheSeparatorAWindowsShellCompletes()
+    {
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempDirectory();
+        using var _ = new CacheHome(cache.Path);
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousIndexFile(indexPath);
+
+        var forward = await InvokeAsync("outline", "App/Data/Entities/Perfume.cs", "--solution", solution);
+        var back = await InvokeAsync("outline", @"App\Data\Entities\Perfume.cs", "--solution", solution);
+
+        Assert.Equal(0, back.ExitCode);
+        Assert.Equal(ReportedTotal(forward.Output), ReportedTotal(back.Output));
+        Assert.Equal(5, ReportedTotal(back.Output));
+    }
+
     [Fact]
     public async Task Impact_WhenABareNameMatchesSeveralSymbols_SaysTheCallersAreNotOneSymbolsBlastRadius()
     {
