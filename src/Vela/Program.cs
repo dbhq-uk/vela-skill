@@ -89,7 +89,15 @@ public static class Program
         root.Add(BuildHitCommand("outline", "Symbols defined in a file",
             "file", "Path of the file, relative to the repository root (the solution directory "
                   + "when the solution is not in a repository).",
-            solutionOption, (db, value, _) => OutlineQuery.Run(db, value), OutlineQuery.ExplainEmpty));
+            // outline is the one verb whose argument is a path rather than a symbol, and
+            // every path this index stores is '/'-separated on every platform because
+            // scip.proto requires it. A Windows user's shell completes 'App\Pages\Index
+            // .cshtml', which matched nothing and was reported as a file vela had never
+            // seen - a wrong answer rather than an error. Normalised here, at the command
+            // line, so the query layer goes on matching stored paths exactly.
+            solutionOption,
+            (db, value, _) => OutlineQuery.Run(db, AsIndexPath(value)),
+            (db, value) => OutlineQuery.ExplainEmpty(db, AsIndexPath(value))));
         root.Add(BuildHitCommand("impact", "Callers and blast radius",
             "symbol", symbolHelp,
             solutionOption, ImpactQuery.Run, ImpactQuery.ExplainEmpty, ImpactQuery.CountInGeneratedCode,
@@ -1024,6 +1032,13 @@ public static class Program
 
     private static string Relative(string root, string path) =>
         Path.GetRelativePath(root, path).Replace('\\', '/');
+
+    /// <summary>
+    /// A path typed at a command line, in the one form this index stores. Separators only:
+    /// a document's path is relative to the repository root and matched exactly, and
+    /// nothing else about what the caller typed is vela's to reinterpret.
+    /// </summary>
+    private static string AsIndexPath(string path) => path.Replace('\\', '/');
 
     private static string Append(string? existing, string detail) =>
         string.IsNullOrEmpty(existing) ? detail : existing + "; " + detail;

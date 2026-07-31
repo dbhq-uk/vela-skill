@@ -426,8 +426,13 @@ public class VelaConfigTests
 
         // Keyed by the absolute path of the .scip the job expects, which is exactly the
         // key `vela import` clears, so importing that file clears the job and nothing
-        // else has to remember it.
-        Assert.Equal(Path.Combine(tree.Root, "src", "Mobile", "index.scip"), pending.Source);
+        // else has to remember it. Resolved, because that key is the RESOLVED absolute
+        // path on both sides: on macOS the temp directory here is reached through /var,
+        // which is a link to /private/var, so the unresolved spelling would name a file
+        // that no import could ever clear. Still an exact equality against the one file
+        // the job names.
+        Assert.Equal(
+            RealPath.Of(Path.Combine(tree.Root, "src", "Mobile", "index.scip")), pending.Source);
         Assert.Contains("typescript", pending.Detail, StringComparison.Ordinal);
         Assert.Contains("scip-typescript", pending.Detail, StringComparison.Ordinal);
         Assert.Contains("vela import", pending.Detail, StringComparison.Ordinal);

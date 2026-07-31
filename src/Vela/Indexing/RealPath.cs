@@ -42,7 +42,20 @@ public static class RealPath
     /// followed, and on a case-insensitive platform every component spelled the way the
     /// filesystem spells it.
     /// </summary>
-    public static string Of(string path)
+    public static string Of(string path) => Of(path, hops: 0);
+
+    /// <summary>
+    /// The runtime follows a chain of links for us and gives up at forty. This counts
+    /// something it cannot: a link whose TARGET is itself reached through another link,
+    /// which has to be resolved from its own root before it means anything. macOS makes
+    /// that the ordinary case rather than the exotic one - a link created under
+    /// Path.GetTempPath records a target beginning "/var", and "/var" is itself a link to
+    /// "/private/var" - so a target taken at face value is only half resolved. The same
+    /// bound is used for the same reason: to stop rather than loop.
+    /// </summary>
+    private const int MaxHops = 40;
+
+    private static string Of(string path, int hops)
     {
         if (string.IsNullOrEmpty(path)) return path;
 
@@ -71,7 +84,7 @@ public static class RealPath
             // Rebuilt from the resolved prefix rather than from the original, so a link
             // half way up is followed and everything below it is walked in the real tree.
             resolved = Path.Combine(resolved, OnDiskName(resolved, component));
-            resolved = FollowLink(resolved);
+            resolved = FollowLink(resolved, hops);
         }
 
         return resolved;
@@ -127,10 +140,12 @@ public static class RealPath
     }
 
     /// <summary>
-    /// The final target of a link, or the path itself when it is not one. Chains are
-    /// followed by the runtime, which stops at forty hops rather than looping forever.
+    /// The real path of a link's target, or the path itself when it is not a link. A chain
+    /// of links is followed by the runtime; the target it lands on is then resolved from
+    /// its own root here, because that target can perfectly well be reached through links
+    /// of its own and the runtime does not look at them.
     /// </summary>
-    private static string FollowLink(string path)
+    private static string FollowLink(string path, int hops)
     {
         try
         {
@@ -138,7 +153,11 @@ public static class RealPath
             if (entry.LinkTarget is null) return path;
 
             var target = entry.ResolveLinkTarget(returnFinalTarget: true);
-            return target is null ? path : Path.GetFullPath(target.FullName);
+            if (target is null) return path;
+
+            return hops >= MaxHops
+                ? Path.GetFullPath(target.FullName)
+                : Of(target.FullName, hops + 1);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {

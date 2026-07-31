@@ -41,7 +41,14 @@ public static class IndexPaths
         var cache = Environment.GetEnvironmentVariable("XDG_CACHE_HOME")
                     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache");
 
-        var dir = Path.GetFullPath(Path.Combine(cache, "vela"));
+        // Resolved the same way the solution directory above it was, because the guard
+        // below compares the two and a comparison between a resolved path and an
+        // unresolved one answers about spelling rather than about location. It has to be
+        // RealPath on both sides for a second reason as well: a cache directory that
+        // reaches the repository through a symbolic link really would write the index into
+        // the repository, and Constraint 2 is about where the bytes land, not about how
+        // the path was typed.
+        var dir = RealPath.Of(Path.Combine(cache, "vela"));
 
         if (IsWithin(dir, solutionDir))
         {
