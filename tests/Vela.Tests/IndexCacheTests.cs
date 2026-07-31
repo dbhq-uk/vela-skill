@@ -276,6 +276,31 @@ public class IndexCacheTests
         Assert.True(File.Exists(rebuilt), "a query must never evict an index");
     }
 
+    [Fact]
+    public async Task Cache_NeverListsOrRemovesTheFileARebuildIsBuildingInto()
+    {
+        // The build file sits beside the index and is owned by the run that is writing it.
+        // Listing it would show a reader a file that is not an index, and evicting it would
+        // destroy a rebuild in progress from another process.
+        using var fx = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+        using var budget = new CacheBudget("1");
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var building = IndexPaths.TemporaryFor(IndexPaths.ForSolution(fx.SolutionPath));
+        File.WriteAllText(building, "half a database, being written by somebody else");
+        File.SetLastWriteTimeUtc(building, DateTime.UtcNow.AddDays(-400));
+
+        var listed = await InvokeAsync("cache");
+        Assert.Equal(0, listed.ExitCode);
+        Assert.Contains("1 index(es)", listed.Output);
+
+        var cleared = await InvokeAsync("cache", "clear", "--all");
+        Assert.Equal(0, cleared.ExitCode);
+        Assert.True(File.Exists(building), "the build file is not the cache's to remove");
+    }
+
     private static async Task<(int ExitCode, string Output)> InvokeAsync(params string[] args)
     {
         using var writer = new StringWriter();

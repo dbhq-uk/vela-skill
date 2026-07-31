@@ -95,6 +95,7 @@ public static class IndexCache
         var found = new List<CachedIndex>();
 
         foreach (var path in Directory.EnumerateFiles(cacheDirectory, "*.db")
+                     .Where(IsAnIndexFile)
                      .OrderBy(path => path, StringComparer.Ordinal))
         {
             long bytes;
@@ -116,6 +117,20 @@ public static class IndexCache
 
         return found;
     }
+
+    /// <summary>
+    /// A finished index, and not one of the other things the cache directory holds.
+    ///
+    /// The name is checked against the pattern that found it, because the pattern is not
+    /// enough on its own: on Windows a wildcard search matches an entry's 8.3 short name as
+    /// well as its long one, so `*.db` can return something that does not end in `.db` at
+    /// all. What sits next to an index and must never be listed or evicted is the
+    /// `.db.building` file a rebuild in progress is writing into - see
+    /// <see cref="AtomicIndexFile"/> - and the run that owns it is the only thing entitled
+    /// to remove it.
+    /// </summary>
+    private static bool IsAnIndexFile(string path) =>
+        path.EndsWith(".db", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// The solution an index is of, or null when nothing in it can say.
