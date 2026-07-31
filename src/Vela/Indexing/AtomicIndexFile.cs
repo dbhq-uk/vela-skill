@@ -78,6 +78,22 @@ public sealed class AtomicIndexFile : IDisposable
     /// Puts the finished index in place. Called only when the build is complete and the
     /// connection to it is closed: a move with the database still open leaves the writer
     /// holding a file that is no longer where it was.
+    ///
+    /// <b>Only the .db moves, and that is correct only while vela sets no `journal_mode`.</b>
+    /// Nothing in this codebase does - the only PRAGMA it issues is `user_version`, in
+    /// <see cref="Schema"/> - so SQLite uses its default rollback journal, and a database
+    /// closed cleanly deletes its own `-journal` before the connection returns. By the time
+    /// this runs there is no sidecar beside the build file to move, and a `-wal` or `-shm`
+    /// cannot exist because no connection ever asked for one.
+    ///
+    /// <b>If anybody switches the index to WAL, this method has to move the sidecars too.</b>
+    /// A WAL database keeps `-wal` and `-shm` beside it, they are named from the database
+    /// file, and they are part of the database rather than debris: moving the `.db` alone
+    /// would leave the new index next to the OLD index's stale `-wal`, whose header the
+    /// next open checks against a file it no longer describes. `journal_mode=TRUNCATE` and
+    /// `PERSIST` are the same trap in a smaller way: both leave a `-journal` on disk after
+    /// a clean close. The safe shapes are the current default, or moving every sidecar
+    /// with the database in one commit.
     /// </summary>
     public void Commit()
     {
