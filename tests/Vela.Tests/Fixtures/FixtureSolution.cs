@@ -406,6 +406,16 @@ public sealed class FixtureSolution : IDisposable
             RedirectStandardError = true
         };
 
+        // MSBuild keeps its worker nodes alive for fifteen minutes after a build so the
+        // next build can reuse them. Those nodes are grandchildren of this process and
+        // they INHERIT the two pipes below, so the pipes do not reach end-of-file when
+        // `dotnet` exits - they reach it when the last node times out. A restore of a
+        // multi-project solution spawns nodes; a restore of a single-project one does
+        // not, which is why this stayed invisible until the fixtures grew a second
+        // project. On CI it turned two-second restores into fifteen-minute ones, one
+        // after another, and a suite that runs in ninety seconds took three hours.
+        psi.Environment["MSBUILDDISABLENODEREUSE"] = "1";
+
         using var p = Process.Start(psi)!;
 
         var stdoutBuilder = new StringBuilder();
@@ -421,8 +431,13 @@ public sealed class FixtureSolution : IDisposable
             throw new TimeoutException($"{exe} {args} did not complete within {timeoutMs}ms and was killed.");
         }
 
-        // Ensure async output handlers have finished flushing.
-        p.WaitForExit();
+        // Give the async output handlers a moment to flush. Bounded on purpose: the
+        // parameterless overload waits for the redirected streams to reach end-of-file
+        // rather than for the process, so anything that inherited them can hold this
+        // thread for as long as it likes. The environment variable above removes the one
+        // thing that did; this is the belt to that brace, and it costs at most five
+        // seconds of a truncated message on a command that already failed.
+        p.WaitForExit(5_000);
 
         if (p.ExitCode != 0)
             throw new InvalidOperationException($"{exe} {args} failed: {stderrBuilder}{stdoutBuilder}");
