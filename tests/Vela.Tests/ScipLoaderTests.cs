@@ -82,7 +82,11 @@ public class ScipLoaderTests : IClassFixture<HarvestedWebApp>
             Environment.SetEnvironmentVariable("XDG_CACHE_HOME", previous);
         }
 
-        var fullCacheRoot = Path.GetFullPath(cacheRoot);
+        // Resolved the way IndexPaths resolves it, because on macOS Path.GetTempPath is
+        // reached through /var, which is a link to /private/var, and GetFullPath does not
+        // follow links. Still the same assertion: the index for a solution lives under
+        // the cache directory and nowhere else.
+        var fullCacheRoot = RealPath.Of(cacheRoot);
         Assert.StartsWith(fullCacheRoot + Path.DirectorySeparatorChar, pathA1, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(pathA1, pathA2);
         Assert.NotEqual(pathA1, pathB);
