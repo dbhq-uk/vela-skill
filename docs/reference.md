@@ -365,12 +365,25 @@ commit it was built from.
 | Code | Meaning |
 |---|---|
 | `0` | The question was answered, and the index behind the answer reports no problem. |
-| `1` | The question could not be answered at all: no solution found, no index built yet, a `.scip` that is not there, a config that cannot be honoured, an index whose schema version this build cannot read, or a `vela cache clear` that was told nothing or could not remove what it was told. |
+| `1` | The question could not be answered at all: no solution found, no index built yet, a `.scip` that is not there, a config that cannot be honoured, an index whose schema version this build cannot read, an index or a cache directory that cannot be read at all, a rebuild the disk would not take, or a `vela cache clear` that was told nothing or could not remove what it was told. |
 | `3` | An answer was produced, and the index behind it is known to be missing code, out of date, or unverifiable. |
 
 `3` is the interesting one. It is deliberately not `1`, because the answer above it is
 real and usually useful; it is deliberately not `0`, because a script must be able to tell.
 Every exit `3` prints the banner.
+
+A rebuild that could not be written is `1` rather than `3`. `3` means "here is an answer,
+and it is incomplete"; a rebuild that never finished produced no answer at all, and the
+index already on disk - which is still there, byte for byte, because the new one is built
+beside it and moved over it only when it is finished - was not degraded by a run that never
+reached it. So the three failures that used to print a .NET stack trace now print three
+lines each: what went wrong, what state your index is in, and the one thing to do about it.
+
+| What happened | What it says |
+|---|---|
+| The disk or a quota would not take another page | `vela index ran out of room while writing the index`, then where to free space |
+| The finished index could not be moved into place | `vela index built the new index and could not move it into place`, then what usually holds it open. Windows refuses a rename over a file another process has open; Unix does not |
+| The index is not a database, is truncated, or will not open | `The index at <path> could not be read`, then `Run: vela index --solution <path>`, which builds a new one from nothing |
 
 ## How a symbol name is matched
 

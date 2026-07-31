@@ -44,8 +44,20 @@ public class AtomicIndexTests
         var building = IndexPaths.TemporaryFor(indexPath);
         Directory.CreateDirectory(building);
 
-        await Assert.ThrowsAnyAsync<Exception>(() =>
-            InvokeAsync("index", "--solution", fx.SolutionPath));
+        var failed = await InvokeAsync("index", "--solution", fx.SolutionPath);
+
+        // The failure is REPORTED, not thrown. This assertion used to be
+        // Assert.ThrowsAnyAsync, which encoded the defect: the index survived and the user
+        // saw a .NET stack trace instead of being told what had happened. Exit 1 is the
+        // existing "vela could not do what was asked" code, and every property the throwing
+        // version proved is still proved below.
+        Assert.Equal(Program.ExitCannotAnswer, failed.ExitCode);
+        Assert.Contains("could not write the index", failed.Output);
+        Assert.Contains(indexPath, failed.Output);
+        Assert.Contains("is exactly as it was", failed.Output);
+        Assert.Contains("run vela index again", failed.Output);
+        Assert.DoesNotContain("Unhandled exception", failed.Output);
+        Assert.DoesNotContain("   at ", failed.Output);
 
         // Byte-identical. Not "an index exists", not "a query answers": the old one, the
         // one the user had, unchanged.
@@ -77,11 +89,63 @@ public class AtomicIndexTests
         IndexPaths.EnsureDirectoryExists(indexPath);
         Directory.CreateDirectory(indexPath);
 
-        await Assert.ThrowsAnyAsync<Exception>(() =>
-            InvokeAsync("index", "--solution", fx.SolutionPath));
+        var failed = await InvokeAsync("index", "--solution", fx.SolutionPath);
+
+        // Reported rather than thrown, for the same reason as above, and in the words this
+        // failure alone earns: the index is finished and healthy and only the last rename
+        // would not happen, which on Windows is what another process holding the
+        // destination open looks like.
+        Assert.Equal(Program.ExitCannotAnswer, failed.ExitCode);
+        Assert.Contains("could not move it into place", failed.Output);
+        Assert.Contains("another process holding the index open", failed.Output);
+        Assert.DoesNotContain("Unhandled exception", failed.Output);
+        Assert.DoesNotContain("   at ", failed.Output);
 
         Assert.False(File.Exists(IndexPaths.TemporaryFor(indexPath)),
             "the build file was left in the cache directory after a failed rebuild");
+    }
+
+    /// <summary>
+    /// The Windows failure this whole message exists for, made on Windows.
+    ///
+    /// A rename over a file another process has open fails there and succeeds on Unix, so
+    /// this is the one platform where the real cause can be produced rather than stood in
+    /// for. The test above reaches the same code path everywhere by putting a directory in
+    /// the way; this one holds a handle, which is what an editor, an agent or a second vela
+    /// actually does.
+    /// </summary>
+    [WindowsOnlyFact]
+    public async Task Index_ReportsThatSomethingElseHasTheIndexOpen()
+    {
+        using var fx = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var indexPath = IndexPaths.ForSolution(fx.SolutionPath);
+        var before = File.ReadAllBytes(indexPath);
+
+        int exitCode;
+        string output;
+
+        // FileShare.Read denies the delete sharing a rename over this file needs, which is
+        // exactly what any other reader of the index holds.
+        using (var holder = new FileStream(indexPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            (exitCode, output) = await InvokeAsync("index", "--solution", fx.SolutionPath);
+        }
+
+        Assert.Equal(Program.ExitCannotAnswer, exitCode);
+        Assert.Contains("could not move it into place", output);
+        Assert.Contains("another process holding the index open", output);
+        Assert.DoesNotContain("Unhandled exception", output);
+
+        Assert.Equal(before, File.ReadAllBytes(indexPath));
+        Assert.False(File.Exists(IndexPaths.TemporaryFor(indexPath)));
+
+        var query = await InvokeAsync("refs", "Solo.Thing.Value()", "--solution", fx.SolutionPath);
+        Assert.Equal(0, query.ExitCode);
+        Assert.DoesNotContain("INCOMPLETE", query.Output);
     }
 
     [Fact]
@@ -149,8 +213,12 @@ public class AtomicIndexTests
         var building = IndexPaths.TemporaryFor(indexPath);
         Directory.CreateDirectory(building);
 
-        await Assert.ThrowsAnyAsync<Exception>(() =>
-            InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath));
+        var failed = await InvokeAsync("index", "--incremental", "--solution", fx.SolutionPath);
+
+        Assert.Equal(Program.ExitCannotAnswer, failed.ExitCode);
+        Assert.Contains("could not write the index", failed.Output);
+        Assert.DoesNotContain("Unhandled exception", failed.Output);
+        Assert.DoesNotContain("   at ", failed.Output);
 
         Assert.Equal(before, File.ReadAllBytes(indexPath));
 

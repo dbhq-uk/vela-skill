@@ -1,6 +1,29 @@
 namespace Vela.Indexing;
 
 /// <summary>
+/// The finished index could not be moved over the one it replaces.
+///
+/// It has its own type because it is the one write failure in a rebuild where nothing at
+/// all went wrong with the work: the new index is complete, healthy and sitting on disk,
+/// and only the last rename would not happen. On Windows that is what another process
+/// holding the index open looks like, and "close whatever has it open" is advice no other
+/// write failure wants - telling somebody to free disk space when the disk is not full
+/// sends them to the wrong place.
+///
+/// It derives from <see cref="IOException"/> because that is what it is, and because a
+/// caller that only wants to know "the index could not be written" then needs no new type
+/// in its catch list to keep working.
+/// </summary>
+public sealed class IndexCommitException : IOException
+{
+    public IndexCommitException(string destination, Exception inner)
+        : base(inner.Message, inner) => Destination = destination;
+
+    /// <summary>The index that is still there, unchanged, because the move did not happen.</summary>
+    public string Destination { get; }
+}
+
+/// <summary>
 /// A rebuild that either replaces the index or leaves it exactly as it was.
 ///
 /// `vela index` used to delete the database and then write a new one, so the window
@@ -97,7 +120,15 @@ public sealed class AtomicIndexFile : IDisposable
     /// </summary>
     public void Commit()
     {
-        File.Move(Path, Destination, overwrite: true);
+        try
+        {
+            File.Move(Path, Destination, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw new IndexCommitException(Destination, ex);
+        }
+
         _committed = true;
     }
 

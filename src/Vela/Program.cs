@@ -7,10 +7,18 @@ using Vela.Query;
 public static class Program
 {
     /// <summary>
-    /// Exit code for a question vela could not answer at all: no solution, or no
-    /// index built yet. Distinct from <see cref="IndexHealth.ExitDegraded"/>, which
-    /// means an answer was produced but the index behind it is known to be missing
-    /// code, and distinct from 0, which promises neither problem.
+    /// Exit code for a question vela could not answer at all: no solution, no index built
+    /// yet, an index that cannot be read, or a rebuild the disk would not take. Distinct
+    /// from <see cref="IndexHealth.ExitDegraded"/>, which means an answer was produced but
+    /// the index behind it is known to be missing code, and distinct from 0, which
+    /// promises neither problem.
+    ///
+    /// A rebuild that failed belongs here rather than at 3 and rather than at a code of
+    /// its own. 3 means "here is an answer, and it is incomplete"; there is no answer at
+    /// all when nothing could be written, and the previous index - which is still there,
+    /// untouched - is not degraded by a run that never reached it. A fourth code would
+    /// mean every caller that already tells 0, 1 and 3 apart had to learn a new one to
+    /// find out something 1 already says: vela did not do what you asked, and said why.
     /// </summary>
     public const int ExitCannotAnswer = 1;
 
@@ -315,179 +323,44 @@ public static class Program
 
             var path = IndexPaths.ForSolution(solution);
 
-            // ForSolution is pure, so the cache directory may not exist yet, and
-            // ScipLoader.Load requires an empty schema: re-indexing into the last
-            // build's database is a precondition violation, not an update.
-            IndexPaths.EnsureDirectoryExists(path);
-
-            var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(solution, cancellationToken);
-
-            // The incremental decision, taken before anything is harvested. Null means a
-            // full rebuild, which is what this verb has always done and what it still does
-            // unless asked otherwise - and every reason the decision was refused is printed
-            // by the time this returns, because a fallback is a good outcome and a silent
-            // one is not.
-            var rebuild = parseResult.GetValue(incrementalOption)
-                ? await PlanRebuildAsync(load.Solution, repositoryRoot, path, output, cancellationToken)
-                : null;
-
-            var emitted = await Vela.Harvest.ScipEmitter.EmitAsync(
-                load.Solution, load.Failures, cancellationToken,
-                rebuild is null ? null : rebuild.Reuse.ToHashSet(StringComparer.Ordinal));
-            var index = emitted.Index;
-
-            var replayed = new HashSet<string>(StringComparer.Ordinal);
-            var replayProblems = new List<string>();
-            HealthRecord health;
-
-            if (rebuild is null)
+            // Everything that writes, in one attempt that either produces an index or
+            // leaves the one already there alone. Every failure below is a failure of the
+            // disk rather than of the code, and each one is reported in its own words a
+            // few lines further down.
+            try
             {
-                health = BuildHealthRecord(index, load.Failures);
+                // ForSolution is pure, so the cache directory may not exist yet, and
+                // ScipLoader.Load requires an empty schema: re-indexing into the last
+                // build's database is a precondition violation, not an update.
+                IndexPaths.EnsureDirectoryExists(path);
 
-                // A job root that is not there can never be settled by an import, so it
-                // belongs in the indexing pass's own verdict, which this run rewrites: fix
-                // the config or the tree, index again, and it clears.
-                if (plan.Problems.Count > 0)
+                var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(solution, cancellationToken);
+
+                // The incremental decision, taken before anything is harvested. Null means a
+                // full rebuild, which is what this verb has always done and what it still does
+                // unless asked otherwise - and every reason the decision was refused is printed
+                // by the time this returns, because a fallback is a good outcome and a silent
+                // one is not.
+                var rebuild = parseResult.GetValue(incrementalOption)
+                    ? await PlanRebuildAsync(load.Solution, repositoryRoot, path, output, cancellationToken)
+                    : null;
+
+                var emitted = await Vela.Harvest.ScipEmitter.EmitAsync(
+                    load.Solution, load.Failures, cancellationToken,
+                    rebuild is null ? null : rebuild.Reuse.ToHashSet(StringComparer.Ordinal));
+                var index = emitted.Index;
+
+                var replayed = new HashSet<string>(StringComparer.Ordinal);
+                var replayProblems = new List<string>();
+                HealthRecord health;
+
+                if (rebuild is null)
                 {
-                    health = health with
-                    {
-                        Degraded = true,
-                        Detail = Append(health.Detail, Summarise(plan.Problems))
-                    };
-                }
+                    health = BuildHealthRecord(index, load.Failures);
 
-                // Asked BEFORE anything is written, because the answer is in the file this
-                // run is about to replace. This is what an imported language survives a
-                // rebuild by: nothing else in the database outlives this line. See
-                // ImportedSources for what its absence cost on the real repository.
-                var remembered = ImportedSources.ReadFrom(path);
-
-                // Built beside the index rather than over it. The file the user already has
-                // is not touched until this one is finished, so a run that is interrupted -
-                // Ctrl-C, an OOM kill, a full disk, a project that throws - costs the time
-                // it had spent and nothing else. See AtomicIndexFile.
-                using var building = AtomicIndexFile.Beside(path);
-
-                using (var db = new SqliteConnection(ConnectionStringFor(building.Path)))
-                {
-                    db.Open();
-                    Schema.Create(db);
-                    ScipLoader.Load(db, emitted);
-
-                    var external = ExternalDocumentPaths(index);
-                    ExternalDocuments.Write(db, external);
-                    IndexHealth.Write(db, health);
-
-                    // Which solution this index is of. Nothing else in the database can
-                    // say: the file name carries a hash of the solution path, and a hash
-                    // does not go backwards. See IndexIdentity.
-                    IndexIdentity.Write(db, solution);
-
-                    // What each project was built from, what each project could not do, and
-                    // which documents each one contributed to. Together they are what lets a
-                    // LATER run skip a project without forgetting any of it: a rebuild that
-                    // cannot check its own claim is the thing these records exist to make
-                    // impossible.
-                    ProjectInputs.Write(
-                        db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, health.BuiltAtUtc);
-                    ProjectNotes.Write(db, emitted.Harvested, emitted.Notes);
-                    ProjectDocuments.Write(db, emitted.Harvested, emitted.DocumentsByProject);
-
-                    // The destination, not the file being built into: the temporary name is
-                    // an implementation detail of not destroying the previous index, and a
-                    // path the user cannot use is not an answer to "where did it go".
-                    output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
-
-                    Replay(db, remembered, repositoryRoot, path, output, replayed, replayProblems);
-
-                    // Each job vela cannot run itself, recorded under the .scip it is waiting
-                    // for. That key is exactly the one `vela import` clears when it imports a
-                    // file cleanly, so importing the file the job named settles the job with no
-                    // further machinery and nothing left behind to go stale.
-                    //
-                    // A job whose .scip was just replayed is skipped: the replay has already
-                    // written that source's verdict under the same key, and it is the true one.
-                    // Writing "nothing has been imported from it" over the top would be the
-                    // crying-wolf failure with the wolf standing in the room.
-                    foreach (var pending in plan.Pending)
-                    {
-                        if (!replayed.Contains(pending.Source))
-                            IndexHealth.WriteImport(db, pending.Source, pending.Detail);
-                    }
-
-                    ReportExternalDocuments(output, external.Count);
-
-                    if (parseResult.GetValue(statsOption))
-                        output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
-                }
-
-                // Closed first, then moved. A rename with the database still open leaves
-                // the writer holding a file that is no longer where it was.
-                building.Commit();
-            }
-            else
-            {
-                // The plan above was read from the index on disk; the copy is taken now, so
-                // the two describe the same database. Everything from here writes into the
-                // copy, and the index the user already has stays exactly as it is until the
-                // copy is finished. A half-applied incremental rebuild would be an index
-                // describing code that never existed together, which is worse than no
-                // rebuild at all.
-                using var building = AtomicIndexFile.CopyOf(path);
-
-                using (var db = new SqliteConnection(ConnectionStringFor(building.Path)))
-                {
-                    db.Open();
-
-                    // What the rebuilt projects contributed to LAST time, which is the only
-                    // record of a document whose file has since been deleted: the fresh harvest
-                    // cannot name a file that is not there.
-                    var replacing = DocumentsOf(ProjectDocuments.Read(db), rebuild.Rebuild);
-                    var written = ScipLoader.LoadIncremental(db, emitted, replacing);
-
-                    // The freshness clock, moved for the whole index and not only for the
-                    // projects this run rewrote. That is honest, and it is worth saying why,
-                    // because "the index was built at T" is what Staleness compares every
-                    // watched file's mtime against and a reused project's rows are older than T.
-                    //
-                    // Working out the plan read and hashed every input of every project the
-                    // solution holds, reused ones included: that is the only way to find out
-                    // which ones can be reused. A file whose content changed changed its
-                    // project's fingerprint, and that project is in the rebuild set. So by the
-                    // time this line runs, every fingerprinted file has been compared by
-                    // CONTENT, which is stricter than the mtime comparison the freshness check
-                    // makes, and a reused project's rows are as good as its files are unchanged.
-                    //
-                    // The gap is a watched file that is an input of no project at all, and a
-                    // full rebuild moves this same timestamp without reading one of those
-                    // either, so neither mode is blinder than the other. Documented in
-                    // reference.md under --incremental.
-                    var builtAtUtc = DateTime.UtcNow;
-                    ProjectInputs.Write(
-                        db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, builtAtUtc);
-                    ProjectNotes.Write(db, emitted.Harvested, emitted.Notes);
-                    ProjectDocuments.Write(db, emitted.Harvested, emitted.DocumentsByProject);
-
-                    // Everything every project has to say about itself, INCLUDING the projects
-                    // this run did not look at. That is what stops a skipped project going
-                    // quiet: a `compile-error:` note is produced by the harvest and by nothing
-                    // else, so a rebuild that only knew what it had just harvested would drop
-                    // the note and the index would stop calling itself degraded while still
-                    // holding an incomplete picture of that project.
-                    //
-                    // Deduplicated because the note for a path that cannot be a document is
-                    // attributed to whichever project reached it first, and that can be a
-                    // different project on a different run.
-                    var notes = ProjectNotes.Read(db)
-                        .Select(note => note.Note)
-                        .Distinct(StringComparer.Ordinal)
-                        .ToList();
-
-                    var external = ExternalPathsIn(notes);
-                    ExternalDocuments.Replace(db, external);
-
-                    health = BuildHealthRecordFromNotes(notes, load.Failures, builtAtUtc);
-
+                    // A job root that is not there can never be settled by an import, so it
+                    // belongs in the indexing pass's own verdict, which this run rewrites: fix
+                    // the config or the tree, index again, and it clears.
                     if (plan.Problems.Count > 0)
                     {
                         health = health with
@@ -497,96 +370,318 @@ public static class Program
                         };
                     }
 
-                    // A document the harvest produced and could not write, because an import
-                    // holds that path and relative_path is UNIQUE. Nothing was lost that was
-                    // not already somebody else's, and the index is still missing code it
-                    // harvested, so it says so.
-                    if (written.SkippedPaths.Count > 0)
+                    // Asked BEFORE anything is written, because the answer is in the file this
+                    // run is about to replace. This is what an imported language survives a
+                    // rebuild by: nothing else in the database outlives this line. See
+                    // ImportedSources for what its absence cost on the real repository.
+                    var remembered = ImportedSources.ReadFrom(path);
+
+                    // Built beside the index rather than over it. The file the user already has
+                    // is not touched until this one is finished, so a run that is interrupted -
+                    // Ctrl-C, an OOM kill, a full disk, a project that throws - costs the time
+                    // it had spent and nothing else. See AtomicIndexFile.
+                    using var building = AtomicIndexFile.Beside(path);
+
+                    using (var db = new SqliteConnection(ConnectionStringFor(building.Path)))
                     {
-                        health = health with
+                        db.Open();
+                        Schema.Create(db);
+                        ScipLoader.Load(db, emitted);
+
+                        var external = ExternalDocumentPaths(index);
+                        ExternalDocuments.Write(db, external);
+                        IndexHealth.Write(db, health);
+
+                        // Which solution this index is of. Nothing else in the database can
+                        // say: the file name carries a hash of the solution path, and a hash
+                        // does not go backwards. See IndexIdentity.
+                        IndexIdentity.Write(db, solution);
+
+                        // What each project was built from, what each project could not do, and
+                        // which documents each one contributed to. Together they are what lets a
+                        // LATER run skip a project without forgetting any of it: a rebuild that
+                        // cannot check its own claim is the thing these records exist to make
+                        // impossible.
+                        ProjectInputs.Write(
+                            db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, health.BuiltAtUtc);
+                        ProjectNotes.Write(db, emitted.Harvested, emitted.Notes);
+                        ProjectDocuments.Write(db, emitted.Harvested, emitted.DocumentsByProject);
+
+                        // The destination, not the file being built into: the temporary name is
+                        // an implementation detail of not destroying the previous index, and a
+                        // path the user cannot use is not an answer to "where did it go".
+                        output.WriteLine($"Indexed {index.Documents.Count} documents to {path}");
+
+                        Replay(db, remembered, repositoryRoot, path, output, replayed, replayProblems);
+
+                        // Each job vela cannot run itself, recorded under the .scip it is waiting
+                        // for. That key is exactly the one `vela import` clears when it imports a
+                        // file cleanly, so importing the file the job named settles the job with no
+                        // further machinery and nothing left behind to go stale.
+                        //
+                        // A job whose .scip was just replayed is skipped: the replay has already
+                        // written that source's verdict under the same key, and it is the true one.
+                        // Writing "nothing has been imported from it" over the top would be the
+                        // crying-wolf failure with the wolf standing in the room.
+                        foreach (var pending in plan.Pending)
                         {
-                            Degraded = true,
-                            Detail = Append(health.Detail, Summarise(written.SkippedPaths
-                                .Select(p => "import-collision: " + p + " was harvested and not written, because "
-                                           + "an imported .scip already holds that path. Run vela index without "
-                                           + "--incremental, which rebuilds from nothing and replays the import "
-                                           + "over the top.")
-                                .ToList()))
-                        };
+                            if (!replayed.Contains(pending.Source))
+                                IndexHealth.WriteImport(db, pending.Source, pending.Detail);
+                        }
+
+                        ReportExternalDocuments(output, external.Count);
+
+                        if (parseResult.GetValue(statsOption))
+                            output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
                     }
 
-                    health = health with { Rebuild = DescribeRebuild(rebuild) };
-                    IndexHealth.Write(db, health);
+                    // Closed first, then moved. A rename with the database still open leaves
+                    // the writer holding a file that is no longer where it was.
+                    building.Commit();
+                }
+                else
+                {
+                    // The plan above was read from the index on disk; the copy is taken now, so
+                    // the two describe the same database. Everything from here writes into the
+                    // copy, and the index the user already has stays exactly as it is until the
+                    // copy is finished. A half-applied incremental rebuild would be an index
+                    // describing code that never existed together, which is worse than no
+                    // rebuild at all.
+                    using var building = AtomicIndexFile.CopyOf(path);
 
-                    // Rewritten rather than assumed unchanged: the copy this run is
-                    // writing into carries whatever the last one recorded, and an index
-                    // reached through a second spelling of one solution would otherwise
-                    // keep the first spelling forever.
-                    IndexIdentity.Write(db, solution);
-
-                    ReportRebuild(output, rebuild, written, path);
-
-                    // An import survives an incremental rebuild by not being touched, where it
-                    // survives a full one by being replayed. Either way it is still in the
-                    // index and still remembered, so a job waiting on it is still settled.
-                    replayed.UnionWith(ImportedPaths(db));
-
-                    foreach (var pending in plan.Pending)
+                    using (var db = new SqliteConnection(ConnectionStringFor(building.Path)))
                     {
-                        if (!replayed.Contains(pending.Source))
-                            IndexHealth.WriteImport(db, pending.Source, pending.Detail);
+                        db.Open();
+
+                        // What the rebuilt projects contributed to LAST time, which is the only
+                        // record of a document whose file has since been deleted: the fresh harvest
+                        // cannot name a file that is not there.
+                        var replacing = DocumentsOf(ProjectDocuments.Read(db), rebuild.Rebuild);
+                        var written = ScipLoader.LoadIncremental(db, emitted, replacing);
+
+                        // The freshness clock, moved for the whole index and not only for the
+                        // projects this run rewrote. That is honest, and it is worth saying why,
+                        // because "the index was built at T" is what Staleness compares every
+                        // watched file's mtime against and a reused project's rows are older than T.
+                        //
+                        // Working out the plan read and hashed every input of every project the
+                        // solution holds, reused ones included: that is the only way to find out
+                        // which ones can be reused. A file whose content changed changed its
+                        // project's fingerprint, and that project is in the rebuild set. So by the
+                        // time this line runs, every fingerprinted file has been compared by
+                        // CONTENT, which is stricter than the mtime comparison the freshness check
+                        // makes, and a reused project's rows are as good as its files are unchanged.
+                        //
+                        // The gap is a watched file that is an input of no project at all, and a
+                        // full rebuild moves this same timestamp without reading one of those
+                        // either, so neither mode is blinder than the other. Documented in
+                        // reference.md under --incremental.
+                        var builtAtUtc = DateTime.UtcNow;
+                        ProjectInputs.Write(
+                            db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, builtAtUtc);
+                        ProjectNotes.Write(db, emitted.Harvested, emitted.Notes);
+                        ProjectDocuments.Write(db, emitted.Harvested, emitted.DocumentsByProject);
+
+                        // Everything every project has to say about itself, INCLUDING the projects
+                        // this run did not look at. That is what stops a skipped project going
+                        // quiet: a `compile-error:` note is produced by the harvest and by nothing
+                        // else, so a rebuild that only knew what it had just harvested would drop
+                        // the note and the index would stop calling itself degraded while still
+                        // holding an incomplete picture of that project.
+                        //
+                        // Deduplicated because the note for a path that cannot be a document is
+                        // attributed to whichever project reached it first, and that can be a
+                        // different project on a different run.
+                        var notes = ProjectNotes.Read(db)
+                            .Select(note => note.Note)
+                            .Distinct(StringComparer.Ordinal)
+                            .ToList();
+
+                        var external = ExternalPathsIn(notes);
+                        ExternalDocuments.Replace(db, external);
+
+                        health = BuildHealthRecordFromNotes(notes, load.Failures, builtAtUtc);
+
+                        if (plan.Problems.Count > 0)
+                        {
+                            health = health with
+                            {
+                                Degraded = true,
+                                Detail = Append(health.Detail, Summarise(plan.Problems))
+                            };
+                        }
+
+                        // A document the harvest produced and could not write, because an import
+                        // holds that path and relative_path is UNIQUE. Nothing was lost that was
+                        // not already somebody else's, and the index is still missing code it
+                        // harvested, so it says so.
+                        if (written.SkippedPaths.Count > 0)
+                        {
+                            health = health with
+                            {
+                                Degraded = true,
+                                Detail = Append(health.Detail, Summarise(written.SkippedPaths
+                                    .Select(p => "import-collision: " + p + " was harvested and not written, because "
+                                               + "an imported .scip already holds that path. Run vela index without "
+                                               + "--incremental, which rebuilds from nothing and replays the import "
+                                               + "over the top.")
+                                    .ToList()))
+                            };
+                        }
+
+                        health = health with { Rebuild = DescribeRebuild(rebuild) };
+                        IndexHealth.Write(db, health);
+
+                        // Rewritten rather than assumed unchanged: the copy this run is
+                        // writing into carries whatever the last one recorded, and an index
+                        // reached through a second spelling of one solution would otherwise
+                        // keep the first spelling forever.
+                        IndexIdentity.Write(db, solution);
+
+                        ReportRebuild(output, rebuild, written, path);
+
+                        // An import survives an incremental rebuild by not being touched, where it
+                        // survives a full one by being replayed. Either way it is still in the
+                        // index and still remembered, so a job waiting on it is still settled.
+                        replayed.UnionWith(ImportedPaths(db));
+
+                        foreach (var pending in plan.Pending)
+                        {
+                            if (!replayed.Contains(pending.Source))
+                                IndexHealth.WriteImport(db, pending.Source, pending.Detail);
+                        }
+
+                        ReportExternalDocuments(output, external.Count);
+
+                        if (parseResult.GetValue(statsOption))
+                            output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
                     }
 
-                    ReportExternalDocuments(output, external.Count);
-
-                    if (parseResult.GetValue(statsOption))
-                        output.Write(IndexStatistics.Render(IndexStatistics.Read(db)));
+                    // Closed first, then moved, for the same reason the full rebuild does it in
+                    // that order.
+                    building.Commit();
                 }
 
-                // Closed first, then moved, for the same reason the full rebuild does it in
-                // that order.
-                building.Commit();
+                // Housekeeping, and only here. The new index is in place, so nothing this
+                // removes can be the one this run was asked for; and this is the one verb that
+                // was always going to write to the cache directory, so it is the only place
+                // where removing something from it is not a surprise. A query never evicts
+                // anything: it is read-only and stays read-only, and the moment somebody runs
+                // one is the moment they are most likely to be about to use another index.
+                SweepCache(output, error, path);
+
+                var outstanding = plan.Pending.Where(p => !replayed.Contains(p.Source)).ToList();
+
+                if (config.FoundAt is not null)
+                {
+                    ReportCensus(output, config, repositoryRoot);
+                    ReportPendingJobs(output, outstanding, repositoryRoot);
+                }
+
+                var reasons = outstanding
+                    .Select(p => Relative(repositoryRoot, p.Source) + ": " + p.Detail)
+                    .Concat(replayProblems)
+                    .ToList();
+
+                var detail = reasons.Count == 0 ? health.Detail : Append(health.Detail, Summarise(reasons));
+
+                // A configured job that did not run degrades the index exactly as a project that
+                // did not load does. That is the whole point of putting the jobs in a file: a
+                // config must never become a quiet way to lose a language. A .scip that was
+                // imported once and cannot be replayed is the same fact arriving from the other
+                // direction, and it degrades the index for the same reason.
+                if (health.Degraded || reasons.Count > 0)
+                {
+                    error.WriteLine("!! The index is INCOMPLETE. " + detail);
+                    error.WriteLine("   Answers from it may be missing code. Do not treat an empty result as proof.");
+                    return IndexHealth.ExitDegraded;
+                }
+
+                return 0;
             }
-
-            // Housekeeping, and only here. The new index is in place, so nothing this
-            // removes can be the one this run was asked for; and this is the one verb that
-            // was always going to write to the cache directory, so it is the only place
-            // where removing something from it is not a surprise. A query never evicts
-            // anything: it is read-only and stays read-only, and the moment somebody runs
-            // one is the moment they are most likely to be about to use another index.
-            SweepCache(output, error, path);
-
-            var outstanding = plan.Pending.Where(p => !replayed.Contains(p.Source)).ToList();
-
-            if (config.FoundAt is not null)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                          or SqliteException)
             {
-                ReportCensus(output, config, repositoryRoot);
-                ReportPendingJobs(output, outstanding, repositoryRoot);
+                // Named types, and only these three. A blanket catch here would turn a
+                // defect in the harvester into a tidy sentence about the disk, and a
+                // message that hides a bug is worse than the trace that reveals one:
+                // ScipLoader's "the database is not empty" precondition and
+                // IndexPaths's "the cache is inside the repository" guard both throw
+                // InvalidOperationException, and both must stay loud.
+                //
+                // OperationCanceledException is not reachable from this list, and that is
+                // the point: a user who pressed Ctrl-C asked for the run to stop, and it
+                // leaves by the route it always did rather than being reported as a disk
+                // that would not take the index. The same exclusion is made explicitly in
+                // PlanRebuildAsync, where a blanket catch does need a `when` clause to
+                // make it.
+                ReportIndexFailure(error, ex, path);
+                return ExitCannotAnswer;
             }
-
-            var reasons = outstanding
-                .Select(p => Relative(repositoryRoot, p.Source) + ": " + p.Detail)
-                .Concat(replayProblems)
-                .ToList();
-
-            var detail = reasons.Count == 0 ? health.Detail : Append(health.Detail, Summarise(reasons));
-
-            // A configured job that did not run degrades the index exactly as a project that
-            // did not load does. That is the whole point of putting the jobs in a file: a
-            // config must never become a quiet way to lose a language. A .scip that was
-            // imported once and cannot be replayed is the same fact arriving from the other
-            // direction, and it degrades the index for the same reason.
-            if (health.Degraded || reasons.Count > 0)
-            {
-                error.WriteLine("!! The index is INCOMPLETE. " + detail);
-                error.WriteLine("   Answers from it may be missing code. Do not treat an empty result as proof.");
-                return IndexHealth.ExitDegraded;
-            }
-
-            return 0;
         });
 
         return command;
+    }
+
+    /// <summary>
+    /// SQLITE_FULL: the disk, or a filesystem quota, would not take another page. It is
+    /// the one write failure SQLite names precisely enough to give precise advice about,
+    /// which is why it is worth telling apart from the rest.
+    /// </summary>
+    private const int SqliteFull = 13;
+
+    /// <summary>
+    /// What a rebuild that could not be written says.
+    ///
+    /// Three sentences, in one order, every time: what went wrong, what state the user's
+    /// index is in now, and the one thing to do about it. The middle one is the sentence
+    /// that matters most and the one a stack trace could never give - a failed rebuild
+    /// leaves the previous index byte-identical, so the honest thing to say is that
+    /// nothing was lost, and a user who is not told that assumes the worst and rebuilds
+    /// from nothing.
+    ///
+    /// The three shapes differ only in the first and last sentence, and they differ
+    /// because the fixes are unrelated: free some space, close whatever has the file open,
+    /// or look at the cache directory. Collapsing them into one sentence covering all
+    /// three would send two users out of three to the wrong place.
+    /// </summary>
+    private static void ReportIndexFailure(TextWriter error, Exception ex, string path)
+    {
+        var directory = Path.GetDirectoryName(path) ?? path;
+
+        // Claimed only when it is true. A first-ever index that could not be written left
+        // nothing behind and saying "your index is exactly as it was" would be describing
+        // a file that is not there.
+        var previous = File.Exists(path)
+            ? $"The index at {path} is exactly as it was, and every query still answers from it. A "
+              + "rebuild is written beside the index and moved over it only when it is finished, so a "
+              + "run that cannot finish costs the time it spent and nothing else."
+            : $"There was no index at {path} before this run and there is none now, so nothing was "
+              + "changed.";
+
+        var (what, todo) = ex switch
+        {
+            IndexCommitException => (
+                "vela index built the new index and could not move it into place: " + ex.Message,
+                "Nothing else went wrong: the new index was finished and healthy, and only the last "
+                + "rename would not happen. The usual cause is another process holding the index open, "
+                + "which fails on Windows and does not on Unix - an editor, an agent, or another vela. "
+                + "Close whatever has it open, or clear whatever else is standing at that path, then "
+                + "run vela index again."),
+
+            SqliteException { SqliteErrorCode: SqliteFull } => (
+                "vela index ran out of room while writing the index: " + ex.Message,
+                $"Free space on the filesystem holding {directory}, or point XDG_CACHE_HOME at one with "
+                + "room, then run vela index again."),
+
+            _ => (
+                "vela index could not write the index: " + ex.Message,
+                $"Check that {directory} exists, is writable, and has room, then run vela index again."),
+        };
+
+        error.WriteLine(what);
+        error.WriteLine(previous);
+        error.WriteLine(todo);
     }
 
     /// <summary>
@@ -648,10 +743,50 @@ public static class Program
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
-                                      or InvalidOperationException)
+                                      or InvalidOperationException or SqliteException)
         {
+            // SqliteException belongs on this list for the sentence above it to stay true.
+            // Housekeeping runs AFTER the new index is in place, inside the same try the
+            // rebuild is wrapped in, so anything escaping here would be reported as a
+            // rebuild that could not be written - about a rebuild that was.
             error.WriteLine("The index cache could not be tidied up: " + ex.Message
                           + ". The index this run built is unaffected.");
+        }
+    }
+
+    /// <summary>
+    /// What the cache holds, or the reason it cannot be said.
+    ///
+    /// Both cache verbs read the directory before they do anything, and a directory that
+    /// will not list is the same failure the index verbs meet one level down: a raw
+    /// UnauthorizedAccessException and a stack trace, from the one verb whose entire job is
+    /// to answer "what is in there". It is refused rather than reported as an empty cache,
+    /// because "0 index(es), nothing is cached yet" from a directory nobody could open is
+    /// the wrong answer rather than no answer - and `clear` acting on that list would be
+    /// deciding there was nothing to remove on the strength of not having looked.
+    ///
+    /// The catch names only what the filesystem throws. A SqliteException cannot reach
+    /// here: <see cref="IndexCache.List"/> reads each database defensively already,
+    /// because one unreadable index must not hide the other forty.
+    /// </summary>
+    private static bool TryListCache(
+        string directory, TextWriter error, out IReadOnlyList<CachedIndex> held)
+    {
+        try
+        {
+            held = IndexCache.List(directory);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            held = Array.Empty<CachedIndex>();
+
+            error.WriteLine($"The index cache at {directory} could not be read: {ex.Message}");
+            error.WriteLine("Nothing was listed and nothing was removed.");
+            error.WriteLine("Only vela's own indexes live there and none of your code does, so the "
+                          + "directory can be made readable, or removed outright and rebuilt by running "
+                          + "vela index again.");
+            return false;
         }
     }
 
@@ -672,8 +807,10 @@ public static class Program
         command.SetAction(parseResult =>
         {
             var output = parseResult.InvocationConfiguration.Output;
+            var error = parseResult.InvocationConfiguration.Error;
+
             var directory = IndexPaths.CacheDirectory();
-            var held = IndexCache.List(directory);
+            if (!TryListCache(directory, error, out var held)) return ExitCannotAnswer;
 
             output.WriteLine($"Index cache: {directory}");
 
@@ -763,7 +900,7 @@ public static class Program
                 return ExitCannotAnswer;
             }
 
-            var held = IndexCache.List(IndexPaths.CacheDirectory());
+            if (!TryListCache(IndexPaths.CacheDirectory(), error, out var held)) return ExitCannotAnswer;
 
             var chosen = held.Where(index =>
                 all
@@ -1213,9 +1350,15 @@ public static class Program
     {
         if (remembered.RecordUnavailable)
         {
-            output.WriteLine("The index this replaced was built before vela recorded which .scip files had "
-                           + "been imported into it, so there was nothing to replay. If a language was "
-                           + "imported into that index, import it again.");
+            // Two causes, and the sentence names both rather than picking one. An index
+            // older than schema 7 has no such table; a damaged one has nothing readable at
+            // all, and ImportedSources.ReadFrom reports the two the same way because from
+            // here they are the same fact. Claiming the first when it was the second would
+            // be telling a user their index is old when it is broken.
+            output.WriteLine("The index this replaced did not say which .scip files had been imported "
+                           + "into it - it was built by an older vela, or it could not be read - so "
+                           + "there was nothing to replay. If a language was imported into that index, "
+                           + "import it again.");
             return;
         }
 
@@ -1382,23 +1525,33 @@ public static class Program
             var isNew = !File.Exists(path);
 
             using var db = new SqliteConnection(ConnectionStringFor(path));
-            db.Open();
 
-            if (isNew)
+            int version;
+            try
             {
-                Schema.Create(db);
+                db.Open();
+
+                // Created or read before anything is imported, and the reason a damaged
+                // index is found out here rather than half way through a write: the same
+                // lazy open the query verbs meet, in the one verb that would otherwise
+                // leave the caller wondering whether any of the .scip went in.
+                if (isNew) Schema.Create(db);
+                version = isNew ? Schema.Version : Schema.ReadVersion(db);
             }
-            else
+            catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
             {
-                var version = Schema.ReadVersion(db);
-                if (version != Schema.Version)
-                {
-                    error.WriteLine($"The index at {path} was built against schema version {version}, and "
-                                  + $"this vela reads version {Schema.Version}. Importing into it would "
-                                  + "write rows a later read cannot trust.");
-                    error.WriteLine($"Run: vela index --solution {solution}");
-                    return ExitCannotAnswer;
-                }
+                ReportUnreadableIndex(error, ex, path, solution,
+                    "Nothing was imported, so the index is exactly as it was.");
+                return ExitCannotAnswer;
+            }
+
+            if (version != Schema.Version)
+            {
+                error.WriteLine($"The index at {path} was built against schema version {version}, and "
+                              + $"this vela reads version {Schema.Version}. Importing into it would "
+                              + "write rows a later read cannot trust.");
+                error.WriteLine($"Run: vela index --solution {solution}");
+                return ExitCannotAnswer;
             }
 
             ImportReport report;
@@ -1407,11 +1560,18 @@ public static class Program
                 report = ScipImporter.ImportFile(
                     db, scipPath, repositoryRoot, parseResult.GetValue(replaceOption));
             }
-            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            catch (Exception ex)
+                when (ex is InvalidDataException or IOException or UnauthorizedAccessException
+                         or SqliteException)
             {
                 // Not "could not be read": a file that reads perfectly and declares no
                 // project_root is refused too, and telling the user their file is
                 // unreadable would send them looking in the wrong place.
+                //
+                // SqliteException is on the list because a full disk lands here, and the
+                // second line stays true when it does: the whole import runs in one
+                // transaction and a Writer disposed without Commit rolls it back, so a
+                // failure part way through leaves the index exactly as it was.
                 error.WriteLine("The .scip index could not be imported: " + ex.Message);
                 error.WriteLine("Nothing was imported, so the index is exactly as it was.");
                 return ExitCannotAnswer;
@@ -1767,17 +1927,38 @@ public static class Program
         }
 
         var db = new SqliteConnection(ConnectionStringFor(path));
-        db.Open();
 
-        // Constraint 3, applied to the container rather than to its contents. The index
-        // is a cache opened by whatever build of vela is on the PATH, so a schema this
-        // build does not understand is a routine event, not a corrupt file. Answering
-        // from it either throws raw SQL at the user (adding document.generated made
-        // every verb fail with "no such column: d.generated") or, on a change that only
-        // adds rows, quietly answers from a schema whose columns mean something else.
-        // Both are an incomplete index looking like a complete one, so the check comes
-        // before the first query and the message names the fix.
-        var version = Schema.ReadVersion(db);
+        int version;
+        try
+        {
+            db.Open();
+
+            // Constraint 3, applied to the container rather than to its contents. The index
+            // is a cache opened by whatever build of vela is on the PATH, so a schema this
+            // build does not understand is a routine event, not a corrupt file. Answering
+            // from it either throws raw SQL at the user (adding document.generated made
+            // every verb fail with "no such column: d.generated") or, on a change that only
+            // adds rows, quietly answers from a schema whose columns mean something else.
+            // Both are an incomplete index looking like a complete one, so the check comes
+            // before the first query and the message names the fix.
+            version = Schema.ReadVersion(db);
+        }
+        catch (Exception ex) when (ex is SqliteException or IOException or UnauthorizedAccessException)
+        {
+            // The same constraint applied one step earlier: an index that is not a database
+            // at all. Opening is lazy, so this line is where a truncated, damaged or
+            // unreadable file is first found out, and it is the last point at which no
+            // query has been run and nothing has been half-answered. Beyond it a
+            // SqliteException means something else - a schema this build does not
+            // understand, which the version check above already reports, or a genuine
+            // defect - so the catch stops here rather than wrapping the answer.
+            db.Dispose();
+            ReportUnreadableIndex(error, ex, path, solution,
+                "Nothing was answered: answering from an index vela cannot read would risk a wrong "
+                + "answer rather than no answer.");
+            return null;
+        }
+
         if (version != Schema.Version)
         {
             db.Dispose();
@@ -1795,6 +1976,35 @@ public static class Program
         }
 
         return db;
+    }
+
+    /// <summary>
+    /// What every verb says about an index it cannot read at all: a file that is not a
+    /// database, one truncated part way through, or one the filesystem will not hand over.
+    ///
+    /// Said in words rather than thrown. This used to be a raw
+    /// `SqliteException: file is not a database` and a .NET stack trace from every verb
+    /// that opened an index, which tells the reader nothing about what to do - the same
+    /// failure shape <see cref="Schema.Version"/> exists to prevent one step further in,
+    /// and the one Constraint 3 forbids.
+    ///
+    /// The last line is the whole point. An index is a cache: nothing of the user's is in
+    /// it, and `vela index` builds a new one from nothing and moves it over the damaged
+    /// file, so there is exactly one thing to do and it is worth naming with the argument
+    /// already filled in.
+    /// </summary>
+    /// <param name="consequence">
+    /// What this particular verb did or did not do, which is the sentence that differs:
+    /// a query answered nothing, an import wrote nothing.
+    /// </param>
+    private static void ReportUnreadableIndex(
+        TextWriter error, Exception ex, string path, string solution, string consequence)
+    {
+        error.WriteLine($"The index at {path} could not be read: {ex.Message}");
+        error.WriteLine(consequence);
+        error.WriteLine("An index is a cache, so it is rebuilt rather than repaired, and none of your "
+                      + "code is in it.");
+        error.WriteLine($"Run: vela index --solution {solution}");
     }
 
     /// <summary>
