@@ -1,5 +1,27 @@
 name: CI
-on: [push, pull_request]
+# A push to a feature branch that already has a pull request open used to run the
+# whole three-OS matrix twice, once for the push and once for the pull request.
+# Filtering `push` to main leaves each commit covered exactly once: by its pull
+# request while it is in review, and by the push run after it merges, which is the
+# run that proves main itself is green.
+#
+# workflow_dispatch is the escape hatch that filter creates the need for: with
+# push filtered to main, a branch without a pull request open cannot be run at
+# all, so `gh workflow run CI --ref <branch>` is the way to check one before
+# asking for review.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Nothing used to stop a superseded run, so three pushes in a row left three full
+# matrices burning. One group per ref, newest wins. Runs on main are exempt: they
+# are the record of whether main is green at a given commit, and a later merge
+# cancelling an earlier one would erase that answer for the earlier commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:
@@ -12,9 +34,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     # The suite scaffolds and harvests real projects, so it is minutes rather than
     # seconds. Without a limit a hung MSBuild or a wedged `dotnet new` runs for the
-    # full six hours; this is generous against a cold NuGet cache and still catches
-    # a hang the same morning.
-    timeout-minutes: 20
+    # full six hours.
+    #
+    # 15, not 20. The slowest observed run is Windows at 8.5 minutes, so 15 still
+    # leaves roughly 75% headroom for a cold NuGet cache, and the ceiling is what a
+    # hang costs rather than what a healthy run needs: GitHub bills macOS at 10x, so
+    # every minute of ceiling is ten billed minutes on the runner that hangs most
+    # expensively. If a legitimate run ever comes close to 15, raise it deliberately
+    # rather than letting the limit absorb a real slowdown unnoticed.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-dotnet@v6
