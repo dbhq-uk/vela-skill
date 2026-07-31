@@ -484,6 +484,23 @@ missing because of them. Run vela index --stats to list them.
 A file vela cannot attribute to a package or the SDK is a different matter and goes to the
 banner.
 
+Where the package cache is, is read from `nuget.config` rather than assumed. vela merges the
+documented chain - machine-wide configuration, then the user-level file, then every
+`nuget.config` from the filesystem root down to the solution's own directory, nearest
+winning - and honours `NUGET_PACKAGES`, `globalPackagesFolder` and `fallbackPackageFolders`,
+with `<clear />` and relative paths resolved against the file that declared them. Nothing
+shells out to `dotnet` or `nuget`: Constraint 1 requires the answer to follow from what is on
+disk. Four things are deliberately not covered, and each of them fails towards a false gap
+you can see rather than towards code silently dropped: a `nuget.config` **below** the
+solution directory, `%VAR%` expansion inside a value, `repositoryPath` (the packages.config
+era setting), and `--configfile` (an argument, not a fact on disk).
+
+For classification vela takes the union of every folder any of those channels named,
+including `~/.nuget/packages`, rather than only the single winner NuGet's precedence
+produces. The precedence answers "where will the next restore write"; vela is asking "could
+this file be a restored package", and a configured folder does not empty the default of the
+packages already in it.
+
 **Languages no job covers**, when a `vela.json` exists.
 
 ```

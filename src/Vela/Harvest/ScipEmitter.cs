@@ -719,7 +719,7 @@ public static class ScipEmitter
     {
         public static Roots Resolve(string solutionDirectory) => new(
             Vela.Indexing.ProjectRoot.ForSolutionDirectory(solutionDirectory),
-            ExternalRootDirectories());
+            ExternalRootDirectories(solutionDirectory));
 
         /// <summary>
         /// Whether a file vela could not place under project_root belongs to somebody
@@ -746,28 +746,25 @@ public static class ScipEmitter
         /// The directories whose contents belong to a package manager or to the .NET
         /// installation rather than to anybody's repository.
         ///
-        /// The NuGet package cache is resolved the way NuGet itself resolves it:
-        /// NUGET_PACKAGES when it is set, ~/.nuget/packages otherwise. The .NET
-        /// installation is the one this process is running on, plus DOTNET_ROOT when it
-        /// names a different one. Anything that cannot be resolved is left out, and
-        /// files from it then stay loud: reporting a gap that is not one is recoverable,
-        /// silently dropping first-party code is not.
+        /// The NuGet package folders come from <see cref="NuGetPackageFolders"/>, which
+        /// reads NUGET_PACKAGES, the globalPackagesFolder and fallbackPackageFolders
+        /// settings of every nuget.config on the documented chain, and the
+        /// ~/.nuget/packages default. It used to be the environment variable and the
+        /// default and nothing else, so a repository that moves its package cache through
+        /// nuget.config had every package file called a gap in its own code and carried a
+        /// false INCOMPLETE banner on every answer, forever.
+        ///
+        /// The .NET installation is the one this process is running on, plus DOTNET_ROOT
+        /// when it names a different one. Anything that cannot be resolved is left out,
+        /// and files from it then stay loud: reporting a gap that is not one is
+        /// recoverable, silently dropping first-party code is not.
         /// </summary>
-        private static IReadOnlyList<string> ExternalRootDirectories()
+        private static IReadOnlyList<string> ExternalRootDirectories(string solutionDirectory)
         {
             var roots = new List<string>();
 
-            var configuredCache = Environment.GetEnvironmentVariable("NUGET_PACKAGES");
-            if (!string.IsNullOrWhiteSpace(configuredCache))
-            {
-                roots.Add(Path.GetFullPath(configuredCache));
-            }
-            else
-            {
-                var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                if (!string.IsNullOrEmpty(profile))
-                    roots.Add(Path.Combine(profile, ".nuget", "packages"));
-            }
+            roots.AddRange(
+                Vela.Indexing.NuGetPackageFolders.Resolve(solutionDirectory).EveryPackageFolder);
 
             var configuredDotnet = Environment.GetEnvironmentVariable("DOTNET_ROOT");
             if (!string.IsNullOrWhiteSpace(configuredDotnet))
