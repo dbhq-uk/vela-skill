@@ -38,8 +38,14 @@ namespace Vela.Indexing;
 ///     directory, so a per-project file in a subdirectory is not read. Adding it would
 ///     mean one classification per project rather than one per index.
 ///   - `%VAR%` expansion inside a value. NuGet expands environment variables in config
-///     values; vela does not, so a folder written that way falls back to the default and
-///     stays loud rather than being resolved wrongly.
+///     values; vela does not, and does not fall back to anything either - `Absolute`
+///     resolves what is written literally, so `value="%NUGET_HOME%\packages"` becomes a
+///     directory called `%NUGET_HOME%` under the config file's own, which is a path
+///     nothing is in. What keeps that harmless is <see cref="EveryPackageFolder"/>, which
+///     unions the default `~/.nuget/packages` in whatever the configuration said: a
+///     machine that expands the variable to the default location is still classified
+///     correctly, and only a genuinely relocated folder written this way is missed. Its
+///     files then stay loud, which is the recoverable direction.
 ///   - `repositoryPath`, which is the packages.config-era setting and names a per-solution
 ///     packages directory rather than a global cache.
 ///   - `--configfile`, which is a command-line argument to NuGet and not a fact on disk.
