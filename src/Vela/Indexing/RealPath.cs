@@ -27,8 +27,12 @@ namespace Vela.Indexing;
 /// <b>Case.</b> Windows and macOS ask for a file case-insensitively but store the case it
 /// was created with, so `C:\Repo` and `C:\repo` are one directory and two strings, and the
 /// same pending job never settles for that reason alone. The true on-disk case is
-/// therefore read back on those platforms. On Linux it is deliberately not: `Foo.cs` and
-/// `foo.cs` really are two files there, and folding them would be a lie.
+/// therefore read back on those platforms, and a component spelled exactly as it is on
+/// disk is never corrected to another one: a case-sensitive volume can be mounted on
+/// macOS, `Repo` and `repo` are two directories there, and answering with the wrong one
+/// would be worse than not correcting at all. On Linux the case is deliberately left
+/// alone: `Foo.cs` and `foo.cs` really are two files there, and folding them would be a
+/// lie.
 ///
 /// <b>It never fails.</b> A component that is not there yet, or cannot be read, is kept
 /// exactly as it was written. A path vela is about to create still has to have one
@@ -122,13 +126,7 @@ public static class RealPath
             var parent = new DirectoryInfo(directory);
             if (!parent.Exists) return component;
 
-            foreach (var entry in parent.EnumerateFileSystemInfos(component))
-            {
-                // The pattern is the name itself, so at most one entry can match on a
-                // case-insensitive filesystem, and it is checked rather than assumed.
-                if (string.Equals(entry.Name, component, StringComparison.OrdinalIgnoreCase))
-                    return entry.Name;
-            }
+            return PickOnDiskName(component, parent.EnumerateFileSystemInfos(component).Select(e => e.Name));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
         {
@@ -137,6 +135,38 @@ public static class RealPath
         }
 
         return component;
+    }
+
+    /// <summary>
+    /// Which of the names a directory offered is the one that was asked for.
+    ///
+    /// An exact match wins, and is looked for first. This is not pedantry: .NET matches
+    /// with <c>MatchCasing.PlatformDefault</c>, which is case-insensitive on macOS
+    /// whatever the volume underneath actually does, and a case-sensitive volume can
+    /// perfectly well hold both `Repo` and `repo`. Taking the first case-insensitive match
+    /// there would answer `/v/Repo/App.sln` for `/v/repo/App.sln`: a different directory,
+    /// silently, with vela then indexing and answering about a tree nobody named. A name
+    /// that is spelled exactly as asked is on disk exactly as asked, so nothing needs
+    /// correcting; correction is for the case-insensitive volume, where at most one entry
+    /// can match at all.
+    ///
+    /// When only case-insensitive matches exist, the ordinally least is taken rather than
+    /// whichever the directory listed first, because the answer is hashed into an index
+    /// cache name and must not depend on the order a directory happened to be read in.
+    /// </summary>
+    internal static string PickOnDiskName(string component, IEnumerable<string> candidates)
+    {
+        string? folded = null;
+        foreach (var name in candidates)
+        {
+            if (string.Equals(name, component, StringComparison.Ordinal)) return name;
+
+            if (string.Equals(name, component, StringComparison.OrdinalIgnoreCase) &&
+                (folded is null || string.CompareOrdinal(name, folded) < 0))
+                folded = name;
+        }
+
+        return folded ?? component;
     }
 
     /// <summary>

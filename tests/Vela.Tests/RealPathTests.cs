@@ -94,6 +94,48 @@ public class RealPathTests
         Assert.DoesNotContain("outer", RealPath.Of(inner), StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// A case-sensitive volume can hold both `Repo` and `repo` at once, and macOS will
+    /// mount one on request. .NET's matcher does not care what the volume does:
+    /// EnumerateFileSystemInfos matches with MatchCasing.PlatformDefault, which is
+    /// case-insensitive on macOS whatever is underneath. Taking the first name that
+    /// matches case-insensitively would therefore hand back a DIFFERENT directory -
+    /// "/v/Repo/App.sln" for "/v/repo/App.sln" - and vela would index, cache and answer
+    /// about a tree nobody named. An exact spelling is on disk exactly when it is the one
+    /// that was asked for, so it wins.
+    ///
+    /// The choice is asserted directly rather than through a real directory holding both
+    /// spellings, because no runner in this matrix can hold one: Windows has no
+    /// case-sensitive volume to offer, and mounting a case-sensitive image on the macOS
+    /// runner would make this fact depend on hdiutil rather than on vela. The list here is
+    /// what such a directory offers; which name is taken from it is the whole decision.
+    /// </summary>
+    [Fact]
+    public void AnExactSpellingBeatsOneThatOnlyMatchesWhenCaseIsIgnored()
+    {
+        Assert.Equal("repo", RealPath.PickOnDiskName("repo", ["Repo", "repo"]));
+        Assert.Equal("repo", RealPath.PickOnDiskName("repo", ["repo", "Repo"]));
+    }
+
+    [Fact]
+    public void ACaseInsensitiveMatchIsTakenOnlyWhenNothingIsSpeltExactly()
+    {
+        // The Windows and macOS correction this exists for: one directory, two strings,
+        // and the string the filesystem stored is the one everything is keyed on.
+        Assert.Equal("Repo", RealPath.PickOnDiskName("repo", ["Repo"]));
+
+        // Several to choose from, which only a case-sensitive volume produces, and the
+        // answer is still the same one every time: an index cache keyed on it cannot
+        // depend on the order a directory happened to be read in.
+        Assert.Equal("REPO", RealPath.PickOnDiskName("rEpO", ["Repo", "REPO", "repO"]));
+        Assert.Equal("REPO", RealPath.PickOnDiskName("rEpO", ["repO", "REPO", "Repo"]));
+
+        // Nothing matched at all: the spelling that was asked for is kept, which is what
+        // lets a path that does not exist yet still have a name.
+        Assert.Equal("repo", RealPath.PickOnDiskName("repo", ["other", "another"]));
+        Assert.Equal("repo", RealPath.PickOnDiskName("repo", []));
+    }
+
     [SymbolicLinkFact]
     public void ABrokenLinkIsKeptRatherThanRefused()
     {
