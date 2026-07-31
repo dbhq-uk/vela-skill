@@ -170,7 +170,7 @@ public static class Program
             // health table is missing or its timestamp is unreadable, and both mean
             // the index cannot be vouched for. Swallowing that would report a clean
             // answer from an index nobody has checked.
-            var health = CheckStaleness(IndexHealth.Read(db), solution!);
+            var health = CheckStaleness(IndexHealth.Read(db), solution!, db);
             var value = parseResult.GetRequiredValue(argument);
 
             // def and outline have no option and always include generated documents;
@@ -228,7 +228,7 @@ public static class Program
             using var db = OpenIndex(solution, error);
             if (db is null) return ExitCannotAnswer;
 
-            var health = CheckStaleness(IndexHealth.Read(db), solution!);
+            var health = CheckStaleness(IndexHealth.Read(db), solution!, db);
             var symbols = FindQuery.Run(db, parseResult.GetRequiredValue(argument));
 
             // find answers with names rather than hits, but a degraded index makes
@@ -1480,14 +1480,25 @@ public static class Program
     /// throws, the record comes back degraded saying so, because the alternative is an
     /// answer that looks freshness-checked and was not, which is the failure Constraint
     /// 3 exists to prevent. The query itself still answers.
+    ///
+    /// The walk sees only what is THERE, so it has nothing to say about a file that has
+    /// gone - and an index naming a path that cannot be opened is worse than one naming a
+    /// line that has moved, because an agent will try to open it. The ledger of what each
+    /// project was built from is the other half, and it is read here and handed over, so
+    /// there is one place the two halves meet.
     /// </summary>
-    private static HealthRecord CheckStaleness(HealthRecord health, string solution)
+    private static HealthRecord CheckStaleness(HealthRecord health, string solution, SqliteConnection db)
     {
         try
         {
-            return Staleness.Check(health, ProjectRoot.ForSolution(solution), IndexPaths.ForSolution(solution));
+            return Staleness.Check(
+                health,
+                ProjectRoot.ForSolution(solution),
+                IndexPaths.ForSolution(solution),
+                ProjectInputs.ReadDocumentInputs(db));
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                      or InvalidOperationException or SqliteException)
         {
             var detail = "index freshness could not be checked: " + ex.Message
                        + ". Nothing in this answer has been compared against the code on disk.";

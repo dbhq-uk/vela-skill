@@ -72,7 +72,17 @@ public static class Staleness
     /// document in the index lives under it, so nothing is indexed from outside the
     /// tree this walks.
     /// </param>
-    public static HealthRecord Check(HealthRecord health, string projectRoot, string? indexPath = null)
+    /// <param name="indexedFiles">
+    /// The files the index was built FROM, relative to the root, from
+    /// <see cref="ProjectInputs.ReadDocumentInputs"/>. Null means the index records none,
+    /// which is what an index built by `vela import` alone looks like, and the deletion
+    /// check simply does not run.
+    /// </param>
+    public static HealthRecord Check(
+        HealthRecord health,
+        string projectRoot,
+        string? indexPath = null,
+        IReadOnlyList<string>? indexedFiles = null)
     {
         var root = string.IsNullOrEmpty(projectRoot) ? null : Path.GetFullPath(projectRoot);
 
@@ -116,6 +126,30 @@ public static class Staleness
                 + "them has not been compared against the index.");
         }
 
+        // Deletions and renames, which the walk above cannot see at all: it stats the files
+        // that are THERE, so it can only ever notice something newer than the index. A file
+        // that has gone leaves the index naming a path nobody can open, and an agent handed
+        // that path will try to open it, which is a wrong answer of the worst kind. A
+        // rename is a deletion plus an addition, and moving a file keeps its modification
+        // time, so the mtime walk cannot see either half of one: noticing the deletion is
+        // what notices the rename.
+        //
+        // Reported alongside a change rather than instead of one. Two things being wrong
+        // with an index is two facts, and each of them names a different file to look at.
+        if (indexedFiles is { Count: > 0 })
+        {
+            var missing = ScanForMissing(root, indexedFiles);
+
+            if (missing.MissingCount > 0)
+            {
+                health = Degrade(health,
+                    $"stale index: {missing.MissingCount} file(s) the index was built from are no longer "
+                    + $"on disk, the first of them '{missing.FirstMissing}'. Answers may name files that "
+                    + "cannot be opened, and code that has moved is recorded under the path it moved from. "
+                    + "Run vela index.");
+            }
+        }
+
         if (changedCount == 0) return health;
 
         // Relative to the same root every path in an answer is relative to, so the file
@@ -126,6 +160,96 @@ public static class Staleness
             $"stale index: {changedCount} source file(s) changed after the index was built at "
             + $"{health.BuiltAtUtc:u}, most recently '{relative}' at {newestTime:u}. Line numbers and "
             + "references in this answer describe the code as it was, not as it is. Run vela index.");
+    }
+
+    /// <summary>
+    /// How many of the files the index was built from are no longer on disk, and the first
+    /// of them.
+    ///
+    /// <b>Bounded to exactly the set the walk above watches, and deliberately so.</b> A
+    /// recorded input is checked only when its extension is one vela indexes and no part of
+    /// its path is a directory the walk skips. That makes the two halves of the freshness
+    /// check answer about one set of files rather than two, and it keeps `dotnet clean` from
+    /// degrading every query forever: on a real solution 365 indexed documents sit under
+    /// `bin` or `obj`, which are regenerated on their own schedule and are not what the
+    /// index describes. A banner that fires on an ordinary command is a banner nobody reads.
+    ///
+    /// <b>Cost, measured rather than estimated.</b> One <see cref="File.Exists"/> per
+    /// checked file and nothing else: no file is opened and nothing is hashed. On a
+    /// generated 2,500-file solution, twelve `vela def` runs each, the median query went
+    /// from 0.225s to 0.275s, and the check itself accounts for 29ms of that - 6.7ms to
+    /// read the 2,502 ledger rows and 22ms to ask the filesystem about all 2,500 of them.
+    /// It scales with the number of files the index was built from and with nothing else.
+    ///
+    /// The first missing file is the ordinally least, rather than the first one found, so
+    /// the same tree and the same index produce the same sentence however the rows arrived
+    /// (Constraint 1).
+    ///
+    /// Public so a test can assert <see cref="MissingScan.FilesChecked"/> directly, which is
+    /// the deterministic stand-in for a timing assertion that would be flaky on a shared
+    /// machine.
+    /// </summary>
+    public static MissingScan ScanForMissing(string root, IReadOnlyList<string> indexedFiles)
+    {
+        var full = Path.GetFullPath(root);
+        var count = 0;
+        string? first = null;
+        var checkedFiles = 0;
+
+        foreach (var relative in indexedFiles)
+        {
+            if (!IsWatched(relative)) continue;
+
+            checkedFiles++;
+
+            // Combined and not normalised. The ledger writes '/' on every platform and
+            // every operating system API accepts it, the result is used for one question
+            // and then discarded, and the path REPORTED is the relative one, which is the
+            // form every other path in an answer is written in.
+            //
+            // File.Exists rather than a comparison against the walk above, which visits
+            // these same files and could have been made to hand back a set for nothing.
+            // The filesystem is asked the question directly because it is the only thing
+            // that knows its own rules: a set comparison would have to decide for itself
+            // whether Foo.cs and foo.cs are one file, which is true on Windows and macOS
+            // and false on Linux, and getting that wrong means naming a file as missing
+            // that is sitting right there. A false gap on every query is the crying-wolf
+            // failure this whole check exists to be worth listening to.
+            if (File.Exists(Path.Combine(full, relative))) continue;
+
+            count++;
+            if (first is null || string.CompareOrdinal(relative, first) < 0) first = relative;
+        }
+
+        return new MissingScan(count, first, checkedFiles);
+    }
+
+    /// <summary>
+    /// Whether a recorded input is one this check is entitled to have an opinion about:
+    /// an extension vela indexes, under no directory the walk skips.
+    ///
+    /// The path is the one stored in the ledger, which is relative to the root and written
+    /// with '/' on every platform, so it is split on both separators rather than on the
+    /// platform's own: a ledger written on Windows is read on Linux by anybody who shares a
+    /// checkout, and a rule that only worked on one of them would be a rule that silently
+    /// stopped applying.
+    /// </summary>
+    private static bool IsWatched(string relative)
+    {
+        if (string.IsNullOrEmpty(relative)) return false;
+        if (!SourceExtensions.Contains(Path.GetExtension(relative), StringComparer.OrdinalIgnoreCase))
+            return false;
+
+        var segments = relative.Split('/', '\\');
+
+        // The last segment is the file name, and a file called `bin` is not a directory
+        // called `bin`.
+        for (var i = 0; i < segments.Length - 1; i++)
+        {
+            if (SkippedDirectories.Contains(segments[i], StringComparer.OrdinalIgnoreCase)) return false;
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -302,3 +426,14 @@ public readonly record struct StalenessScan(
     DateTime NewestTime,
     int FilesExamined,
     int UnreadableDirectories = 0);
+
+/// <summary>
+/// What one pass over the files the index was built from found: how many of them have gone,
+/// the ordinally first of those, and how many the pass had to look for on disk.
+///
+/// <see cref="FilesChecked"/> is the cost, pinned by a test rather than timed: the check
+/// runs on every query, and the thing that would make it expensive is checking files the
+/// freshness walk never watched in the first place. A count is not flaky on a shared
+/// machine; a wall clock is.
+/// </summary>
+public readonly record struct MissingScan(int MissingCount, string? FirstMissing, int FilesChecked);

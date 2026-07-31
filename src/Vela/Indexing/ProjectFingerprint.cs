@@ -864,6 +864,38 @@ public static class ProjectInputs
     }
 
     /// <summary>
+    /// Every file the index was built from that a developer could open, relative to the
+    /// root, deduplicated across projects and ordered ordinally (Constraint 1).
+    ///
+    /// <b>What this is for.</b> The freshness check stats the files that are THERE, so it
+    /// can only ever notice something newer than the index. This is the other half: the
+    /// record of what the index was built from, which is the only thing that can say a file
+    /// has GONE. The fresh tree cannot name a file that is not in it.
+    ///
+    /// <b>Source and additional documents, and nothing else.</b> Those are the two kinds
+    /// that become a document somebody can open - a .cs or .vb the compiler read, and a
+    /// .cshtml or .razor behind a generated one - so those are the two kinds whose absence
+    /// makes an answer name a path that cannot be opened. A reference is an assembly in
+    /// somebody's package cache and was never the user's to keep; a build file and an
+    /// analyzer config are inputs to what the code compiles to rather than code, and a
+    /// deleted one changes the answer without making any path in it wrong.
+    /// </summary>
+    public static IReadOnlyList<string> ReadDocumentInputs(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText =
+            "SELECT DISTINCT path FROM project_input_document WHERE kind IN ($source, $additional) "
+            + "ORDER BY path";
+        cmd.Parameters.AddWithValue("$source", ProjectFingerprint.SourceKind);
+        cmd.Parameters.AddWithValue("$additional", ProjectFingerprint.AdditionalKind);
+        using var reader = cmd.ExecuteReader();
+
+        var paths = new List<string>();
+        while (reader.Read()) paths.Add(reader.GetString(0));
+        return paths;
+    }
+
+    /// <summary>
     /// When each project was last built, for a reader who wants to know how old a skipped
     /// project's rows are. Parsed round-trip, so it means the same instant wherever it is
     /// read.

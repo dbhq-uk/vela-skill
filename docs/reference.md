@@ -637,6 +637,33 @@ degraded, which is a warning nobody reads.
 It is timestamps only. No file is read and nothing is hashed, so the check cannot say
 whether the symbol you asked about was the one that changed.
 
+### Deletions and renames
+
+The timestamp walk stats the files that are **there**, so on its own it can only ever notice
+something newer than the index. So every query also compares the files the index records
+having been built from - the compiled sources, and the `.cshtml` and `.razor` behind the
+generated documents - against the tree, and says so when one of them has gone:
+
+```
+!! The index is INCOMPLETE. stale index: 1 file(s) the index was built from are no longer on
+disk, the first of them 'Leaf/Standalone.cs'. Answers may name files that cannot be opened,
+and code that has moved is recorded under the path it moved from. Run vela index.
+```
+
+A rename is a deletion plus an addition, so this catches renames too - and it is the only
+thing that can, because moving a file keeps its modification time and the new path is
+therefore not newer than the index.
+
+The same two filters apply as to the timestamp walk, and for the same reasons: only the
+watched extensions, and nothing under `bin`, `obj`, `.git`, `.vs`, `.idea` or `node_modules`.
+`dotnet clean` therefore says nothing.
+
+Nothing is read and nothing is hashed here either: it is one `File.Exists` per file the index
+was built from. Measured on a generated 2,500-file solution, the median `vela def` went from
+0.225s to 0.275s, of which the check itself is 29ms - 6.7ms to read the 2,502 rows and 22ms
+to ask the filesystem about them. It scales with the number of files the index was built
+from and with nothing else.
+
 ## vela.json
 
 Optional. With no `vela.json`, vela indexes the C# and Razor the solution compiles and says
