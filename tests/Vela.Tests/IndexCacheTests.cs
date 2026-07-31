@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Globalization;
 using System.Runtime.Versioning;
 using Vela.Indexing;
 using Vela.Tests.Fixtures;
@@ -290,7 +291,7 @@ public class IndexCacheTests
         using var stale = FixtureSolution.CreateLibrary();
         using var current = FixtureSolution.CreateLibrary();
         using var cache = new TempCacheHome();
-        using var budget = new CacheBudget("1");
+        using var budget = new CacheBudget(null);
 
         Assert.Equal(0, (await InvokeAsync("index", "--solution", stale.SolutionPath)).ExitCode);
         var stalePath = IndexPaths.ForSolution(stale.SolutionPath);
@@ -299,12 +300,58 @@ public class IndexCacheTests
         // reads the file's own modification time, which is when that index was last built.
         File.SetLastWriteTimeUtc(stalePath, DateTime.UtcNow.AddDays(-40));
 
+        // A budget that removing the stale index actually reaches, and not the one-byte
+        // budget this test used to use. Both fixtures are the same shape, so half again the
+        // size of one index sits above what the run is about to write - which is immovable -
+        // and below the two of them together. A budget under the immovable part is a budget
+        // no removal can meet, and vela is now honest enough not to delete things chasing
+        // it: that case is its own test above.
+        budget.Set((new FileInfo(stalePath).Length * 3 / 2).ToString(CultureInfo.InvariantCulture));
+
         var result = await InvokeAsync("index", "--solution", current.SolutionPath);
 
         Assert.Equal(0, result.ExitCode);
         Assert.False(File.Exists(stalePath));
         Assert.Contains("least recently built", result.Output);
         Assert.True(File.Exists(IndexPaths.ForSolution(current.SolutionPath)));
+    }
+
+    [Fact]
+    public async Task Index_RemovesNothingWhenNoPermittedRemovalCanBringTheCacheUnderBudget()
+    {
+        // The reported case, in the proportions it was reported in and at a size a test can
+        // build: a 2.5GB monorepo index, a 2GB budget, and four unrelated 150MB indexes
+        // older than a week. The four cannot get the cache under the budget, because the
+        // index this run just wrote is over it on its own and is never removable - so
+        // deleting them costs four rebuilds and achieves nothing at all. It used to happen
+        // on every single `vela index`.
+        using var monorepo = FixtureSolution.CreateLibrary();
+        using var cache = new TempCacheHome();
+        using var budget = new CacheBudget(null);
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", monorepo.SolutionPath)).ExitCode);
+        var monorepoBytes = new FileInfo(IndexPaths.ForSolution(monorepo.SolutionPath)).Length;
+
+        var unrelated = new List<string>();
+        for (var i = 0; i < 4; i++)
+        {
+            var path = Path.Combine(IndexPaths.CacheDirectory(), $"Unrelated{i}-000000000000000{i}.db");
+            File.WriteAllBytes(path, new byte[monorepoBytes * 15 / 250]);
+            File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddDays(-30));
+            unrelated.Add(path);
+        }
+
+        budget.Set((monorepoBytes * 200 / 250).ToString(CultureInfo.InvariantCulture));
+
+        var result = await InvokeAsync("index", "--solution", monorepo.SolutionPath);
+
+        Assert.Equal(0, result.ExitCode);
+
+        foreach (var path in unrelated)
+            Assert.True(File.Exists(path), $"{Path.GetFileName(path)} was removed for no benefit");
+
+        Assert.DoesNotContain("least recently built", result.Output);
+        Assert.Contains("would bring it under", result.Output);
     }
 
     [Fact]
@@ -355,11 +402,16 @@ public class IndexCacheTests
         using var stale = FixtureSolution.CreateLibrary();
         using var current = FixtureSolution.CreateLibrary();
         using var cache = new TempCacheHome();
-        using var budget = new CacheBudget("1");
+        using var budget = new CacheBudget(null);
 
         Assert.Equal(0, (await InvokeAsync("index", "--solution", stale.SolutionPath)).ExitCode);
         var stalePath = IndexPaths.ForSolution(stale.SolutionPath);
         File.SetLastWriteTimeUtc(stalePath, DateTime.UtcNow.AddDays(-400));
+
+        // Over budget by an amount one eviction settles, so the eviction this test relies
+        // on happening really is one worth making. See the test above for why a one-byte
+        // budget no longer evicts anything.
+        budget.Set((new FileInfo(stalePath).Length * 3 / 2).ToString(CultureInfo.InvariantCulture));
 
         Assert.Equal(0, (await InvokeAsync("index", "--solution", current.SolutionPath)).ExitCode);
         Assert.False(File.Exists(stalePath), "the indexing run should already have evicted it");
@@ -423,6 +475,13 @@ public class IndexCacheTests
             _previous = Environment.GetEnvironmentVariable("VELA_CACHE_MAX_BYTES");
             Environment.SetEnvironmentVariable("VELA_CACHE_MAX_BYTES", value);
         }
+
+        /// <summary>
+        /// Moves the budget mid-test, for the tests that cannot know what to set it to
+        /// until an index has been built and measured.
+        /// </summary>
+        public void Set(string? value) =>
+            Environment.SetEnvironmentVariable("VELA_CACHE_MAX_BYTES", value);
 
         public void Dispose() => Environment.SetEnvironmentVariable("VELA_CACHE_MAX_BYTES", _previous);
     }

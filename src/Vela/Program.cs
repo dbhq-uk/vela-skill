@@ -629,6 +629,23 @@ public static class Program
                 output.WriteLine($"The index cache now holds {IndexCache.Describe(report.TotalBytes)}. "
                                + "Run vela cache to see what is in it.");
             }
+
+            // Said plainly, once, on the run that found it. The alternative vela used to
+            // choose was to delete every index it was allowed to touch, stay over budget
+            // anyway, and say nothing about it - which cost the user a rebuild per index
+            // and fixed nothing. A cache that cannot be brought under its budget is
+            // something only the person who set the budget can resolve.
+            if (report.BudgetUnreachable)
+            {
+                output.WriteLine($"The index cache holds {IndexCache.Describe(report.TotalBytes)} against a "
+                               + $"{IndexCache.Describe(report.MaximumBytes)} budget, and no index vela may "
+                               + "remove would bring it under: what is left is the index this run just built, "
+                               + $"anything built in the last {IndexCache.MinimumAge.TotalDays:0} days, and "
+                               + "anything that would not delete. Nothing was removed, because removing an "
+                               + "index that leaves the cache over budget costs a rebuild and saves nothing. "
+                               + $"Raise {IndexCache.MaximumBytesVariable}, or run vela cache clear to choose "
+                               + "what goes.");
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
                                       or InvalidOperationException)

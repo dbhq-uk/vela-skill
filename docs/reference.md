@@ -622,7 +622,17 @@ and reason on the run that applies them:
 | Rule | When |
 |---|---|
 | Orphans | The index's solution file has been deleted: the directory that held it answered, and the `.sln` is not in it. |
-| Least recently built | The whole cache is over `VELA_CACHE_MAX_BYTES`, default 2GB. Never the index the run just wrote, and never one built within the last 7 days. |
+| Least recently built | The whole cache is over `VELA_CACHE_MAX_BYTES`, default 2GB, **and removing brings it back under**. Never the index the run just wrote, and never one built within the last 7 days. |
+
+**Nothing is removed that does not get the cache under the budget.** The index the run just
+wrote and everything built in the last 7 days are weight the size rule cannot shed, so a
+cache whose immovable part is already over the budget stays over it however much else goes.
+A 2.5GB monorepo index under the default 2GB budget is that cache: the four unrelated
+150MB indexes sitting beside it can all be deleted and the total is still 2.5GB. vela
+measures what it may remove against what removing it would achieve, finds nothing worth
+taking, removes nothing, and says so on that run - once, plainly - because a cache that
+cannot be brought under its budget is something only the person who set the budget can
+resolve.
 
 **An unreachable solution is not a deleted one**, and the orphan rule is careful about the
 difference. "The file is not there" is also what an unmounted external drive says, and a

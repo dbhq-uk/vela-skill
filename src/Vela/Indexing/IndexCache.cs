@@ -32,6 +32,10 @@ namespace Vela.Indexing;
 ///      cache is over a size budget. Never the index the run just wrote, and never one
 ///      built within the last week. Both exclusions exist to stop the case that would be a
 ///      surprise: somebody working across two solutions this morning.
+///   5. And only when the removing gets the cache under the budget. Those two exclusions
+///      are also weight the budget cannot shed, so a cache whose immovable part is already
+///      over it stays over it whatever goes. Removing anything in that state costs a
+///      rebuild and achieves nothing, so nothing is removed and the run says so instead.
 ///
 /// Everything automatic happens during `vela index` and nowhere else. A query is read-only
 /// and stays read-only; and the moment a user runs one is the moment they are most likely
@@ -225,12 +229,34 @@ public static class IndexCache
 
         var total = TotalBytes(survivors);
 
+        // What the budget is measured against has to be the removable set, not the whole
+        // cache. `total` counts the index this run just wrote and everything under the
+        // seven-day floor, and neither of those can be removed by any arithmetic, so a
+        // cache whose IMMOVABLE part is already over budget cannot be brought under it
+        // however many candidates go. The old loop did not know that, and emptied the cache
+        // of everything it was allowed to touch while staying over budget the whole time:
+        // a 2.5GB monorepo index under a 2GB budget cost the user their four unrelated
+        // indexes on every `vela index`, for no benefit on any of them.
+        //
+        // `reducible` is the most this sweep could still take off. `total - reducible` is
+        // therefore the floor it cannot go below, and while that floor is over the budget
+        // there is no removal worth making: each one costs somebody a rebuild and leaves
+        // the cache exactly as over budget as it was. That is a thing to report, not a
+        // thing to do - see <see cref="EvictionReport.BudgetUnreachable"/>.
+        var reducible = candidates.Sum(index => index.Bytes);
+
         foreach (var index in candidates)
         {
             if (total <= maximumBytes) break;
+            if (total - reducible > maximumBytes) break;
+
+            reducible -= index.Bytes;
 
             if (!Remove(index.Path))
             {
+                // The floor has just risen by an index that would not go, which the next
+                // iteration sees. A refusal can be what makes the budget unreachable, and
+                // when it is, the removals after it would have bought nothing either.
                 refused++;
                 continue;
             }
@@ -241,7 +267,11 @@ public static class IndexCache
                 + $"and it was last built on {index.BuiltAtUtc:yyyy-MM-dd}"));
         }
 
-        return new EvictionReport(removed, refused, total, maximumBytes);
+        // Over budget with nothing left that could close the gap: either the loop broke on
+        // the floor, or it ran out of candidates while still over. Both are the same fact.
+        var unreachable = total > maximumBytes && total - reducible > maximumBytes;
+
+        return new EvictionReport(removed, refused, total, maximumBytes, unreachable);
     }
 
     /// <summary>
@@ -432,8 +462,20 @@ public sealed record EvictedIndex(CachedIndex Index, string Reason);
 /// What one automatic sweep did. <paramref name="Refused"/> counts the indexes that would
 /// not delete, which on Windows is what one another process has open looks like.
 /// </summary>
+/// <param name="BudgetUnreachable">
+/// The cache is over budget and nothing vela is permitted to remove would bring it under -
+/// because what is left is the index this run just wrote, or is younger than
+/// <see cref="IndexCache.MinimumAge"/>, or would not delete. Nothing was removed on account
+/// of it, because a removal that leaves the cache over budget costs a rebuild and buys
+/// nothing; but a cache that is permanently over its budget is a thing the user should hear
+/// about rather than a thing to churn quietly through.
+/// </param>
 public sealed record EvictionReport(
-    IReadOnlyList<EvictedIndex> Removed, int Refused, long TotalBytes, long MaximumBytes);
+    IReadOnlyList<EvictedIndex> Removed,
+    int Refused,
+    long TotalBytes,
+    long MaximumBytes,
+    bool BudgetUnreachable = false);
 
 /// <summary>What one `vela cache clear` did.</summary>
 public sealed record ClearReport(IReadOnlyList<CachedIndex> Removed, IReadOnlyList<CachedIndex> Refused);
