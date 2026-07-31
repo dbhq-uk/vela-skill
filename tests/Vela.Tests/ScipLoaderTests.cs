@@ -82,14 +82,37 @@ public class ScipLoaderTests : IClassFixture<HarvestedWebApp>
             Environment.SetEnvironmentVariable("XDG_CACHE_HOME", previous);
         }
 
-        // Resolved the way IndexPaths resolves it, because on macOS Path.GetTempPath is
-        // reached through /var, which is a link to /private/var, and GetFullPath does not
-        // follow links. Still the same assertion: the index for a solution lives under
-        // the cache directory and nowhere else.
-        var fullCacheRoot = RealPath.Of(cacheRoot);
-        Assert.StartsWith(fullCacheRoot + Path.DirectorySeparatorChar, pathA1, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(pathA1, pathA2);
         Assert.NotEqual(pathA1, pathB);
+
+        // Where the bytes actually land, asked of the filesystem rather than computed with
+        // the resolution the code under test uses. Comparing against RealPath.Of(cacheRoot)
+        // agreed with whatever RealPath did, including nothing at all, so no regression in
+        // it could ever have failed this. Writing the two databases and then listing the
+        // cache root THIS TEST named answers the real question - the index for a solution
+        // lives under the cache directory and nowhere else - and needs no resolution of its
+        // own, because the OS follows /var to /private/var without being asked.
+        try
+        {
+            foreach (var path in new[] { pathA1, pathB })
+            {
+                IndexPaths.EnsureDirectoryExists(path);
+                File.WriteAllText(path, "");
+            }
+
+            var landed = Directory
+                .EnumerateFiles(cacheRoot, "*.db", SearchOption.AllDirectories)
+                .Select(p => Path.GetFileName(p)!)
+                .ToList();
+
+            Assert.Contains(Path.GetFileName(pathA1), landed);
+            Assert.Contains(Path.GetFileName(pathB), landed);
+            Assert.Equal(2, landed.Count);
+        }
+        finally
+        {
+            try { Directory.Delete(cacheRoot, recursive: true); } catch { /* temp dir, best effort */ }
+        }
     }
 
     [Fact]

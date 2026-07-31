@@ -425,14 +425,22 @@ public class VelaConfigTests
         var pending = Assert.Single(plan.Pending);
 
         // Keyed by the absolute path of the .scip the job expects, which is exactly the
-        // key `vela import` clears, so importing that file clears the job and nothing
-        // else has to remember it. Resolved, because that key is the RESOLVED absolute
-        // path on both sides: on macOS the temp directory here is reached through /var,
-        // which is a link to /private/var, so the unresolved spelling would name a file
-        // that no import could ever clear. Still an exact equality against the one file
-        // the job names.
-        Assert.Equal(
-            RealPath.Of(Path.Combine(tree.Root, "src", "Mobile", "index.scip")), pending.Source);
+        // key `vela import` clears, so importing that file clears the job and nothing else
+        // has to remember it.
+        //
+        // Proven by marking the file the job is talking about and reading the mark back
+        // THROUGH the key. The expectation used to be computed with RealPath.Of, the
+        // resolution this key is made of, so it agreed with whatever that resolution did,
+        // including nothing at all, and no regression in it could fail this test. Reading
+        // the file the key names asks the filesystem instead, and only one file in this
+        // tree carries the mark. Written after the plan, so the job is still pending.
+        var expected = Path.Combine(tree.Root, "src", "Mobile", "index.scip");
+        var mark = Guid.NewGuid().ToString("N");
+        File.WriteAllText(expected, mark);
+
+        Assert.True(Path.IsPathRooted(pending.Source));
+        Assert.EndsWith(Path.Combine("src", "Mobile", "index.scip"), pending.Source, StringComparison.Ordinal);
+        Assert.Equal(mark, File.ReadAllText(pending.Source));
         Assert.Contains("typescript", pending.Detail, StringComparison.Ordinal);
         Assert.Contains("scip-typescript", pending.Detail, StringComparison.Ordinal);
         Assert.Contains("vela import", pending.Detail, StringComparison.Ordinal);
