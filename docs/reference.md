@@ -568,6 +568,23 @@ The index carries a schema version (currently 9). If you upgrade vela and the sh
 changed, every verb refuses to answer and tells you to re-index rather than querying a
 database it cannot read. The index is a cache, so it is rebuilt rather than migrated.
 
+### A failed rebuild keeps the index you had
+
+`vela index` builds into `<index>.db.building` beside the index and renames it over the top
+when the new one is finished. A run that is interrupted - Ctrl-C, an OOM kill, a full disk,
+a project that throws halfway through the harvest - therefore costs the time it had spent
+and nothing else: the index you had is byte-identical, still answers, and still reports
+itself healthy. The rename is within one directory, so it is atomic and no reader ever sees
+a half-written database.
+
+`--incremental` works the same way, on a copy: the plan is read from the index on disk, the
+copy is taken from that same file, and the rows it reuses are carried into the copy.
+
+The build file does not survive its run. If a process is killed outright and cannot clean up
+after itself, the next `vela index` for that solution removes what it finds and carries on -
+the name is derived from the index's own, so there is exactly one such file and it is always
+in a place the next run can predict.
+
 ### The repository root
 
 Paths in every answer, and the path `outline` expects, are relative to the **repository
