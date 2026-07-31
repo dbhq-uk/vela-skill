@@ -62,6 +62,8 @@ documents            : 23
 occurrences          : 2670
   in razor views     : 22
   definitions        : 182
+sources              : 1   (where each document came from)
+  roslyn harvest     : 23 document(s), 2670 occurrence(s)
 ```
 
 Eight seconds, and the numbers are the point.

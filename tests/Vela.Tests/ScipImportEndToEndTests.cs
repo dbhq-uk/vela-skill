@@ -566,6 +566,62 @@ public class ScipImportEndToEndTests
     }
 
     /// <summary>
+    /// The question `vela index --stats` exists to answer, asked of a POLYGLOT index.
+    ///
+    /// It could not answer it. The counts never grouped by document.source, so an index
+    /// holding C# harvested by vela and TypeScript imported from a .scip reported one
+    /// undifferentiated pile and a reader could not see what had come from where. This
+    /// runs the real commands in the order a user runs them - index, import, index
+    /// --stats - and reads the output.
+    /// </summary>
+    [Fact]
+    public async Task IndexWithStats_DistinguishesVelasOwnHarvestFromEachImportedScip()
+    {
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var scip = Path.Combine(fx.Root, "mobile.scip");
+        File.WriteAllBytes(scip, ForeignIndex(
+            fx.Root,
+            ("App/wwwroot/js/site.ts", new[] { "greet" }),
+            ("App/wwwroot/js/cart.ts", new[] { "total" })).ToByteArray());
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+
+        var stats = await InvokeAsync("index", "--stats", "--solution", fx.SolutionPath);
+        Assert.Equal(0, stats.ExitCode);
+
+        // Two sources, both visible, and the imported one NAMED. A count that would not
+        // say which .scip it was is the same undifferentiated pile with more numbers.
+        Assert.Contains("sources", stats.Output, StringComparison.Ordinal);
+        Assert.Contains("roslyn harvest", stats.Output, StringComparison.Ordinal);
+        Assert.Contains(scip, stats.Output, StringComparison.Ordinal);
+        Assert.Contains("2 document(s)", stats.Output, StringComparison.Ordinal);
+
+        // The Razor coverage numbers are what AGENTS.md prescribes this option for, and
+        // they must not get lost among the new lines.
+        foreach (var line in new[]
+                 {
+                     "documents            : ",
+                     "  generated          : ",
+                     "  razor views        : ",
+                     "occurrences          : ",
+                     "  in razor views     : ",
+                     "  definitions        : "
+                 })
+        {
+            Assert.Contains(line, stats.Output, StringComparison.Ordinal);
+        }
+
+        // And they still say what they said: this fixture's views are in the index, so
+        // the one property vela exists for has not regressed while the import sat beside
+        // it.
+        Assert.Matches(new Regex(@"razor views        : [1-9]"), stats.Output);
+        Assert.Matches(new Regex(@"in razor views     : [1-9]"), stats.Output);
+    }
+
+    /// <summary>
     /// The edge that must not be silent: a .scip that names no documents at all, imported
     /// with --replace over one that did. Everything that source contributed goes, which
     /// may be exactly right, so it is stated out loud rather than left as an index that

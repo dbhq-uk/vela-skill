@@ -269,7 +269,8 @@ public static class Program
         var statsOption = new Option<bool>("--stats")
         {
             Description = "After indexing, print document, generated-document, Razor, occurrence "
-                        + "and definition counts."
+                        + "and definition counts, what each source contributed - vela's own harvest "
+                        + "and each imported .scip, by name - and every document that was left out."
         };
 
         // Off by default, and it will stay off until this version has been proven in use.

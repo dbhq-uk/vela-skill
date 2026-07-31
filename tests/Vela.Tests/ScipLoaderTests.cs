@@ -232,6 +232,97 @@ public class ScipLoaderTests : IClassFixture<HarvestedWebApp>
     }
 
     [Fact]
+    public void Stats_SayWhatEachSourceContributedAndNameTheScipEachImportCameFrom()
+    {
+        // --stats is where somebody has already asked what is in the index, and a
+        // polyglot index answered it as one undifferentiated pile: a user holding C# and
+        // an imported TypeScript index could not see what came from where, which is
+        // exactly the question the option exists for. document.source has recorded the
+        // answer since schema 7 and nothing was reading it.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+        ScipLoader.Load(db, _webApp.Emitted.Index);
+
+        var harvested = ScalarInt(db, "SELECT COUNT(*) FROM document");
+        var harvestedOccurrences = ScalarInt(db, "SELECT COUNT(*) FROM occurrence");
+        Assert.True(harvested > 0, "the fixture must contribute documents for this to mean anything");
+
+        // vela's own harvest, alone: one source, and it is named as the harvest rather
+        // than left as an empty string nobody can read.
+        var alone = IndexStatistics.Read(db);
+        var harvest = Assert.Single(alone.Sources);
+        Assert.Equal("", harvest.Source);
+        Assert.Equal(harvested, harvest.Documents);
+        Assert.Equal(harvestedOccurrences, harvest.Occurrences);
+        Assert.Contains("roslyn harvest", IndexStatistics.Render(alone), StringComparison.Ordinal);
+
+        var scip = Synthetic.Root("work") + "/mobile.scip";
+        var imported = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ProjectRoot = Synthetic.RootUri("repo") }
+        };
+        foreach (var file in new[] { "src/a.ts", "src/b.ts" })
+        {
+            var doc = new Scip.Document { RelativePath = file, Language = "typescript" };
+            doc.Occurrences.Add(new Scip.Occurrence
+            {
+                Symbol = $"scip-typescript npm p 1.0 `{Path.GetFileName(file)}`/thing().",
+                SymbolRoles = (int)Scip.SymbolRole.Definition,
+                SingleLineRange = new Scip.SingleLineRange { Line = 1, StartCharacter = 0, EndCharacter = 5 }
+            });
+            imported.Documents.Add(doc);
+        }
+
+        ScipImporter.Import(db, imported, Synthetic.Root("repo"), source: scip);
+
+        var stats = IndexStatistics.Read(db);
+        Assert.Equal(2, stats.Sources.Count);
+
+        // The harvest first, because it is the index the others were added beside.
+        Assert.Equal("", stats.Sources[0].Source);
+        Assert.Equal(harvested, stats.Sources[0].Documents);
+        Assert.Equal(harvestedOccurrences, stats.Sources[0].Occurrences);
+
+        Assert.Equal(scip, stats.Sources[1].Source);
+        Assert.Equal(2, stats.Sources[1].Documents);
+        Assert.Equal(2, stats.Sources[1].Occurrences);
+
+        // Every document is accounted for exactly once, so the breakdown cannot quietly
+        // disagree with the total it is a breakdown of.
+        Assert.Equal(stats.Documents, stats.Sources.Sum(s => s.Documents));
+        Assert.Equal(stats.Occurrences, stats.Sources.Sum(s => s.Occurrences));
+
+        var rendered = IndexStatistics.Render(stats);
+        Assert.Contains("sources              : 2", rendered, StringComparison.Ordinal);
+
+        // In the same column as every label above it. A block that does not line up reads
+        // as something bolted to the end of the report rather than as part of it.
+        Assert.Contains("  roslyn harvest     : ", rendered, StringComparison.Ordinal);
+        Assert.Contains("  imported .scip     : ", rendered, StringComparison.Ordinal);
+
+        // The .scip is NAMED. A count per source that would not say which .scip a source
+        // was is the same undifferentiated pile with more numbers in it.
+        Assert.Contains(scip, rendered, StringComparison.Ordinal);
+
+        // And the lines --stats already existed for are still there, unchanged. They are
+        // the Razor coverage check AGENTS.md prescribes, and new output must not push
+        // them out or reword them.
+        foreach (var line in new[]
+                 {
+                     "documents            : ",
+                     "  generated          : ",
+                     "  razor views        : ",
+                     "occurrences          : ",
+                     "  in razor views     : ",
+                     "  definitions        : "
+                 })
+        {
+            Assert.Contains(line, rendered, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void Load_StoresBothNamesForEveryOccurrence()
     {
         // The whole point of storing two names. symbol is the display name the query
