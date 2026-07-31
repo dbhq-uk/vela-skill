@@ -39,8 +39,9 @@ limit.
 
 That is no longer only an intention. `vela import` reads a `.scip` from any indexer, and it
 has been proved against a real `scip-typescript` 0.4.0 index: four TypeScript files from a
-Vue mobile app sit beside 2,205 C# documents and 307 Razor views in one database, and both
-halves answer to the same verbs.
+Vue mobile app sit beside the C# and Razor halves in one database, and all of them answer to
+the same verbs. On ScentVerdict, the solution vela is developed against, that was 2,341 C#
+documents and 334 Razor views on 30 July 2026.
 
 The format is also a safer bet than it was. SCIP moved out of Sourcegraph's ownership into
 independent governance on 25 March 2026, with a steering committee drawn from Meta, Uber and
@@ -70,10 +71,10 @@ vela's own cost on the same solution, measured on 30 July 2026 once the index is
 | | Results | Time |
 |---|---|---|
 | process floor (`vela --version`) | | 0.08 to 0.09s |
-| `find Perfume` | 14,552 symbols | about 0.40s |
+| `find Perfume` | 14,917 symbols | about 0.40s |
 | `def Perfume.Status` | 2 | about 0.57s |
 | `refs Entities.Perfume.Status` | 24 | about 1.05s |
-| `refs Perfume` | 3,104 | about 1.3s |
+| `refs Perfume` | 3,156 | about 1.3s |
 | `impact PerfumeService` | 4 | about 1.2 to 1.5s |
 
 Not milliseconds, and this documentation used to say it was. The comparison is still the
@@ -110,13 +111,13 @@ For `scip-dotnet` the cause is one line, `ScipProjectIndexer.cs:110`:
 foreach (var document in project.Documents)
 ```
 
-Measured on the same solution's web project:
+Measured on the same solution's web project, on 30 July 2026:
 
 ```
-on-disk documents : 146
-syntax trees      : 454
-generated trees   : 308
-  of which Razor  : 307   (against 307 .cshtml on disk)
+on-disk documents : 174
+syntax trees      : 509
+generated trees   : 335
+  of which Razor  : 334   (against 334 .cshtml on disk)
 #line mapping     : YES
 ```
 
@@ -217,9 +218,12 @@ guessed.
 | `document` | path, language, whether it is source-generated, its declared position encoding, and which `.scip` it came from (`''` means vela's own harvest) |
 | `symbol_fts` | an FTS5 index over symbol names, which is what `find` searches |
 | `external_document` | the paths this index deliberately does not hold, named rather than counted |
-| `index_health` | the indexing pass's verdict on itself, and when it ran |
+| `index_health` | the indexing pass's verdict on itself, when it ran, and how it was built (`rebuild` is `NULL` for a full rebuild) |
 | `import_health` | one row per imported `.scip` whose last import lost something; presence is the degradation |
 | `imported_source` | every `.scip` ever imported, with its content hash, which is what makes an import survive a rebuild |
+| `project_input`, `project_input_document`, `project_input_reference` | the ledger: what each project was built from, and the project reference graph |
+| `project_note` | every reason one project is missing code from this index, against the project rather than against the run |
+| `project_document` | which documents each project contributed to |
 
 `import_health` and `imported_source` are separate tables keyed the same way, and the
 separation is load-bearing. `import_health` holds only the imports that lost something, so a
@@ -231,9 +235,99 @@ and zero TypeScript, because a proven `scip-typescript` import had been wiped by
 re-index, silently, at exit 0, with `degraded = 0`. A whole language had disappeared from an
 index that called itself complete.
 
+### The ledger, and deciding what to rebuild
+
+The last four tables exist for one feature: `vela index --incremental`, which is off by
+default. Nothing else reads them, and a full rebuild writes them and never looks at them
+again.
+
+**A fingerprint is what a project was built from.** Every file the compiler was handed,
+hashed by content: sources, the `.cshtml` and `.razor` additional documents, the analyzer
+configs, the project file and every `Directory.Build.props` and friend between it and the
+root. Content hashes rather than modification times, because an mtime changes when nothing
+did (a checkout, a `touch`) and does not change when something did (a file restored with its
+timestamp preserved). The first costs a needless rebuild; the second leaves the index
+describing code that no longer exists while reporting itself complete, which is Constraint
+3's exact failure.
+
+A source-generated document is deliberately **not** hashed. Its content is derived, so
+hashing it records a consequence rather than a cause, and it could only be computed by
+running every generator again, which is most of the work incremental exists to avoid. Roslyn
+hands over the real input instead: a `.cshtml` arrives as an additional document, on disk and
+readable. Assembly references are hashed by **path** and not by content, because reading
+several hundred assemblies per project would cost more than the rebuild it avoids; the path
+carries the version, so an upgrade is caught and a rebuilt assembly at the same path is not.
+That is the one deliberate hole and it is why the flag is opt-in.
+
+Fingerprinting all ten projects of the real solution, 6,070 inputs, costs 554ms cold and
+76ms warm, against a full index of about 158s. Roughly 0.4%, which is what it has to be for
+the decision it enables to be worth making.
+
+**The plan is pure.** `RebuildPlan.For` takes the current fingerprints, the ledger, the
+schema version and the vela version, and returns which projects to rebuild, which to reuse,
+and one sentence per decision. No I/O, no clock, no environment, so it is tested without a
+workspace or a database and the same inputs give the same set in the same order.
+
+**The hard part is the closure**, and it is where silent staleness would come from. A
+project is not independent: change a public member in one and every reference to it in the
+projects downstream moves, though not one of their files was touched. So the set is the
+changed projects plus everything transitively downstream over the **current** reference
+graph. Current rather than recorded, because an edge that has since been deleted cannot
+propagate a change, and the project that deleted it changed its own project file anyway. The
+walk is breadth-first over a membership set, so a diamond names a project once and a cycle
+terminates rather than hanging.
+
+There is a second closure, over shared documents. A document in this index is keyed by the
+file a developer can open, and two projects can compile one file, so both projects'
+occurrences land in one row. Replacing that row on behalf of one project would delete the
+other's occurrences and nothing would put them back. So a project sharing a document with a
+selected project is selected too.
+
+It walks **both** what `project_document` recorded and what each project's fingerprint says
+it compiles now, and it needs both. The ledger catches a project that has stopped compiling
+a shared file: its rows are still in the database and are deleted on its behalf, and only
+the ledger remembers that anybody else contributed to the same document. The current compile
+set catches the reverse, which the ledger cannot see at all: a project that has just started
+compiling a file another project was already compiling has no ledger entry joining the two,
+and the load deletes every path the fresh harvest names, so that document goes and takes the
+other project's occurrences with it, at exit 0 with no banner.
+
+**What it counts as a document is narrower than what Roslyn hands over, and deliberately.**
+Every source file the compiler is given becomes a document. Additional documents do not:
+Roslyn passes every `AdditionalFiles` item a project declares, and only the ones the Razor
+generator reads, the `.cshtml` and `.razor` files, become documents with occurrences on
+them. The rest are analyser inputs, a `stylecop.json` or a `BannedSymbols.txt`. They are
+hashed into the project's fingerprint, because changing one changes what the project
+compiles to, and they are left out of this closure, because a file that becomes no document
+cannot be a document two projects share. Counting them was not wrong in the dangerous
+direction, but it was expensive in a way that would have gone unnoticed: one root-level
+`<AdditionalFiles Include="../stylecop.json" />`, which is the ordinary way to configure an
+analyser across a solution, put every project into a single shared group, so any edit at all
+closed over the whole solution and `1 of 10` became `10 of 10` with the reason "it compiles
+stylecop.json".
+
+Roslyn's reference edges are a transitive superset of the declared `<ProjectReference>`
+entries, 34 against 21 on the real solution, because MSBuild flows project references
+transitively and Roslyn reports the resolved set. A superset only ever widens the closure,
+which is the safe direction.
+
+**`project_note` is what stops a skipped project going quiet.** A project that will not
+compile is fingerprinted like any other, so an incremental run can skip it, and its
+`compile-error:` note is produced fresh by each harvest and by nothing else. Recording the
+note against the run would have meant a skipped project lost it: the index would stop calling
+itself degraded while still holding an incomplete picture of that project. A broken project
+that goes quiet is precisely the failure vela exists to prevent, so the notes are recorded
+against the project and survive being skipped.
+
+**On the real graph, the honest shape of the feature** is that nothing changed rebuilds 0 of
+10, a leaf edit rebuilds 1 of 10, and one line in `ScentVerdict.Data` rebuilds 10 of 10,
+because `Data` is upstream of every other project. The last case falls back to a genuine full
+rebuild, since rebuilding all ten one at a time is a slower route to the same index. See
+[the reference](reference.md#what---incremental-actually-saves) for the timings.
+
 ### No migrations
 
-The index carries a schema version, currently 7, and a build that reads a different one
+The index carries a schema version, currently 9, and a build that reads a different one
 refuses to answer. There is no migration path, deliberately: re-indexing takes seconds and
 rebuilds from the truth, where a migration would rebuild from a guess about what the old
 rows meant.
@@ -269,7 +363,10 @@ no job covers, because vela was never going to index it. Only a real gap gets th
 
 Two changes to the matching rule are the clearest evidence, because both were silent
 mis-answers on a real solution and both were verified over every symbol in the index rather
-than on the example that found them. Both are re-derivable today from the same index.
+than on the example that found them. **Every count in this section is from the ScentVerdict
+index as it stood on 29 July 2026, when the two bugs were found and fixed.** They are a
+record of what the fixes recovered, not figures today's index reproduces: that repository
+has grown since, and the same queries now return larger numbers.
 
 **Parameter lists were being read as part of a name.** Cutting a stored name at its first
 `(` also threw away every segment after the closing `)`, and a local or a parameter is
@@ -281,7 +378,7 @@ App.Services.PerfumeService.PerfumeService(ILogger<...>, IImageService).logger
 
 Cut at the first `(`, its last segment reads `PerfumeService`. So `refs PerfumeService`
 answered with the constructor's parameters as though they were the type, and `refs Get`
-answered **9,613** occurrences where 423 are real.
+answered **9,613** occurrences where 423 were real.
 
 Reading the parameter list correctly removes 2,318 symbols and 9,190 rows from that answer.
 Checked over all 135,555 distinct symbols in the index: **not one of the removed symbols is
@@ -296,7 +393,9 @@ Microsoft.Extensions.Logging.ILogger<ScentVerdict.Web.Pages.IndexModel>
 ScentVerdict.Ai.Auditing.AuditRunner.RunWithAuditAsync<(int, int)>(System.String)
 ```
 
-so no bare name reached either of them. `refs ILogger` answered **24** where **563** exist.
+so no bare name reached either of them. `refs ILogger` answered **24** where **563** existed
+that day. The same query answers 619 on 30 July 2026, which is the count that has moved and
+not the bug.
 
 Folding the type arguments out recovers 269 symbols and 539 rows. Every one of them really
 is named `ILogger`, and **not one row was lost** to the change. 20,281 of the index's 135,555
@@ -332,7 +431,7 @@ occurrences          : 2670
 `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count,
 and CI runs it as a separate named step so a failure says what broke.
 
-293 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
+359 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
 The fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
 NuGet cache needs network for test setup.
 

@@ -31,10 +31,13 @@ Measured on a 375,608-line C# solution with 307 Razor views:
 
 > **Since then.** Those grep counts were taken with
 > `grep -rw --include='*.cs' --include='*.cshtml' <name> src`, over `src/` alone. Re-measured
-> on 30 July 2026 over the whole repository, the real reference counts are 24, 244 and 325,
-> and `grep -w` returns 2,267 lines for `Status` and 3,653 for `Name`. The ratios are of the
-> same order and the conclusion is unchanged. The current table, with the exact commands,
-> is in [the querying guide](guides/querying.md#is-this-used-anywhere).
+> on the morning of 30 July 2026 over the whole repository, the real reference counts were
+> 24, 244 and 325, and `grep -w` returned 2,267 lines for `Status` and 3,653 for `Name`.
+> That repository merged a feature branch the same afternoon and every one of those numbers
+> moved, which is the ordinary fate of a measurement of a live tree; the ratios stayed of
+> the same order and the conclusion is unchanged. **For the current table, with the exact
+> commands and the date it was taken, see
+> [the querying guide](guides/querying.md#is-this-used-anywhere).**
 
 The names where grep collapses - `Name`, `Status`, `Value`, `Id`, `Update` - are
 exactly the ones you most need answered. 2,760 hits is not context; it is a denial
@@ -80,6 +83,13 @@ generated trees   : 308
   of which Razor  : 307   (vs 307 .cshtml on disk)
 #line mapping     : YES
 ```
+
+> **Since then.** That is the ScentVerdict web project as it was when this was written.
+> Re-measured on 30 July 2026, after the repository grew, the same counts are 174 on-disk
+> documents, 509 syntax trees, 335 generated trees, 334 of them Razor against 334 `.cshtml`
+> on disk, and the `#line` mapping still resolves. The shape of the argument is what
+> matters and it has not moved: the generated trees outnumber the files on disk, and
+> `project.Documents` reaches none of them.
 
 `SymbolFinder.FindReferencesAsync` returns hits inside them, attributed to the
 right view:
@@ -131,8 +141,9 @@ is no `.scip` import path today, and everything in the index is harvested from
 Roslyn.
 
 > **Since then.** `vela import` exists and is proven. A real `scip-typescript` 0.4.0
-> index over four TypeScript files sits beside 2,205 C# documents and 307 Razor views in
-> one database, and both halves answer to the same verbs. `vela.json` declares which
+> index over four TypeScript files sits beside the C# and Razor halves in one database, and
+> all of them answer to the same verbs; on 30 July 2026 that was 2,341 C# documents and 334
+> Razor views. `vela.json` declares which
 > indexers a repository expects, and a job that has not been imported degrades the index
 > until it is. See [the multi-language guide](guides/multi-language.md).
 >
@@ -271,13 +282,47 @@ neither implements them nor, yet, imports them.
   and per-file hashes would narrow that, and would also let the watched set be the
   indexed set again rather than a cheaper approximation of it. Both are worth doing
   only alongside incremental reindex.
+
+  > **Since then.** Incremental reindex exists and it does hash per file, so the material
+  > is there. The freshness check is deliberately not built on it: hashing every input
+  > costs 554ms cold on the real solution, and the freshness check runs on every query
+  > where a fingerprint runs on every index. A check that made a sub-second `refs` half a
+  > second slower to be more precise about a suspicion is the wrong trade. Still
+  > timestamps, still coarse, still stated as such.
 - **Incremental reindex.** Full index of a 10-project solution takes ~87s with
   `scip-dotnet` as a reference point. Whether per-project incremental work is worth
   the complexity is deferred until the full path is proven.
 
-  > **Since then.** The full path is proven, and still full. Indexing the real
-  > 375,608-line solution took 2m12s at 1.5GB peak on 29 July 2026. Incremental reindex
-  > remains deferred.
+  > **Since then.** Built, on 30 July 2026, as `vela index --incremental`, and **off by
+  > default**. The unit is a project, because Roslyn cannot give a semantic model without a
+  > compilation and a compilation is per project. The set rebuilt is the projects whose
+  > inputs changed plus everything transitively downstream of them, and a ledger of what
+  > each project was built from - content hashes of every file the compiler was handed -
+  > is what makes the claim checkable.
+  >
+  > **It was worth the complexity, conditionally, and the condition is the thing to say.**
+  > On the real solution: nothing changed, 11.9s against a 158.1s full index, 0 of 10
+  > projects rebuilt. One line in a leaf project, 22.2s, 1 of 10. One line in
+  > `ScentVerdict.Data`, which is upstream of all nine others, 153.9s and 10 of 10, which
+  > is a full rebuild reached the long way and saves nothing at all. Incremental helps most
+  > when you edit a leaf; a change low in the dependency graph rebuilds nearly everything.
+  > That is the closure being right rather than a defect, and it is why the flag is opt-in
+  > rather than the default.
+  >
+  > Two things the complexity turned out to be, which were not obvious from here. **A
+  > fingerprint opens a Constraint 3 hole:** a project that will not compile is
+  > fingerprinted like any other, so it can be skipped, and its `compile-error:` note is
+  > regenerated by each harvest and by nothing else. Recorded against the run, the note
+  > would have vanished the moment the project was skipped and the index would have stopped
+  > calling itself degraded while still holding an incomplete picture of it. The notes are
+  > now recorded against the project. **And a document is not owned by one project:** two
+  > projects can compile one file and both their occurrences land in one row, so replacing
+  > it for one of them would delete the other's. That needed a second closure and a second
+  > table.
+  >
+  > What it still cannot see is an assembly rebuilt in place at the same path and the same
+  > version, because references are hashed by path rather than by content. A full index is
+  > the answer to that, and it remains the default.
 
 - **Index location.** A cache directory keyed by repo path, versus a file inside the
   repo that a team could commit. Leaning cache directory, to honour constraint 2.
@@ -290,13 +335,14 @@ Three things have been settled since this list was written, and are worth record
 because none of them was foreseen here.
 
 - **The matching rule needed two corrections, both silent.** Reading a parameter list as
-  part of a name made `refs Get` answer 9,613 where 423 are real; not folding generic type
-  arguments made `refs ILogger` answer 24 where 563 exist. Both were verified over every
-  symbol in the index, and both are written up in
+  part of a name made `refs Get` answer 9,613 where 423 were real; not folding generic type
+  arguments made `refs ILogger` answer 24 where 563 existed. Both counts are from the index
+  as it stood on 29 July 2026, when the bugs were found. Both were verified over every
+  symbol in that index, and both are written up in
   [architecture.md](architecture.md#how-we-know-it-is-right).
 - **An ambiguity block was needed.** Whole-segment matching means a bare name can span
   several real symbols, and a single total across them is the size of nothing. `refs
-  Status` on the real solution spans 154 distinct symbols.
+  Status` on ScentVerdict spanned 154 distinct symbols on 30 July 2026.
 - **An import has to survive a rebuild.** `vela index` deletes the database, so the first
   version of the import path lost every imported language on the next routine re-index,
   silently, at exit 0. The rebuild now replays what it replaced.

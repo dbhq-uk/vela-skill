@@ -33,12 +33,14 @@ vela impact <symbol>           Callers and blast radius
 ### `vela index`
 
 Loads the solution through MSBuild, harvests the compilation with Roslyn, and writes a
-SQLite index. Rebuilds from nothing every time: the old database file is deleted first.
+SQLite index. Rebuilds from nothing every time: the old database file is deleted first,
+unless you pass [`--incremental`](#--incremental), which is off by default.
 
 | Option | Meaning |
 |---|---|
 | `--solution <path>` | Path to the `.sln`. Defaults to the only `.sln` in the current directory. |
 | `--stats` | After indexing, print document, generated-document, Razor, occurrence and definition counts, and list every document that was left out. |
+| `--incremental` | Rebuild only the projects whose inputs changed, and every project downstream of them. **Off by default.** See [`--incremental`](#--incremental). |
 
 `--stats` output on a `dotnet new webapp` scaffold:
 
@@ -61,6 +63,183 @@ carry no occurrences` means the documents arrived and the `#line` mapping did no
 
 `vela index` rebuilds the C# half from nothing, and it replays every `.scip` that had been
 imported into the index it replaced. See [`vela import`](#vela-import).
+
+#### `--incremental`
+
+Rebuilds only the projects whose inputs changed, plus every project transitively downstream
+of them. **Off by default, and a full index is the right choice when in doubt.**
+
+A full rebuild cannot be stale, because it reads everything. An incremental rebuild is a
+claim that what it skipped has not changed, and if that claim is wrong the index holds rows
+describing code that no longer exists, at line numbers that have moved, while reporting
+itself complete. That is worse than the slowness it replaces, which is why it is opt-in.
+
+**The unit is a project, not a file.** Roslyn cannot give a semantic model without a
+compilation, and a compilation is per project, so if anything a project compiles has changed
+that project is rebuilt whole. Then the closure: change a public member in a project and
+every reference to it in the projects downstream moves, though not one of their files was
+touched, so everything downstream is rebuilt too.
+
+**What counts as an input.** Every file the compiler was handed, hashed by content: sources,
+`.cshtml` and `.razor` additional documents, `.editorconfig` and generated `.globalconfig`,
+the project file, and every `Directory.Build.props`, `Directory.Build.targets`,
+`Directory.Packages.props`, `global.json` and `NuGet.config` between it and the root.
+Content hashes, not modification times: an mtime changes when nothing did, and does not
+change when something did.
+
+An `AdditionalFiles` item that is not a view - a `stylecop.json`, a `BannedSymbols.txt` -
+is an input like any other, so editing one rebuilds the projects that declare it. It is not
+treated as a **document** those projects share, because it becomes no document in the index.
+Were it treated as one, a single root-level analyser file declared by every project would
+put the whole solution into one group and every edit would rebuild all of it.
+
+Assembly references are hashed **by path and not by content**, because reading several
+hundred assemblies per project would cost more than the rebuild it avoids. The path carries
+the version, so a package upgrade is caught. **A rebuilt assembly at the same path and the
+same version is not.** That is the one deliberate hole, and a full index is the answer to it.
+
+**The walk for build files stops at the repository root, and looks only for those names.**
+A `Directory.Build.props` or a `global.json` ABOVE the root the index is built at is not
+hashed, so editing one does not invalidate anything, even though MSBuild would go on looking
+and would import it. Nor is a `.props` file under some other name that a project imports
+explicitly. The root is where vela's world ends: it is what every path in the index is
+relative to and what the freshness check walks, and hashing an unbounded number of parent
+directories on every index is not a cost worth paying for a layout almost nobody has. If
+your build is configured from above the repository root, or from files under names of your
+own, index without the flag after changing one.
+
+**What it falls back to a full rebuild for**, saying so every time:
+
+| Reason | Line it prints |
+|---|---|
+| No index yet | `there is no index at <path> yet, so there is nothing to compare this tree against` |
+| Schema changed | `the index at <path> was built against schema version N and this vela reads schema version M` |
+| An index built before vela kept the ledger | `no project in this index has a recorded fingerprint, so there is nothing to compare the tree against` |
+| A different build of vela wrote it | `a different build of vela wrote this index ... Two builds can emit different occurrences from identical source` |
+| The set of projects changed, in either direction | `the set of projects changed since this index was built: added ...; removed ...` |
+| The closure reaches every project | `the change reaches every project in this solution, all N of them, so there is nothing left to reuse` |
+| Anything at all went wrong deciding | `the plan could not be worked out: <message>` |
+
+Each is followed by `A full rebuild cannot be stale, because it reads everything. This is
+the safe outcome and not a failure.` **A fallback is a good outcome and it is never silent.**
+
+**"Anything at all" is meant literally.** Every exception except the one raised by you
+cancelling the run, whose whole point is that less work should happen rather than more.
+There is no failure for which refusing to build an index is better than building it the slow
+way, and nothing is hidden by choosing the slow way, because the failure's own message is
+printed on the line that announces the fallback.
+
+**"A different build of vela" means a different binary, not a different version number.**
+The identity recorded against every project is the assembly version followed by the module
+version id of the binary that ran, for example `1.0.0.0+8f3a2b1c9d4e`. It is derived from
+the compiled module rather than declared in a file, because a version number is a promise
+somebody has to remember to keep on the day they change the moniker grammar, and this is the
+one record that has to be right about that day. C# builds are deterministic, and changing
+any line of vela produces a different id. **The determinism is narrower than it sounds,
+though**, and measured rather than assumed: rebuilding vela from unchanged source with the
+same SDK **at the same absolute path** reproduces the id exactly and invalidates nothing,
+but building that same source at a *different* absolute path produces a different id, because
+vela's own project sets neither `PathMap` nor `DeterministicSourcePaths` and the paths the
+compiler embeds are part of what the module version id covers. Moving the vela checkout, or
+cloning it somewhere else and building there, therefore counts as a different build.
+
+**So the first incremental run after upgrading, rebuilding or relocating vela falls back to
+a full rebuild, and says so.** That is broader than "the harvest changed" on purpose: it
+errs towards the rebuild that cannot be stale.
+
+**What it prints when it does go incremental:**
+
+```
+Incremental rebuild: 1 of 10 project(s) rebuilt, 9 reused.
+  rebuilt tests/ScentVerdict.Benchmarks/ScentVerdict.Benchmarks.csproj: its own inputs changed
+  reused src/ScentVerdict.Data/ScentVerdict.Data.csproj
+  ...
+Replaced 11 document(s) with 11 in /home/devops/.cache/vela/ScentVerdict-cf73472b44f18ae0.db.
+Every other document in it is the one the last build wrote, and this run did not look at the
+code behind it.
+```
+
+The same sentence is stored in `index_health.rebuild`, which is `NULL` for a full rebuild.
+So an absent value means "this index was built whole", and a reader who distrusts an answer
+can find out whether the project it came from was looked at.
+
+**A project that was skipped keeps saying what it could not do.** A project that will not
+compile is fingerprinted like any other, so an incremental run can skip it. Its
+`compile-error:` note is recorded against the project, not against the run, so a skipped
+project goes on degrading the index and the banner does not go quiet. Anything else would
+be the exact failure vela exists to prevent.
+
+**An imported `.scip` survives.** A full rebuild deletes the database and replays every
+import into the new one. An incremental rebuild never deletes the database and simply does
+not touch rows another source contributed.
+
+**An incremental run resets the freshness clock for the whole index, including the projects
+it reused, and that is honest.** [Freshness](#freshness) compares each watched file's
+modification time against `index_health.built_at_utc`, and an incremental run moves that
+timestamp even for projects whose rows it did not rewrite. It is entitled to: working out
+the plan reads and hashes every input of every project the solution holds, reused ones
+included, because that is the only way to find out which ones can be reused. A file whose
+content changed changes its project's fingerprint and that project is rebuilt. So by the
+time the timestamp moves, every fingerprinted file has been compared by **content**, which
+is a stricter test than the modification-time comparison the freshness check makes.
+
+What that does not cover is a watched file that is an input of no project: a `.cs` excluded
+from compilation, anything belonging to a project that failed to load, a `.props` under a
+name the walk above does not look for. Those are outside the ledger, so nothing in it moves
+when one of them does, and both modes reset the timestamp without having compared them.
+
+**The two modes are not equally blind about those files, though, and incremental is the
+blinder one.** Where the file is one the compiler never sees at all, a `.cs` excluded from
+compilation, the modes really are the same: it is in neither index and no rebuild will put
+it there. Where the file is one MSBuild reads but the walk does not hash, a `.props` under a
+name of your own, they differ. A full rebuild loads every project again, so the edit is
+applied and the new index reflects it. An incremental run keeps the rows the reused projects
+were built from **before** the edit and moves `built_at_utc` anyway, which clears the
+modification time [Freshness](#freshness) would otherwise have raised on your behalf. So
+that is the one case where the flag can leave the index quietly describing a build
+configuration that has changed, and it is why the paragraph on the build-file walk above
+says to index without the flag after editing one.
+
+#### What `--incremental` actually saves
+
+Measured on ScentVerdict, the ten-project solution vela is developed against, on
+30 July 2026, when it stood at 375,608 lines of C# and 307 Razor views. Each figure is a
+wall clock, and after each one the load-bearing counts were unchanged from the full index
+in the first row: 307 of 307 Razor views with 50,355 occurrences in them,
+`refs Entities.Perfume.Status` 24, `refs ILogger` 563, `refs Count` 2,573.
+
+**Those counts are the invariant the benchmark checked, not figures you can reproduce
+now.** That repository merged a feature branch later the same day, and on the index built
+after it the same four queries answer 334 of 334 views with 52,445 occurrences, 24, 619 and
+2,613. What the table below is evidence for is the *ratio* between the modes, and that is a
+property of the dependency graph rather than of the line count.
+
+| What changed | Wall clock | What it rebuilt |
+|---|---|---|
+| nothing (full index for comparison) | 158.1s | all ten, from an empty database |
+| nothing | **11.9s** | 0 of 10 |
+| one line in a leaf project | **22.2s** | 1 of 10, 11 documents replaced |
+| one line in the project everything depends on | **153.9s** | fell back to a full rebuild: the closure reached 10 of 10 |
+
+So the saving is about 13x, about 7x, or nothing at all, and **which one you get is decided
+by your dependency graph rather than by vela**. `ScentVerdict.Data` is upstream of all nine
+other projects, so one line in it invalidates every row in the index. That is the closure
+being right, not a defect: every reference to a `Data` type in every other project sits at a
+line number a one-line insertion in `Data` can move.
+
+**Incremental helps most when you edit a leaf. A change low in the dependency graph rebuilds
+nearly everything, and trying costs a little more than not trying.** The decision itself is
+cheap: fingerprinting ten projects and 6,070 inputs is 554ms cold and 76ms warm, and working
+out the plan over ten projects and thirty-four reference edges is 7 to 9ms. The fallback is
+taken before the harvest and reuses the workspace load the rebuild needed anyway, so a
+wasted attempt costs about 0.6s on a 155s rebuild, which is inside the run-to-run noise.
+
+**One warm-up cost, in the safe direction.** MSBuild regenerates
+`obj/**/*.AssemblyInfo.cs` for every project, and it is a file the compiler is handed, so it
+is an input. On a tree whose build output is stale, the first incremental run can therefore
+report `its own inputs changed` for a project you did not touch and fall back to a full
+rebuild. It converges: the run after it does not. It errs towards rebuilding, which is the
+safe direction, and it says out loud that it did.
 
 ### `vela import`
 
@@ -187,12 +366,13 @@ measured. See [How we know it is right](architecture.md#how-we-know-it-is-right)
 
 ### The ambiguity block
 
-A bare name can still name more than one thing, and vela says so when it does.
+A bare name can still name more than one thing, and vela says so when it does. This is
+`refs Perfume` on ScentVerdict on 30 July 2026, abridged:
 
 ```
-'Perfume' is ambiguous: the 3104 result(s) above span 25 distinct symbols:
-    1958  ScentVerdict.Data.Entities.Perfume
-     384  ScentVerdict.Data.Enums.EntityType.Perfume
+'Perfume' is ambiguous: the 3156 result(s) above span 25 distinct symbols:
+    1977  ScentVerdict.Data.Entities.Perfume
+     381  ScentVerdict.Data.Enums.EntityType.Perfume
      ...
      144  (+15 further symbol(s))
 To ask about one of them, give more of its name: 'Entities.Perfume' matches
@@ -367,7 +547,7 @@ absolute solution path, so two checkouts of the same repository have separate in
 vela refuses to run if that directory resolves to somewhere inside the solution's own tree.
 Indexing must never write into the repository being indexed.
 
-The index carries a schema version (currently 7). If you upgrade vela and the shape has
+The index carries a schema version (currently 9). If you upgrade vela and the shape has
 changed, every verb refuses to answer and tells you to re-index rather than querying a
 database it cannot read. The index is a cache, so it is rebuilt rather than migrated.
 

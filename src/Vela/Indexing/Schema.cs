@@ -20,11 +20,14 @@ public static class Schema
     /// generated column. 2 adds it. 3 adds external_document. 4 adds
     /// occurrence.scip_symbol. 5 adds document.position_encoding and an index on
     /// occurrence.scip_symbol. 6 adds import_health. 7 adds document.source and
-    /// imported_source. A future change bumps this and nothing else: there is no
-    /// migration, because re-indexing takes seconds and rebuilds from the truth rather
-    /// than from a guess about what the old rows meant.
+    /// imported_source. 8 adds project_input and its two child tables, the record of what
+    /// each project was built from. 9 adds project_note and project_document, which are
+    /// what let a project be SKIPPED without its problems and its documents being
+    /// forgotten, and index_health.rebuild. A future change bumps this and nothing else:
+    /// there is no migration, because re-indexing takes seconds and rebuilds from the
+    /// truth rather than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 7;
+    public const int Version = 9;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -186,11 +189,19 @@ public static class Schema
             -- written by `vela index` and never touched by an import, so built_at_utc
             -- keeps meaning "when this code was last compared against the disk", which
             -- is what the freshness check measures from.
+            --
+            -- rebuild says HOW this index was last built, and it is NULL for a full
+            -- rebuild. An incremental run rebuilds some projects and reuses the rows of
+            -- others, so "when was this index built" stops being one fact: the reused
+            -- rows are as old as the run that last wrote them, and project_input.built_at
+            -- says how old. This column names which projects were which, so a reader who
+            -- distrusts an answer can see whether the project it came from was looked at.
             CREATE TABLE IF NOT EXISTS index_health (
                 built_at_utc TEXT NOT NULL,
                 git_ref      TEXT,
                 degraded     INTEGER NOT NULL,
-                detail       TEXT
+                detail       TEXT,
+                rebuild      TEXT
             );
 
             -- One row per imported .scip whose LAST import left code out of the index,
@@ -243,6 +254,125 @@ public static class Schema
                 content_hash    TEXT NOT NULL,
                 documents       INTEGER NOT NULL,
                 occurrences     INTEGER NOT NULL
+            );
+
+            -- WHAT EACH PROJECT WAS BUILT FROM. Nothing recorded this, so nothing could
+            -- check whether a project's code had moved on since the index was built, and
+            -- an incremental rebuild would have had to guess.
+            --
+            -- A full rebuild cannot be stale, because it reads everything. An incremental
+            -- one is a CLAIM that what it skipped has not changed, and if the claim is
+            -- wrong the index holds rows describing code that no longer exists, at line
+            -- numbers that have moved, while reporting itself complete. That is
+            -- Constraint 3's exact failure and it is worse than the slowness it replaces.
+            -- These three tables are what make the claim checkable.
+            --
+            -- project is the identity: the project file relative to the root the index is
+            -- built at, so it is the same string in any checkout on any machine. A
+            -- multi-targeted project is several compilations over one file and carries
+            -- its Roslyn name after a '#', because one row describing two compilations
+            -- would be wrong about at least one of them.
+            --
+            -- fingerprint is a SHA-256 over every input, taken from CONTENT and never
+            -- from modification times. index_health's freshness check compares mtimes and
+            -- is right to: it runs on every query and only has to raise a suspicion. A
+            -- decision about what NOT to re-read is a different question, and an mtime
+            -- changes when nothing did and stands still when something did.
+            --
+            -- schema_version and vela_version sit on the ROW rather than beside the table
+            -- because they are facts about the run that wrote it, and an incremental
+            -- rebuild writes some rows and leaves others. One value elsewhere would be
+            -- the version of the most recent run, which says nothing about the rows that
+            -- run did not touch.
+            CREATE TABLE IF NOT EXISTS project_input (
+                project        TEXT NOT NULL PRIMARY KEY,
+                name           TEXT NOT NULL,
+                fingerprint    TEXT NOT NULL,
+                inputs         INTEGER NOT NULL,
+                schema_version INTEGER NOT NULL,
+                vela_version   TEXT NOT NULL,
+                built_at_utc   TEXT NOT NULL
+            );
+
+            -- The inputs themselves, one row each, which is what makes a rebuild decision
+            -- auditable rather than merely made. The digest can say a project changed and
+            -- never which file did it.
+            --
+            -- kind is part of the key because one path can honestly arrive twice - an
+            -- .editorconfig is both an analyzer-config document and a file on disk - and
+            -- because a reader working out why a project rebuilt needs to know which
+            -- channel named it. The kinds are on ProjectFingerprint; 'additional' is the
+            -- one worth naming here, because that is where a .cshtml or .razor lives. A
+            -- view never reaches the compiler as a file, so hashing only the compiled
+            -- documents would have called a project unchanged after a view was rewritten.
+            --
+            -- content_hash is 64 hex characters, or 'not-read' for a reference whose path
+            -- is the evidence, or 'unreadable' for a file that would not open. Neither
+            -- sentinel can be confused with a hash.
+            CREATE TABLE IF NOT EXISTS project_input_document (
+                project      TEXT NOT NULL,
+                kind         TEXT NOT NULL,
+                path         TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                PRIMARY KEY (project, kind, path)
+            );
+
+            -- The project reference graph, which is the part a rebuild plan cannot work
+            -- out from anything else in this database. A project is not independent:
+            -- change a public member in one and every reference to it in the projects
+            -- downstream moves, though not one of their files was touched. Getting that
+            -- closure wrong is the silent-staleness failure, so the edges are stored
+            -- rather than inferred.
+            CREATE TABLE IF NOT EXISTS project_input_reference (
+                project    TEXT NOT NULL,
+                referenced TEXT NOT NULL,
+                PRIMARY KEY (project, referenced)
+            );
+
+            -- EVERY REASON ONE PROJECT IS MISSING CODE FROM THIS INDEX, recorded against
+            -- the project rather than against the run.
+            --
+            -- This is what closes the hole a fingerprint opens. A project that will not
+            -- compile is fingerprinted like any other, so an incremental run can skip it -
+            -- and its `compile-error:` note is produced fresh by each harvest and by
+            -- nothing else, so skipping it meant the note was never regenerated. The index
+            -- would stop calling itself degraded while still holding an incomplete picture
+            -- of that project. A broken project that goes quiet is precisely the failure
+            -- this tool exists to prevent.
+            --
+            -- Keeping the note when the project is skipped is honest for the same reason
+            -- the skip is: the fingerprint says nothing this project compiles has changed,
+            -- and the closure says nothing upstream of it has either, so its diagnostics
+            -- have not changed. The alternative - rebuilding every project that has ever
+            -- had a problem - pays full price for byte-identical output and makes the
+            -- degraded index the one that never gets faster, which is backwards.
+            --
+            -- The text is the emitter's own note, prefix and all, so a reader sees exactly
+            -- what a full rebuild would have said and Program classifies it by exactly the
+            -- same prefixes.
+            CREATE TABLE IF NOT EXISTS project_note (
+                project TEXT NOT NULL,
+                note    TEXT NOT NULL,
+                PRIMARY KEY (project, note)
+            );
+
+            -- WHICH DOCUMENTS EACH PROJECT CONTRIBUTED TO, which is the other thing an
+            -- incremental rebuild cannot work out from anything else here.
+            --
+            -- A document is keyed by the file a developer can open, and two projects can
+            -- compile one file: a linked file, a shared source directory, a wildcard that
+            -- reaches into a common folder. The occurrences of every project that compiles
+            -- it land in ONE document row, so replacing that document on behalf of one
+            -- project deletes the other's rows and nothing puts them back. The plan reads
+            -- this table to pull every such project into the rebuild.
+            --
+            -- It is also how a rebuild knows what to DELETE. A file that has gone leaves a
+            -- document nothing in the fresh harvest names, and without a record of what
+            -- the project used to contribute there would be nothing to match it against.
+            CREATE TABLE IF NOT EXISTS project_document (
+                project       TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                PRIMARY KEY (project, relative_path)
             );
             """;
         cmd.ExecuteNonQuery();

@@ -4,7 +4,7 @@
 
 # vela
 
-**Your codebase has 2,267 lines matching `Status`. Twenty-four of them are the property you meant.**
+**Your codebase has 2,257 lines matching `Status`. Twenty-four of them are the property you meant.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://code.claude.com/docs/en/plugins)
@@ -35,9 +35,9 @@ at all.
 exist as files the compiler reads. They arrive as *source-generated documents*. Every
 general-purpose code-intelligence tool iterates the files on disk and therefore skips them:
 CodeGraph (63k stars), codebase-memory-mcp (36k), Serena (27k), and even Sourcegraph's own
-Roslyn-based `scip-dotnet`. On one real solution that is 307 views and 58,788 lines of the
-presentation layer, invisible. vela reads the compilation instead of the directory, so they
-are simply there.
+Roslyn-based `scip-dotnet`. On ScentVerdict, the real ten-project solution vela is developed
+against, that was 334 views and 62,358 lines of the presentation layer on 30 July 2026,
+invisible. vela reads the compilation instead of the directory, so they are simply there.
 
 **It is deterministic, and only deterministic.** No model calls, no API key, no network.
 Every answer follows from the compiler's semantic model, so there is nothing to triage.
@@ -56,28 +56,30 @@ answer at any precision.
 
 ## Proof
 
-On a real 375,608-line C# solution with 307 Razor views (58,788 lines), measured
-30 July 2026. `grep -w` counts lines, vela counts occurrences, over the same `.cs` and
-`.cshtml` files.
+Measured on 30 July 2026 against ScentVerdict, a real ten-project solution of 388,323 lines
+of C# with 334 Razor views (62,358 lines). `grep -w` counts lines, vela counts occurrences,
+over the same `.cs` and `.cshtml` files. It is a live repository, so re-measure rather than
+trust these: the commands are in [the querying guide](docs/guides/querying.md).
 
 | Question | vela | `grep -w` | Precision |
 |---|---|---|---|
-| `refs Entities.Perfume.Status` | 24 | 2,267 for `Status` | 1.1% |
-| `refs Entities.Perfume.Name` | 244 | 3,653 for `Name` | 6.7% |
-| `refs Brand.Name` | 325 | 3,653 for `Name` | 8.9% |
-| `refs PerfumeService` | 7 | 32 | grep is fine |
+| `refs Entities.Perfume.Status` | 24 | 2,257 for `Status` | 1.1% |
+| `refs Entities.Perfume.Name` | 248 | 3,780 for `Name` | 6.6% |
+| `refs Brand.Name` | 326 | 3,780 for `Name` | 8.6% |
+| `refs PerfumeService` | 7 | 33 | grep is fine |
 
-Coverage on that solution: **307 of 307 `.cshtml` indexed**, 2,512 documents, 935,029
-occurrences, 136,814 definitions. Indexing took 2m12s at 1.5GB peak.
+Coverage on that solution on the same day: **334 of 334 `.cshtml` indexed**, 2,675
+documents, 979,906 occurrences, 142,532 definitions. Indexing took about five minutes
+(4m55s and 5m12s on two runs) at 2.1GB peak.
 
-Query cost once the index exists: a 0.09s process floor, about 0.57s for a `def`, about
-1.3s for a `refs` returning 3,104 results. Not milliseconds, and this README used to say it
+Query cost once the index exists: a 0.09s process floor, about 0.55s for a `def`, about
+1.3s for a `refs` returning 3,156 results. Not milliseconds, and this README used to say it
 was. For comparison, loading the same solution into a live Roslyn workspace costs 9.3s plus
 23.8s to compile the web project, and it costs that **on every invocation**, because nothing
 stays resident.
 
 **Polyglot, proved not promised.** A real `scip-typescript` 0.4.0 index over four
-TypeScript files imports beside the C# index, and both answer from one database. 293 tests,
+TypeScript files imports beside the C# index, and both answer from one database. 359 tests,
 all hermetic.
 
 ## Upstream

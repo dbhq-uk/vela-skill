@@ -29,7 +29,7 @@ Use vela when:
 vela index
 ```
 
-Builds the index for the solution in the current directory. It costs about what a build costs: roughly 8 seconds on a scaffolded Razor Pages app, and 2 minutes 12 seconds at 1.5GB peak on a real 375,608-line, ten-project solution. It is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once a watched file under the repository root is newer than it.
+Builds the index for the solution in the current directory. It costs about what a build costs: roughly 8 seconds on a scaffolded Razor Pages app, and about five minutes at 2.1GB peak on ScentVerdict, a real ten-project solution of 388,323 lines of C# with 334 Razor views, measured 30 July 2026. Expect it to scale with the solution rather than to match that figure. It is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once a watched file under the repository root is newer than it.
 
 **The watch is narrower than the index, so the absence of a banner is not proof the tree is unchanged.** What is watched is every `.cs`, `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`, `.slnx`, `.props` and `.targets` file under the repository root - the sources vela indexes, plus the project and solution files that decide what is compiled - and nothing under `bin`, `obj`, `.git`, `.vs`, `.idea`, `node_modules` or the index's own cache directory. A change anywhere else is invisible to the check: a checked-in generated artefact with another extension, a source file that only exists under an excluded directory, or a `Directory.Build.props` inside `obj`. If you have edited code yourself, or you know something ran that rewrites files, re-index rather than reading a quiet answer as confirmation the index is current.
 
@@ -40,6 +40,10 @@ The solution must build. If a project fails to load, or compiles with errors, ve
 `vela index` may print a plain line such as `1 document(s) contributed by a NuGet package or the .NET SDK were not indexed`. That is not a warning and has no `!!` banner: those files live in the NuGet package cache or the .NET installation, none of the repository's code is missing, and the exit code stays 0. Do not treat it as a gap. Anything vela cannot attribute to a package or the SDK is treated as a gap instead, and arrives with the banner and exit 3.
 
 Add `--stats` to see what was indexed, including how many Razor views were covered and the path of every document that was left out.
+
+**There is a `--incremental` flag. It is opt-in, and a plain `vela index` is the safe choice whenever you are not sure.** `vela index --incremental` rebuilds only the projects whose inputs changed plus every project downstream of them, reusing the rest. A full rebuild cannot be stale, because it reads everything; an incremental one is a claim that what it skipped has not changed. What it saves depends entirely on where the edit was: measured on a real ten-project solution, nothing changed took 11.9s against a 158.1s full index, a one-line edit to a leaf project took 22.2s, and a one-line edit to the project everything else depends on rebuilt all ten and took 153.9s, which is a full rebuild and no saving at all. **It helps most when you edit a leaf, and not at all when you edit the bottom of the dependency graph.**
+
+It refuses rather than guesses. If there is no index yet, if the schema changed, if a different build of vela wrote the index, if the set of projects changed, if the change reaches every project, or if anything at all goes wrong deciding, it prints `Falling back to a full rebuild:` with the reason and rebuilds everything. "A different build" means a different binary and not a different version number, so the first incremental run after you upgrade, rebuild or relocate vela is a full one - relocate included, because vela's own build embeds its source paths, so identical source built at another absolute path is a different binary. That is a good outcome, not a failure. A project that was skipped keeps saying it does not compile, so the banner cannot go quiet on you. What it cannot see is an assembly rebuilt in place at the same path and version, because references are compared by path rather than content - so after anything outside the solution was rebuilt, index without the flag. **If you are about to delete or rename on the strength of an answer, index without the flag first.**
 
 If the repository has a `vela.json`, `vela index` says so and lists the jobs it declares. A job whose indexer is not `vela` is a language vela cannot produce itself: it names where that indexer's `.scip` is expected, and until you run the indexer and `vela import` that file, the index is missing that language, every answer carries the banner and the exit code is 3. That is a real gap, not noise - the language really is absent - so either import it or say plainly that the answer covers only the .NET half. `vela index` will also print which languages no job covers at all; that line is information and never raises the exit code, because vela was never going to index them.
 
@@ -78,12 +82,12 @@ Results are grouped by file and shaped for a context window rather than a termin
 
 **Some locations are not on disk.** The Razor generator's output is compiled but never written out, so `refs` and `impact` leave it out by default and print a line saying how much they left out. Pass `--include-generated` if you need it. `def` and `outline` always include it, marked `(generated)` - for some Razor page members the generated code holds the only declaration there is, and the marker is there to tell you the path cannot be opened.
 
-**A total that spans several symbols says so.** Because matching is by whole dotted segment, `refs Perfume` on a real solution answered 3,104 results - the entity, the entity's constructor, an enum member called `Perfume`, and a property of an unrelated response type, all merged into one number. Every hit was real; the total counted nothing that exists. So when a pattern matches more than one distinct symbol, `def`, `refs` and `impact` print an ambiguity block after the results:
+**A total that spans several symbols says so.** Because matching is by whole dotted segment, `refs Perfume` on a real solution answered 3,156 results on 30 July 2026 - the entity, the entity's constructor, an enum member called `Perfume`, and a property of an unrelated response type, all merged into one number. Every hit was real; the total counted nothing that exists. So when a pattern matches more than one distinct symbol, `def`, `refs` and `impact` print an ambiguity block after the results:
 
 ```
-'Perfume' is ambiguous: the 3104 result(s) above span 25 distinct symbols:
-    1958  ScentVerdict.Data.Entities.Perfume
-     384  ScentVerdict.Data.Enums.EntityType.Perfume
+'Perfume' is ambiguous: the 3156 result(s) above span 25 distinct symbols:
+    1977  ScentVerdict.Data.Entities.Perfume
+     381  ScentVerdict.Data.Enums.EntityType.Perfume
      ...
      144  (+15 further symbol(s))
 To ask about one of them, give more of its name: 'Entities.Perfume' matches

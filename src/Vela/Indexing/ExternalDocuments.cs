@@ -47,6 +47,41 @@ public static class ExternalDocuments
     }
 
     /// <summary>
+    /// The whole list, replacing whatever was there.
+    ///
+    /// A full rebuild starts from an empty database and only ever adds, which is why
+    /// <see cref="Write"/> does nothing else. An incremental rebuild does not: it looks at
+    /// some projects and not others, so the list it can see is only part of the list, and
+    /// appending to what is already there would count every skipped file twice. The
+    /// caller assembles the whole set - what this run found, plus what the projects it did
+    /// not look at recorded last time - and hands it over in one piece.
+    /// </summary>
+    public static void Replace(SqliteConnection db, IReadOnlyList<string> paths)
+    {
+        using var tx = db.BeginTransaction();
+
+        using (var clear = db.CreateCommand())
+        {
+            clear.Transaction = tx;
+            clear.CommandText = "DELETE FROM external_document";
+            clear.ExecuteNonQuery();
+        }
+
+        using var insert = db.CreateCommand();
+        insert.Transaction = tx;
+        insert.CommandText = "INSERT INTO external_document(path) VALUES ($p)";
+        insert.Parameters.Add("$p", SqliteType.Text);
+
+        foreach (var path in paths)
+        {
+            insert.Parameters["$p"].Value = path;
+            insert.ExecuteNonQuery();
+        }
+
+        tx.Commit();
+    }
+
+    /// <summary>
     /// The skipped paths, ordered by path rather than by the order the emitter happened
     /// to meet them, so the same solution renders the same list on every run and every
     /// machine (Constraint 1).

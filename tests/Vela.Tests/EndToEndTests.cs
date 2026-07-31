@@ -87,6 +87,39 @@ public class EndToEndTests
         Assert.True(stats.Occurrences > stats.Definitions);
     }
 
+    [Fact]
+    public async Task Index_RecordsWhatEachProjectWasBuiltFrom()
+    {
+        // The ledger has to be written by the command people actually run, not only by
+        // the emitter a test can call. Without it there is nothing on disk for a later
+        // run to compare a tree against, and an incremental rebuild would have to guess.
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        var result = await InvokeAsync("index", "--solution", fx.SolutionPath);
+        Assert.Equal(0, result.ExitCode);
+
+        var indexPath = IndexPaths.ForSolution(fx.SolutionPath);
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = indexPath, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+
+        var recorded = ProjectInputs.Read(db);
+        var project = Assert.Single(recorded);
+
+        Assert.Equal("App/App.csproj", project.Project);
+        Assert.Matches("^[0-9a-f]{64}$", project.Fingerprint);
+        Assert.Equal(Schema.Version, project.SchemaVersion);
+        Assert.NotEmpty(project.VelaVersion);
+
+        // Every .cshtml the fixture holds is one of the inputs the project was built
+        // from, because a view is the input its generated document is derived from.
+        var views = ProjectInputs.ReadInputs(db, project.Project)
+            .Where(i => i.Path.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.Equal(fx.RazorFileCount, views.Count);
+    }
+
     private static async Task<(int ExitCode, string Output)> InvokeAsync(params string[] args)
     {
         using var writer = new StringWriter();

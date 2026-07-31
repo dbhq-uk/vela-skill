@@ -64,6 +64,170 @@ public static class ScipLoader
 
         using var tx = db.BeginTransaction();
 
+        using var insertFts = db.CreateCommand();
+        insertFts.Transaction = tx;
+        insertFts.CommandText = "INSERT INTO symbol_fts(symbol) VALUES ($s)";
+        insertFts.Parameters.Add("$s", SqliteType.Text);
+
+        var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
+
+        InsertDocuments(db, tx, index, generatedDocuments, displayNames, null, display =>
+        {
+            // The full-text index is what `find` searches, and `find` is a person
+            // typing a name, so it holds display names.
+            if (!seenSymbols.Add(display)) return;
+            insertFts.Parameters["$s"].Value = display;
+            insertFts.ExecuteNonQuery();
+        });
+
+        tx.Commit();
+    }
+
+    /// <summary>
+    /// What an incremental load did, in numbers a caller can print.
+    /// </summary>
+    /// <param name="SkippedPaths">
+    /// Documents the harvest produced that were NOT written, because an import already
+    /// holds that path. relative_path is UNIQUE, so writing one would abort the whole
+    /// rebuild; the row is left where it is and the collision is named, because a document
+    /// quietly not written is the shape of failure this codebase forbids.
+    /// </param>
+    public sealed record IncrementalLoad(
+        int DocumentsRemoved, int DocumentsWritten, IReadOnlyList<string> SkippedPaths);
+
+    /// <summary>
+    /// Replaces the rows of the projects that were rebuilt, and leaves everything else
+    /// exactly as it was.
+    ///
+    /// <b>What it deletes.</b> Every document named in <paramref name="replacedPaths"/> -
+    /// what the rebuilt projects contributed to when the index was last built - together
+    /// with every document the fresh harvest names. The first set is what makes a DELETED
+    /// file disappear from the index: the harvest cannot name a file that is not there, so
+    /// without the ledger's record there would be nothing to match the stale row against.
+    ///
+    /// <b>What it will not delete.</b> Anything an import contributed. A full rebuild
+    /// deletes the database and replays every .scip into the new one; this never deletes
+    /// the database, so an imported language survives by not being touched. That is why
+    /// the deletes are restricted to source = '', which is vela's own harvest.
+    ///
+    /// <b>The full-text table is rebuilt whole.</b> symbol_fts is keyed to nothing - no
+    /// document, no source - so a name whose last occurrence has gone survives every
+    /// targeted delete anybody could write, and `find`, the verb an agent uses before
+    /// deciding a name does not exist, would answer with symbols no occurrence carries.
+    /// Rebuilding it from the occurrence table is exact by construction and covers
+    /// imported symbols as well as harvested ones.
+    ///
+    /// All of it is one transaction. A rebuild that committed the deletes and failed
+    /// before the inserts would leave an index missing whole files while reporting itself
+    /// complete.
+    /// </summary>
+    public static IncrementalLoad LoadIncremental(
+        SqliteConnection db, Vela.Harvest.EmitResult emitted, IReadOnlyCollection<string> replacedPaths)
+    {
+        var index = emitted.Index;
+
+        var fresh = index.Documents
+            .Select(document => document.RelativePath)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var targets = new HashSet<string>(replacedPaths, StringComparer.Ordinal);
+        targets.UnionWith(fresh);
+
+        using var tx = db.BeginTransaction();
+
+        var importOwned = ImportOwnedPaths(db, tx);
+        var removed = 0;
+
+        using (var deleteOccurrences = db.CreateCommand())
+        using (var deleteDocument = db.CreateCommand())
+        {
+            deleteOccurrences.Transaction = tx;
+            deleteOccurrences.CommandText =
+                "DELETE FROM occurrence WHERE document_id IN "
+                + "(SELECT id FROM document WHERE relative_path = $p AND source = '')";
+            deleteOccurrences.Parameters.Add("$p", SqliteType.Text);
+
+            deleteDocument.Transaction = tx;
+            deleteDocument.CommandText = "DELETE FROM document WHERE relative_path = $p AND source = ''";
+            deleteDocument.Parameters.Add("$p", SqliteType.Text);
+
+            // Ordered, so two runs over the same tree do the same work in the same order
+            // and a reader debugging one can follow it (Constraint 1).
+            foreach (var path in targets.OrderBy(path => path, StringComparer.Ordinal))
+            {
+                deleteOccurrences.Parameters["$p"].Value = path;
+                deleteOccurrences.ExecuteNonQuery();
+
+                deleteDocument.Parameters["$p"].Value = path;
+                removed += deleteDocument.ExecuteNonQuery();
+            }
+        }
+
+        var written = InsertDocuments(
+            db, tx, index, emitted.GeneratedDocuments, emitted.DisplayNames, importOwned, null);
+
+        RebuildSymbolIndex(db, tx);
+
+        tx.Commit();
+
+        var skipped = fresh
+            .Where(importOwned.Contains)
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToList();
+
+        return new IncrementalLoad(removed, written, skipped);
+    }
+
+    /// <summary>
+    /// The documents an import contributed, which vela's own harvest must neither delete
+    /// nor write over.
+    /// </summary>
+    private static HashSet<string> ImportOwnedPaths(SqliteConnection db, SqliteTransaction tx)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = "SELECT relative_path FROM document WHERE source <> ''";
+        using var reader = cmd.ExecuteReader();
+
+        var owned = new HashSet<string>(StringComparer.Ordinal);
+        while (reader.Read()) owned.Add(reader.GetString(0));
+        return owned;
+    }
+
+    /// <summary>
+    /// symbol_fts, rebuilt from the occurrences that are actually there. Ordered, so the
+    /// table is byte-identical for a given set of occurrences however they arrived.
+    /// </summary>
+    private static void RebuildSymbolIndex(SqliteConnection db, SqliteTransaction tx)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            DELETE FROM symbol_fts;
+            INSERT INTO symbol_fts(symbol) SELECT DISTINCT symbol FROM occurrence ORDER BY symbol;
+            """;
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// The document and occurrence rows of one emitted index, shared by the one-shot load
+    /// and the incremental one so neither can drift from the other about what a row means.
+    /// </summary>
+    /// <param name="skipPaths">Paths another source owns, which are left alone.</param>
+    /// <param name="onSymbol">
+    /// Called with every display name written, in order. The one-shot load uses it to fill
+    /// symbol_fts as it goes; the incremental load rebuilds that table afterwards instead
+    /// and passes null.
+    /// </param>
+    private static int InsertDocuments(
+        SqliteConnection db,
+        SqliteTransaction tx,
+        Scip.Index index,
+        IReadOnlySet<string>? generatedDocuments,
+        IReadOnlyDictionary<Scip.Occurrence, string>? displayNames,
+        IReadOnlySet<string>? skipPaths,
+        Action<string>? onSymbol)
+    {
         // Commands are prepared once outside the row loop, and each is bound to the
         // transaction explicitly: Microsoft.Data.Sqlite throws InvalidOperationException
         // ("Transaction is required...") on ExecuteNonQuery/ExecuteScalar if a command's
@@ -95,15 +259,12 @@ public static class ScipLoader
         insertOcc.Parameters["$s"].SqliteType = SqliteType.Text;
         insertOcc.Parameters["$scip"].SqliteType = SqliteType.Text;
 
-        using var insertFts = db.CreateCommand();
-        insertFts.Transaction = tx;
-        insertFts.CommandText = "INSERT INTO symbol_fts(symbol) VALUES ($s)";
-        insertFts.Parameters.Add("$s", SqliteType.Text);
-
-        var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
+        var written = 0;
 
         foreach (var doc in index.Documents)
         {
+            if (skipPaths is not null && skipPaths.Contains(doc.RelativePath)) continue;
+
             insertDoc.Parameters["$p"].Value = doc.RelativePath;
             insertDoc.Parameters["$l"].Value = doc.Language;
             insertDoc.Parameters["$g"].Value =
@@ -114,6 +275,7 @@ public static class ScipLoader
             // UTF-16 code units. <see cref="ScipImporter"/> is the path that converts.
             insertDoc.Parameters["$e"].Value = (int)doc.PositionEncoding;
             var docId = Convert.ToInt64(insertDoc.ExecuteScalar());
+            written++;
 
             foreach (var occ in doc.Occurrences)
             {
@@ -134,16 +296,10 @@ public static class ScipLoader
                     occ.EnclosingRange.Count > 3 ? occ.EnclosingRange[3] : (object)DBNull.Value;
                 insertOcc.ExecuteNonQuery();
 
-                // The full-text index is what `find` searches, and `find` is a person
-                // typing a name, so it holds display names.
-                if (seenSymbols.Add(display))
-                {
-                    insertFts.Parameters["$s"].Value = display;
-                    insertFts.ExecuteNonQuery();
-                }
+                onSymbol?.Invoke(display);
             }
         }
 
-        tx.Commit();
+        return written;
     }
 }
