@@ -99,9 +99,22 @@ A fork needs nobody's agreement and could start today, but it splits the ecosyst
 a new name, and requires somebody to genuinely maintain a .NET SCIP indexer. A fork that
 lands and then goes quiet is worse for everyone than the present situation.
 
-The ask is drafted at [scip-code-adoption-ask.md](scip-code-adoption-ask.md) and has not
-been sent. It is deliberately not tied to #117: an ask that reads as "merge my pull
-request by changing who owns the repository" fails at both.
+Both asks are now sent, 9 August 2026, and neither is tied to #117: an ask that reads as
+"merge my pull request by changing who owns the repository" would fail at both.
+
+| Ask | Where | Question |
+|---|---|---|
+| [scip-code/scip#468](https://github.com/scip-code/scip/issues/468) | steering committee | would the org adopt the indexers that stayed under `sourcegraph`? |
+| [sourcegraph/scip-dotnet#118](https://github.com/sourcegraph/scip-dotnet/issues/118) | Sourcegraph | can I help maintain this repository? |
+
+They are deliberately different questions. The first needs a governance decision and
+Sourcegraph's agreement to hand a repository over. The second needs neither: Sourcegraph
+could simply take a more active contributor, in whatever shape suits them, and it is the
+easier of the two to say yes to. Each names the other, so nobody discovers the second
+one sideways.
+
+The drafted text is kept at [scip-code-adoption-ask.md](scip-code-adoption-ask.md) as the
+record of what was sent.
 
 vela is unaffected either way. This is about whether .NET users of the wider SCIP
 ecosystem get Razor support, not about whether vela does.
