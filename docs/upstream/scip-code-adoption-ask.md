@@ -1,6 +1,6 @@
 # Draft: asking whether scip-code would adopt the remaining indexers
 
-**Not sent.** This is a draft for review. Intended as a plain issue on
+**Sent 9 August 2026** as [scip-code/scip#468](https://github.com/scip-code/scip/issues/468). Kept here as the record of what was asked. Intended as a plain issue on
 [`scip-code/scip`](https://github.com/scip-code/scip), **not** a SEP: the SEP template is
 for protocol and schema changes, and this is a governance question.
 
