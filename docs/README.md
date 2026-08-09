@@ -39,6 +39,10 @@ decision, and how we know the answers are right.
 **[Design notes](design-notes.md)** &nbsp; The historical record: why the tool is shaped
 this way, written before the implementation, with the measurements that drove it.
 
+**[Upstream](upstream/README.md)** &nbsp; Where vela stands with the projects it builds on:
+what has been contributed back, what is still open, the licensing position, and why a fork
+is available but not the preferred route.
+
 **[The Razor change we owe scip-dotnet](upstream/scip-dotnet-razor.md)** &nbsp; The patch
 that gives Razor indexing back to Sourcegraph's own indexer, now open as
 [PR #117](https://github.com/sourcegraph/scip-dotnet/pull/117).
