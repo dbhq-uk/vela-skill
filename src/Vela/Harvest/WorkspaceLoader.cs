@@ -6,7 +6,26 @@ using Microsoft.CodeAnalysis.MSBuild;
 
 namespace Vela.Harvest;
 
-public record LoadResult(Solution Solution, IReadOnlyList<string> Failures);
+public record LoadResult(Solution Solution, IReadOnlyList<string> Failures)
+{
+    /// <summary>
+    /// Whether a solution file was actually opened, as opposed to the empty fallback
+    /// <see cref="MSBuildWorkspace.CurrentSolution"/> hands back when it was not.
+    ///
+    /// This is the difference between "the solution loaded and some of it is broken" and
+    /// "there is no solution here at all", and nothing else in <see cref="LoadResult"/>
+    /// tells them apart: both carry failures, and both carry a Solution a caller can
+    /// enumerate. Roslyn's fallback has a null FilePath, and that null is the fact.
+    ///
+    /// It matters because everything downstream is rooted at the solution's directory. A
+    /// caller that carried on regardless used to reach
+    /// <c>Path.GetDirectoryName(solution.FilePath)!</c>, assert away the null, and die
+    /// inside <see cref="Vela.Indexing.ProjectRoot"/> with a stack trace - throwing away
+    /// the perfectly good reason recorded in <see cref="Failures"/> a moment earlier, and
+    /// leaving a mistyped path looking like a build. See MissingSolutionTests.
+    /// </summary>
+    public bool Opened => Solution.FilePath is not null;
+}
 
 public static class WorkspaceLoader
 {

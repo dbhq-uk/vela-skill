@@ -108,6 +108,22 @@ public static class ScipEmitter
         Solution solution, IReadOnlyList<string> failures, CancellationToken ct,
         IReadOnlySet<string>? reuseProjects = null)
     {
+        // A precondition, stated rather than asserted away. Every path in the emitted index
+        // is relative to the solution's own directory, so a solution that never opened -
+        // Roslyn's empty fallback, whose FilePath is null - has no root to emit against and
+        // nothing to emit. `Path.GetDirectoryName(solution.FilePath)!` was here instead, and
+        // it turned that into an ArgumentNullException raised two calls away in ProjectRoot,
+        // which is a defect reported as a stack trace about a parameter called 'path'.
+        //
+        // The caller settles it: WorkspaceLoader records why the solution would not open and
+        // vela index stops on LoadResult.Opened, in words and at exit 1. This throw is for
+        // the NEXT caller, so a forgotten check names the precondition it broke.
+        if (solution.FilePath is null)
+            throw new ArgumentException(
+                "The solution has no FilePath, which means no solution file was opened. Check "
+                + "LoadResult.Opened and report the recorded failures instead of harvesting.",
+                nameof(solution));
+
         var roots = Roots.Resolve(Path.GetDirectoryName(solution.FilePath)!);
 
         var index = new Scip.Index

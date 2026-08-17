@@ -305,10 +305,16 @@ public static class Program
             var output = parseResult.InvocationConfiguration.Output;
             var error = parseResult.InvocationConfiguration.Error;
 
+            // Kept as the caller spelled it, alongside the resolved form, purely so a
+            // failure can be reported against the path that was typed. Everything vela
+            // DOES with the solution uses the resolved spelling; a user handed back a path
+            // they did not write has to work out for themselves whether it is even theirs.
+            var requested = parseResult.GetValue(solutionOption);
+
             // Read before anything expensive happens. A config vela cannot honour must cost
             // nothing and change nothing, and the config is allowed to say which solution
             // this is, so both questions are settled before the workspace is loaded.
-            if (!TryResolveSolution(parseResult.GetValue(solutionOption), error, out var solution, out var config))
+            if (!TryResolveSolution(requested, error, out var solution, out var config))
                 return ExitCannotAnswer;
 
             var repositoryRoot = ProjectRoot.ForSolution(solution);
@@ -345,6 +351,25 @@ public static class Program
                 IndexPaths.EnsureDirectoryExists(path);
 
                 var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(solution, cancellationToken);
+
+                // Stop here when there is no solution to index. Everything below is rooted
+                // at the solution's own directory, and the empty fallback Roslyn hands back
+                // has no directory to be rooted at: carrying on used to assert the null
+                // away and die in ProjectRoot with a stack trace, discarding the reason
+                // load.Failures was already holding. See LoadResult.Opened.
+                //
+                // This is the one place the decision can be taken. A guard inside
+                // ProjectRoot would tolerate the null and index something arbitrary; a
+                // guard inside ScipEmitter would produce an empty index and let the run
+                // finish at 0. Neither says what went wrong, and the exit code is the half
+                // of this that an agent reads.
+                if (!load.Opened)
+                {
+                    ReportUnopenableSolution(
+                        error, string.IsNullOrWhiteSpace(requested) ? solution : requested,
+                        solution, load.Failures);
+                    return ExitCannotAnswer;
+                }
 
                 // The incremental decision, taken before anything is harvested. Null means a
                 // full rebuild, which is what this verb has always done and what it still does
@@ -632,6 +657,102 @@ public static class Program
 
         return command;
     }
+
+    /// <summary>
+    /// What a solution that would not open says.
+    ///
+    /// The same three-part shape <see cref="ReportIndexFailure"/> uses: what went wrong,
+    /// what to do about it, and what state the user's index is in now. The difference is
+    /// the middle part, because the fixes here are not all the same fix, and the shape of
+    /// the path says which one it is.
+    ///
+    /// The first part is quoted rather than written. MSBuild and Roslyn already say why
+    /// they could not open a file, in words, and that sentence is more specific than
+    /// anything invented here could be: it distinguishes a file that is absent from one
+    /// that is unreadable from one whose contents are not a solution at all. Restating it
+    /// would mean maintaining a second, worse copy of a diagnosis vela was handed for free.
+    /// </summary>
+    /// <param name="named">The path as the caller spelled it, which is the one they can
+    /// recognise and the one they have to correct.</param>
+    /// <param name="resolved">The same path, resolved, which is what was actually opened
+    /// and therefore what the filesystem has to be asked about.</param>
+    private static void ReportUnopenableSolution(
+        TextWriter error, string named, string resolved, IReadOnlyList<string> failures)
+    {
+        error.WriteLine($"vela could not open the solution at {named}");
+
+        foreach (var failure in failures.Take(MaxDetailProblems))
+            error.WriteLine("  " + failure);
+
+        if (failures.Count > MaxDetailProblems)
+            error.WriteLine($"  (+{failures.Count - MaxDetailProblems} more)");
+
+        var advice = AdviceForUnopenableSolution(resolved);
+
+        if (advice is not null) error.WriteLine("  " + advice);
+        else if (failures.Count == 0)
+            // Nothing recorded, nothing opened and nothing to advise. It should not happen,
+            // and saying so plainly beats an empty reason that reads like a truncated line.
+            error.WriteLine("  No reason was recorded, and no solution was opened either.");
+
+        error.WriteLine("Nothing was indexed and nothing was written, so any index already built is "
+                      + "exactly as it was.");
+    }
+
+    /// <summary>
+    /// The one thing to do about a path that would not open, when the path itself says
+    /// what that is, and nothing when it does not.
+    ///
+    /// Three cases earn a line, because in each of them the user is a single edit away and
+    /// the generic message would send them looking in the wrong place:
+    ///
+    /// A DIRECTORY is the commonest wrong argument that is wrong on purpose - --solution
+    /// reads as "the solution", and a repository is a reasonable thing to think that means.
+    ///
+    /// A PROJECT FILE means the user has the right tree and the wrong granularity. vela
+    /// indexes a solution because references cross project boundaries, so the answer is
+    /// never "we will index that .csproj instead".
+    ///
+    /// A .SLNX BESIDE THE .SLN is the one that will grow. `dotnet new sln` emits XML-format
+    /// .slnx by default on current SDKs, every .NET developer's fingers still type .sln,
+    /// and the file they want is sitting in the same directory. Roslyn opens .slnx
+    /// perfectly well, so this is a spelling correction and not a limitation. It is checked
+    /// in both directions: a .slnx typed against a .sln on disk is the same mistake
+    /// backwards, and will be the commoner one for as long as most solutions are .sln.
+    /// </summary>
+    private static string? AdviceForUnopenableSolution(string resolved)
+    {
+        if (Directory.Exists(resolved))
+            return "That path is a directory. --solution takes the solution file itself, for example "
+                 + $"--solution {Path.Combine(resolved, "YourApp.sln")}.";
+
+        var extension = Path.GetExtension(resolved);
+
+        if (string.Equals(extension, ".csproj", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(extension, ".vbproj", StringComparison.OrdinalIgnoreCase))
+            return "That is a project file, not a solution. vela indexes a whole solution, because a "
+                 + "reference to a symbol can come from any project in it, so pass the .sln or .slnx "
+                 + "that includes this project.";
+
+        if (File.Exists(resolved)) return null;
+
+        var sibling = SolutionExtensions
+            .Where(e => !string.Equals(e, extension, StringComparison.OrdinalIgnoreCase))
+            .Select(e => Path.ChangeExtension(resolved, e))
+            .FirstOrDefault(File.Exists);
+
+        return sibling is null
+            ? null
+            : $"There is no file there, but {sibling} is. `dotnet new sln` writes a .slnx by default "
+            + $"on current SDKs. Run: vela index --solution {sibling}";
+    }
+
+    /// <summary>
+    /// Every extension a solution file can have, and the pair vela offers to correct
+    /// between. .slnx is the XML format the SDK now writes by default; .sln is the format
+    /// everything before it wrote, and the one fingers still type.
+    /// </summary>
+    private static readonly string[] SolutionExtensions = { ".sln", ".slnx" };
 
     /// <summary>
     /// SQLITE_FULL: the disk, or a filesystem quota, would not take another page. It is
@@ -1191,6 +1312,12 @@ public static class Program
     /// A config that cannot be honoured stops the command here, before anything is read or
     /// written. Half-honouring it would mean building an index that means something other
     /// than what was asked for, and saying nothing about the difference.
+    ///
+    /// So does a --solution that names a directory, for the same reason one level down: a
+    /// directory has no parent that means what a solution's parent means, and every path
+    /// vela derives comes from that parent. It is the only shape rejected here. Whether the
+    /// file is a solution at all is a question for whoever opens it, and the answer they
+    /// give is better than any guess made from an extension.
     /// </summary>
     private static bool TryResolveSolution(
         string? solution, TextWriter error, out string resolvedSolution, out VelaConfig config)
@@ -1226,6 +1353,24 @@ public static class Program
         if (!string.IsNullOrWhiteSpace(solution))
         {
             resolvedSolution = RealPath.Of(solution);
+
+            // A directory cannot be a solution, and unlike every other wrong argument it
+            // cannot be allowed as far as the workspace loader either. Everything derived
+            // from this path is derived from its PARENT - the repository root, the staleness
+            // walk's starting point, the Constraint 2 check that the index cache is not
+            // inside the tree being indexed - so a directory silently shifts all of them one
+            // level up. `vela index --solution ~/repo` then failed the cache check against
+            // the home directory and reported it as a stack trace about XDG_CACHE_HOME,
+            // which is a true sentence about the wrong problem.
+            //
+            // Checked here because this is the one door a solution path comes in by, so
+            // `vela import` is spared the same shifted root for the same argument.
+            if (Directory.Exists(resolvedSolution))
+            {
+                ReportUnopenableSolution(error, solution, resolvedSolution, Array.Empty<string>());
+                return false;
+            }
+
             return true;
         }
 
