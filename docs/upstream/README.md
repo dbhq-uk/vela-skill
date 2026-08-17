@@ -17,9 +17,10 @@ Last reviewed 17 August 2026.
 | Status in vela | Fixed. The compiler vela hosts now matches the SDK's, and a project whose views go missing says so and degrades the index |
 | Working notes | [razor-sdk-10-0-400.md](razor-sdk-10-0-400.md) |
 
-Two asks are drafted there and neither is sent: a comment adding SDK 10.0.400 to #84137,
-and a new issue for the part nobody has reported, which is that `MSBuildWorkspace` raises
-nothing at all when it declines a generator.
+The part nobody had reported is now filed as
+[dotnet/roslyn#84915](https://github.com/dotnet/roslyn/issues/84915): `MSBuildWorkspace`
+raises nothing at all when it declines a generator, which is why this was invisible rather
+than merely broken. A comment adding SDK 10.0.400 to #84137 is drafted and not sent.
 
 ## What has been contributed
 
@@ -44,9 +45,10 @@ pull request. The same thread says "We'll be happy to review a PR adding this fe
 
 ## Why it may not land, and why that is survivable
 
-`scip-dotnet` has had no commit to `main` since 27 May 2026 and carries four open pull
-requests, two of them dependency bumps that have waited months. That is not our pull
-request being ignored: the repository is not being merged into at all. It matches what
+`scip-dotnet` has had no commit to `main` since 27 May 2026 and carries **30 open pull
+requests and 4 open issues**, the oldest from February 2023 and almost all of them Renovate
+dependency bumps. That is not our pull request being ignored: the repository is not being
+merged into at all. It matches what
 the maintainer said on #61, that they are "focusing on support, prioritising customer
 support" with "no plans for any new features in SCIP indexers in general".
 
@@ -129,6 +131,52 @@ one sideways.
 
 The drafted text is kept at [scip-code-adoption-ask.md](scip-code-adoption-ask.md) as the
 record of what was sent.
+
+## The answer, and the bar
+
+`scip-code/scip#468` was answered. The org split is a **policy, not an accident**: an
+indexer is modernised first and moved second, which is how `scip`, `scip-go`, `scip-java`
+and `scip-kotlin` were handled. Our reading that the split was where the effort ran out was
+wrong.
+
+The criteria for moving an indexer, quoted from the reply on 16 August 2026:
+
+1. Replace the vendored `scip.proto` with the dedicated bindings from `scip-code/scip`,
+   imported as a dependency.
+2. Be compliant with the latest SCIP protocol and output the relevant data, such as
+   `SymbolInformation.kind`.
+3. Close all pending issues and pull requests with a single, clear and non-controversial
+   solution.
+4. Support the latest and LTS language versions, including toolchains.
+5. Set up easy-to-use release and test pipelines.
+
+**The concern about AI-assisted contributions was answered rather than left hanging:** "I
+think it's fine as long as the I/O boundary of the indexer is well-tested", with snapshot
+indexing named as the primary focus for any contributor. That is what
+[#117](https://github.com/sourcegraph/scip-dotnet/pull/117) already does, and it is worth
+holding to for anything else contributed there.
+
+### The blocker nobody had noticed
+
+**`scip-code/scip` publishes no .NET bindings.** `bindings/` holds go, haskell, java,
+kotlin, rust and typescript. So criterion 1 cannot be met by importing a dependency until
+somebody writes them, and criterion 2 depends on criterion 1.
+
+It looks cheap: `buf.gen.yaml` already drives generation and `csharp` is a protoc built-in,
+so it is roughly the same few lines as the existing `java` and `kotlin` entries, plus a
+`bindings/dotnet` project and a package to publish. It also stands on its own merits,
+because every .NET SCIP consumer currently vendors the proto by hand, vela included.
+
+Asked on 17 August 2026 whether bindings would be a welcome contribution. Awaiting an
+answer.
+
+### Scope, stated honestly
+
+Bindings, then the protocol compliance work, then 30 stale pull requests, then toolchains
+and pipelines, is a project rather than a weekend. That was said plainly in the thread
+rather than discovered halfway through. The bindings are the piece worth committing to
+first: they are well defined, they are useful whatever happens to `scip-dotnet`, and both
+of the first two criteria wait on them.
 
 vela is unaffected either way. This is about whether .NET users of the wider SCIP
 ecosystem get Razor support, not about whether vela does.
