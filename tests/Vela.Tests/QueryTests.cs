@@ -2517,6 +2517,28 @@ public class QueryTests
     }
 
     [Fact]
+    public void BuildHealthRecord_FoldsInAProjectWhoseRazorViewsNeverReachedTheIndex()
+    {
+        // The wiring between the note the emitter writes and the banner a user sees.
+        // On SDK 10.0.400 the Razor generator was refused by Roslyn without a word, so
+        // seven views left the index and health reported clean - which is the whole
+        // capability gone and no way to tell. The note has to be classified as a
+        // problem, or writing it changes nothing.
+        var index = new Scip.Index
+        {
+            Metadata = new Scip.Metadata { ToolInfo = new Scip.ToolInfo { Name = "vela", Version = "0.0.0" } }
+        };
+        index.Metadata.ToolInfo.Arguments.Add(
+            Vela.Harvest.RazorSourceGenerator.NotePrefix
+            + " project 'App' compiles 7 Razor view(s), and none of them reached this index.");
+
+        var health = Program.BuildHealthRecord(index, Array.Empty<string>());
+
+        Assert.True(health.Degraded);
+        Assert.Contains("Razor view", health.Detail);
+    }
+
+    [Fact]
     public void BuildHealthRecord_IsCleanWhenNothingWentWrong()
     {
         var index = new Scip.Index
