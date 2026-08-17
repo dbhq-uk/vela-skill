@@ -48,13 +48,22 @@ public static class Program
         LoadFailurePrefix,
         OutsideProjectRootPrefix,
         CompileErrorPrefix,
-        NoCompilationPrefix
+        NoCompilationPrefix,
+        RazorNotGeneratedPrefix
     };
 
     private const string LoadFailurePrefix = "load-failure:";
     private const string OutsideProjectRootPrefix = "outside-project-root:";
     private const string CompileErrorPrefix = "compile-error:";
     private const string NoCompilationPrefix = "no-compilation:";
+
+    /// <summary>
+    /// A project whose Razor views did not reach the compilation. It belongs among the
+    /// problems above by the test those apply: the views are code from the repository
+    /// and they are absent from the index. It is spelt from the emitter's own constant
+    /// so the two cannot drift apart into a note nothing classifies.
+    /// </summary>
+    private const string RazorNotGeneratedPrefix = Vela.Harvest.RazorSourceGenerator.NotePrefix;
 
     /// <summary>
     /// Deliberately absent from <see cref="ProblemPrefixes"/>. A document outside the

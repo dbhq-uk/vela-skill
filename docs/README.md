@@ -47,6 +47,10 @@ is available but not the preferred route.
 that gives Razor indexing back to Sourcegraph's own indexer, now open as
 [PR #117](https://github.com/sourcegraph/scip-dotnet/pull/117).
 
+**[Razor went missing on .NET SDK 10.0.400](upstream/razor-sdk-10-0-400.md)** &nbsp; The
+one regression that took away the capability vela exists for, how it was proved, and why
+the compiler vela hosts is set by whichever SDK you have installed.
+
 ## For contributors
 
 - [AGENTS.md](../AGENTS.md), the working brief for anyone changing the code, human or

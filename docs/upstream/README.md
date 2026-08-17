@@ -5,7 +5,21 @@ what is still open. Written down here rather than living in someone's head, beca
 decisions below have licensing and maintenance consequences and the reasoning matters as
 much as the conclusion.
 
-Last reviewed 9 August 2026.
+Last reviewed 17 August 2026.
+
+## What upstream has broken
+
+| | |
+|---|---|
+| What | vela indexed zero Razor views and zero Blazor components on .NET SDK 10.0.400 |
+| Cause | The SDK's Razor source generator is built against a newer Roslyn than vela hosted, and Roslyn refuses such a generator silently |
+| Upstream | [dotnet/roslyn#84137](https://github.com/dotnet/roslyn/issues/84137), the third time this has happened |
+| Status in vela | Fixed. The compiler vela hosts now matches the SDK's, and a project whose views go missing says so and degrades the index |
+| Working notes | [razor-sdk-10-0-400.md](razor-sdk-10-0-400.md) |
+
+Two asks are drafted there and neither is sent: a comment adding SDK 10.0.400 to #84137,
+and a new issue for the part nobody has reported, which is that `MSBuildWorkspace` raises
+nothing at all when it declines a generator.
 
 ## What has been contributed
 
