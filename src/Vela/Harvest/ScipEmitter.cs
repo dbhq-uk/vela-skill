@@ -208,8 +208,16 @@ public static class ScipEmitter
             // nothing here can prove anything about.
             fingerprints.Add(await Vela.Indexing.ProjectFingerprint.ForAsync(project, roots.ProjectRoot, ct));
 
+            // How many of this project's views the generator actually put into the
+            // compilation. Counted here, from the same enumeration the index is built
+            // from, so the number the note reports is the number the index was built on.
+            var generatedViews = 0;
+
             await foreach (var harvested in DocumentEnumerator.EnumerateAsync(project, ct))
             {
+                if (harvested.IsGenerated && RazorSourceGenerator.IsGeneratedView(harvested.GeneratedPath))
+                    generatedViews++;
+
                 var model = compilation.GetSemanticModel(harvested.Tree);
                 var root = await harvested.Tree.GetRootAsync(ct);
 
@@ -334,6 +342,15 @@ public static class ScipEmitter
                         doc.Symbols.Add(monikers.Describe(symbol, doc.RelativePath));
                 }
             }
+
+            // Constraint 3, and the one failure this whole tool is aimed at. A project
+            // that hands the compiler Razor views and gets no generated document back
+            // for any of them has just lost the half of itself vela exists to index, and
+            // it loses it without an error: the compilation succeeds, every query
+            // answers, and the views are simply not there. See RazorSourceGenerator for
+            // how that happened for real on SDK 10.0.400 and why it will happen again.
+            var razorSilence = RazorSourceGenerator.Diagnose(project, generatedViews);
+            if (razorSilence is not null) Note(razorSilence);
         }
 
         // Constraint 3: an incomplete index must never look like a complete one,
