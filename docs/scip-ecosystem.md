@@ -170,8 +170,12 @@ what a repository is written in that no job covers.
 ## The protocol
 
 [`scip-code/scip`](https://github.com/scip-code/scip), Apache 2.0, v0.9.0 (29 Jun 2026). The repository holds the protobuf
-schema (`scip.proto`), bindings for Go, Rust, TypeScript, Haskell, Java and Kotlin, and the
-`scip` CLI.
+schema (`scip.proto`), bindings for Go, Rust, TypeScript, Haskell, Java, Kotlin and .NET,
+and the `scip` CLI.
+
+The .NET bindings are ours, merged on 3 September 2026 and not yet released, so there is no
+`Scip` package on nuget.org to depend on until `scip-code` cuts its next version. Until
+then, vela keeps vendoring `scip.proto`. [Upstream](upstream/README.md) has the detail.
 
 The CLI is worth having when you are debugging an import:
 
