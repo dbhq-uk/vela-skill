@@ -5,7 +5,7 @@ what is still open. Written down here rather than living in someone's head, beca
 decisions below have licensing and maintenance consequences and the reasoning matters as
 much as the conclusion.
 
-Last reviewed 17 August 2026.
+Last reviewed 3 September 2026.
 
 ## What upstream has broken
 
@@ -32,7 +32,7 @@ than merely broken. A comment adding SDK 10.0.400 to #84137 is drafted and not s
 | Pull request | [scip-code/scip#475](https://github.com/scip-code/scip/pull/475) |
 | Asked and accepted on | [#468](https://github.com/scip-code/scip/issues/468), 17 August 2026 |
 | Fork it came from | [dbhq-uk/scip](https://github.com/dbhq-uk/scip) |
-| Status | Open |
+| Status | Merged 3 September 2026. Not yet released. |
 
 `bindings/` held go, haskell, java, kotlin, rust and typescript, so every .NET SCIP
 producer or consumer vendors `scip.proto` by hand, vela and `sourcegraph/scip-dotnet`
@@ -45,8 +45,17 @@ re-encode.
 This also unblocks the rest. Criteria 1 and 2 for moving an indexer into `scip-code` both
 depend on bindings existing to depend on.
 
-**One thing needs admin action at their end:** a `NUGET_API_KEY` Actions secret. The `Scip`
-package id is unregistered, so the first release creates it.
+Review asked for one substantive change, and it was the right one: publish by [trusted
+publishing](https://learn.microsoft.com/nuget/nuget-org/trusted-publishing) rather than a
+stored API key. The release job now asks GitHub for an OIDC token and trades it for a key
+that lasts an hour, so no long-lived secret sits in the repository. The trust policy on
+nuget.org is ours to keep working, under the `scip-code` organisation; the repository holds
+one `NUGET_USER` secret naming the account that owns it.
+
+**Nothing has published yet.** The release workflow fires on a change to
+`cmd/scip/version.txt`, so `Scip` reaches nuget.org when `scip-code` next cuts a version,
+and the OIDC exchange is untested until that run happens. The package id is still
+unregistered until then.
 
 ### Razor and Blazor for scip-dotnet
 
@@ -71,7 +80,7 @@ pull request. The same thread says "We'll be happy to review a PR adding this fe
 
 ## Why it may not land, and why that is survivable
 
-`scip-dotnet` has had no commit to `main` since 27 May 2026 and carries **30 open pull
+`scip-dotnet` has had no commit to `main` since 27 May 2026 and carries **31 open pull
 requests and 4 open issues**, the oldest from February 2023 and almost all of them Renovate
 dependency bumps. That is not our pull request being ignored: the repository is not being
 merged into at all. It matches what
@@ -182,27 +191,28 @@ indexing named as the primary focus for any contributor. That is what
 [#117](https://github.com/sourcegraph/scip-dotnet/pull/117) already does, and it is worth
 holding to for anything else contributed there.
 
-### The blocker nobody had noticed
+### The blocker nobody had noticed, now cleared
 
-**`scip-code/scip` publishes no .NET bindings.** `bindings/` holds go, haskell, java,
-kotlin, rust and typescript. So criterion 1 cannot be met by importing a dependency until
-somebody writes them, and criterion 2 depends on criterion 1.
+**`scip-code/scip` published no .NET bindings.** `bindings/` held go, haskell, java, kotlin,
+rust and typescript, so criterion 1 could not be met by importing a dependency until
+somebody wrote them, and criterion 2 depends on criterion 1.
 
-It looks cheap: `buf.gen.yaml` already drives generation and `csharp` is a protoc built-in,
-so it is roughly the same few lines as the existing `java` and `kotlin` entries, plus a
-`bindings/dotnet` project and a package to publish. It also stands on its own merits,
-because every .NET SCIP consumer currently vendors the proto by hand, vela included.
+It looked cheap, and it was: `buf.gen.yaml` already drives generation and `csharp` is a
+protoc built-in, so it came to roughly the same few lines as the existing `java` and
+`kotlin` entries, plus a `bindings/dotnet` project and a job to publish it. It stands on its
+own merits too, because every .NET SCIP consumer vendors the proto by hand, vela included.
 
-Asked on 17 August 2026 whether bindings would be a welcome contribution. Awaiting an
-answer.
+Asked on 17 August 2026, accepted the same day, merged on 3 September. Criterion 1 becomes
+satisfiable once there is a released package to depend on.
 
 ### Scope, stated honestly
 
-Bindings, then the protocol compliance work, then 30 stale pull requests, then toolchains
+Bindings, then the protocol compliance work, then the stale pull requests, then toolchains
 and pipelines, is a project rather than a weekend. That was said plainly in the thread
-rather than discovered halfway through. The bindings are the piece worth committing to
-first: they are well defined, they are useful whatever happens to `scip-dotnet`, and both
-of the first two criteria wait on them.
+rather than discovered halfway through. The bindings were the piece worth committing to
+first: well defined, useful whatever happens to `scip-dotnet`, and both of the first two
+criteria waited on them. They are done. The rest is not started, and nobody has committed
+to it.
 
 vela is unaffected either way. This is about whether .NET users of the wider SCIP
 ecosystem get Razor support, not about whether vela does.
