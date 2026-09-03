@@ -32,7 +32,7 @@ than merely broken. A comment adding SDK 10.0.400 to #84137 is drafted and not s
 | Pull request | [scip-code/scip#475](https://github.com/scip-code/scip/pull/475) |
 | Asked and accepted on | [#468](https://github.com/scip-code/scip/issues/468), 17 August 2026 |
 | Fork it came from | [dbhq-uk/scip](https://github.com/dbhq-uk/scip) |
-| Status | Merged 3 September 2026. Not yet released. |
+| Status | Merged and released, 3 September 2026, as [`Scip` 0.10.0](https://www.nuget.org/packages/Scip) |
 
 `bindings/` held go, haskell, java, kotlin, rust and typescript, so every .NET SCIP
 producer or consumer vendors `scip.proto` by hand, vela and `sourcegraph/scip-dotnet`
@@ -52,10 +52,12 @@ that lasts an hour, so no long-lived secret sits in the repository. The trust po
 nuget.org is ours to keep working, under the `scip-code` organisation; the repository holds
 one `NUGET_USER` secret naming the account that owns it.
 
-**Nothing has published yet.** The release workflow fires on a change to
-`cmd/scip/version.txt`, so `Scip` reaches nuget.org when `scip-code` next cuts a version,
-and the OIDC exchange is untested until that run happens. The package id is still
-unregistered until then.
+It published the same day, on `v0.10.0`, and the OIDC exchange worked on its first real run,
+so the policy and the workflow agree. [`Scip` 0.10.0](https://www.nuget.org/packages/Scip)
+is on nuget.org, Apache 2.0, under the `scip-code` organisation.
+
+vela still vendors `scip.proto` rather than depending on the package. That is now a choice
+rather than a necessity, and worth revisiting.
 
 ### Razor and Blazor for scip-dotnet
 
@@ -202,8 +204,8 @@ protoc built-in, so it came to roughly the same few lines as the existing `java`
 `kotlin` entries, plus a `bindings/dotnet` project and a job to publish it. It stands on its
 own merits too, because every .NET SCIP consumer vendors the proto by hand, vela included.
 
-Asked on 17 August 2026, accepted the same day, merged on 3 September. Criterion 1 becomes
-satisfiable once there is a released package to depend on.
+Asked on 17 August 2026, accepted the same day, merged and released on 3 September as
+`Scip` 0.10.0. Criterion 1 is now satisfiable: there is a package to depend on.
 
 ### Scope, stated honestly
 
