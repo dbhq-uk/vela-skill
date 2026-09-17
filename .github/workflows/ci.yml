@@ -76,3 +76,28 @@ jobs:
           dotnet test --no-build
           --filter "DocumentEnumeratorTests|IndexWithStats_ReportsTheCoverageThatMustNotRegress"
           --logger "console;verbosity=normal"
+
+  # THE SAME TWO LINTERS IN EVERY DBHQ SKILL REPO, added 17 Sep 2026. Nine of
+  # the fourteen ran no linter at all, in an estate that is mostly bash and
+  # Python - so a shell quoting hazard or a name that does not exist was only
+  # caught by somebody reading the diff.
+  #
+  # IT IS A DELIBERATELY NARROW RUFF SELECTION. `E9` is syntax errors and
+  # `F` is the pyflakes set: undefined names, unused imports, f-strings with no
+  # placeholders. Those are bugs. The full default selection flags import order
+  # and whitespace across every one of these repos, which would have meant
+  # reformatting thousands of lines in code other sessions are working in
+  # before the gate could go green - a large diff to buy a gate that catches
+  # less than this one does. garmin and imager run the full ruff and keep it.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: shellcheck
+        # -S warning, not the default, because `info` and `style` fire on
+        # idioms these scripts use deliberately. xargs -r so a repo with no
+        # shell scripts is a pass rather than a shellcheck usage error.
+        run: |
+          find . -name '*.sh' -not -path '*/.venv/*' -print0 \
+            | xargs -0 -r shellcheck -S warning
