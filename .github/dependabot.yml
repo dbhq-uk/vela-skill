@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # NuGet, because this is the one skill in the org that is a compiled program
+  # rather than instructions and a shell script. It is built on Roslyn, and
+  # Roslyn is the whole proposition: the answers are compiler-exact because the
+  # compiler gives them. A Microsoft.CodeAnalysis that falls behind the .NET SDK
+  # it is asked to load is how "compiler-exact" quietly stops being true, so
+  # these are worth a weekly pull request rather than an annual look.
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - dependencies
+      - dotnet
+    commit-message:
+      prefix: "deps"
+    groups:
+      roslyn:
+        patterns:
+          - "Microsoft.CodeAnalysis*"
+      other:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "Microsoft.CodeAnalysis*"

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/logo.svg" alt="vela skill for Claude Code, by DBHQ" width="420">
+<img src="assets/logo.svg" alt="vela skill for Claude Code, by DBHQ" width="560">
 
 # vela
 
@@ -10,7 +10,7 @@
 [![Claude Code](https://img.shields.io/badge/Claude_Code-Plugin-blueviolet)](https://code.claude.com/docs/en/plugins)
 [![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)]()
 
-A free, open-source tool by [DBHQ](https://dbhq.uk)
+A free, open-source tool by [DBHQ](https://dbhq.uk) - documented at [skills.dbhq.uk](https://skills.dbhq.uk/vela/)
 
 </div>
 
@@ -102,20 +102,23 @@ support than that we kept it. The write-up is in
 
 ## Install
 
-As a Claude Code plugin:
+### As a Claude Code plugin (recommended)
 
 ```
 /plugin marketplace add dbhq-uk/marketplace
 /plugin install vela@dbhq
 ```
 
-Or into any agent - Cursor, Copilot, Windsurf, Gemini, Cline and more - via the [skills.sh](https://skills.sh) CLI:
+### Any agent (Cursor, Copilot, Windsurf, Gemini, Cline and more)
 
 ```bash
 npx skills add dbhq-uk/vela-skill
 ```
 
-Or locally, for Claude Code or Codex:
+The [skills.sh](https://skills.sh) CLI installs into whichever agent directories
+it finds, so this works outside Claude Code and Codex too.
+
+### Local install (Claude Code or Codex)
 
 ```bash
 git clone https://github.com/dbhq-uk/vela-skill.git
@@ -124,7 +127,11 @@ cd vela-skill
 ./install-codex.sh    # Codex: installs into ~/.codex/skills
 ```
 
-Requires the .NET SDK 10.0 or newer, and the solution you are indexing must build.
+[`install.sh`](install.sh) and [`install-codex.sh`](install-codex.sh) are the
+same install two ways: Claude Code substitutes `${CLAUDE_SKILL_DIR}`, so the
+whole skill directory is symlinked untouched, while Codex does not, so its
+`SKILL.md` is rewritten at install time. Re-run the Codex one after editing
+`SKILL.md`.
 
 ## First use, in sixty seconds
 
@@ -192,6 +199,29 @@ through `vela import`. vela does not edit, refactor or rename. It reports.
 Vela is the sail of Argo Navis, the largest constellation ever catalogued, later broken into
 Carina the keel, Puppis the stern, and Vela the sails: a whole decomposed into its named
 parts, which is what an index of a codebase is. The sails are also the part you navigate by.
+
+## Also from DBHQ
+
+Fifteen free agent skills, all of them installable from the same marketplace and
+all documented at **[skills.dbhq.uk](https://skills.dbhq.uk)**.
+
+| Skill | What it does |
+|---|---|
+| [outlook](https://skills.dbhq.uk/outlook/) | Microsoft 365 mail and calendar, from the terminal |
+| [trello](https://skills.dbhq.uk/trello/) | Your boards, run from your agent |
+| [legwork](https://skills.dbhq.uk/legwork/) | Research that settles a decision, and says when it cannot |
+| [dovetail](https://skills.dbhq.uk/dovetail/) | Checks whether your repository still agrees with itself |
+| [verve](https://skills.dbhq.uk/verve/) | Strips AI tells from prose and puts a voice back |
+| [garmin](https://skills.dbhq.uk/garmin/) | Your Garmin data, answered in the terminal |
+| [imager](https://skills.dbhq.uk/imager/) | Images from GPT Image 2, costed before it spends |
+| [gitview](https://skills.dbhq.uk/gitview/) | Which branches are finished, and safe to delete |
+| [atlassian](https://skills.dbhq.uk/atlassian/) | Jira issues and Confluence pages |
+| [pennyblack](https://skills.dbhq.uk/pennyblack/) | A physical letter, posted from the terminal |
+| [buildwork](https://skills.dbhq.uk/buildwork/) | Your open issues, run as parallel agents |
+| [deskwork](https://skills.dbhq.uk/deskwork/) | What an agent noticed, tracked as real work |
+| [groupwork](https://skills.dbhq.uk/groupwork/) | A second agent on the work, adversary or partner |
+
+Plus [heliograph](https://skills.dbhq.uk/heliograph/), for a machine you cannot log into.
 
 ## Licence
 
