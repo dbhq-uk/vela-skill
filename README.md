@@ -27,7 +27,7 @@ MVC views and Blazor components itself; every other language reaches the same da
 importing the `.scip` file its own indexer produces, and then the same verbs answer over
 both. It does not run those indexers - you run them, vela imports the result.
 
-## The problem
+## What makes it different
 
 An agent working in a .NET repository discovers structure by grepping. For distinctive
 identifiers that is fine. For the ordinary ones it is close to useless, and the failure is
@@ -138,6 +138,17 @@ same install two ways: Claude Code substitutes `${CLAUDE_SKILL_DIR}`, so the
 whole skill directory is symlinked untouched, while Codex does not, so its
 `SKILL.md` is rewritten at install time. Re-run the Codex one after editing
 `SKILL.md`.
+
+## Requirements
+
+**The .NET SDK 10**, and `~/.dotnet/tools` on your `PATH` - `install.sh`
+warns and prints the export line if it is not, because the `vela` command
+will not run until it is.
+
+Nothing else for .NET code. **For any other language you need that
+language's own SCIP indexer**, which vela does not run and does not
+install: you produce the `.scip` file, vela imports it, and the same verbs
+then answer over both.
 
 ## First use, in sixty seconds
 
