@@ -31,6 +31,18 @@ updates:
       - dotnet
     commit-message:
       prefix: "deps"
+    # The three MSBuild packages are pinned to whatever
+    # Microsoft.CodeAnalysis.Workspaces.MSBuild resolves, and they are referenced
+    # with ExcludeAssets="runtime" PrivateAssets="all" because MSBuildLocator
+    # requires it. Bumping them on their own breaks the build rather than the
+    # tests: on 17 Sep 2026 dependabot moved Framework and Utilities.Core to
+    # 18.10.1, left Microsoft.Build at 17.11.48, and Framework 18.10.1 brought in
+    # Microsoft.NET.StringTools as a PackageReference without ExcludeAssets, which
+    # is the exact thing MSBL001 exists to refuse. They move with Roslyn, by hand.
+    ignore:
+      - dependency-name: "Microsoft.Build"
+      - dependency-name: "Microsoft.Build.Framework"
+      - dependency-name: "Microsoft.Build.Utilities.Core"
     groups:
       roslyn:
         patterns:
