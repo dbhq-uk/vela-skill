@@ -1,4 +1,4 @@
-name: CI
+name: Validate
 # A push to a feature branch that already has a pull request open used to run the
 # whole three-OS matrix twice, once for the push and once for the pull request.
 # Filtering `push` to main leaves each commit covered exactly once: by its pull
