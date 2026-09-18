@@ -220,7 +220,9 @@ parts, which is what an index of a codebase is. The sails are also the part you 
 ## Also from DBHQ
 
 Fifteen free agent skills, all of them installable from the same marketplace and
-all documented at **[skills.dbhq.uk](https://skills.dbhq.uk)**.
+all documented at **[skills.dbhq.uk](https://skills.dbhq.uk)**. The marketplace
+itself is [dbhq-uk/marketplace](https://github.com/dbhq-uk/marketplace) - one
+`/plugin marketplace add` and every one of them is available.
 
 | Skill | What it does |
 |---|---|
