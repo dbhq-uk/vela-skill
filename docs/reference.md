@@ -171,7 +171,7 @@ Incremental rebuild: 1 of 10 project(s) rebuilt, 9 reused.
   rebuilt tests/ScentVerdict.Benchmarks/ScentVerdict.Benchmarks.csproj: its own inputs changed
   reused src/ScentVerdict.Data/ScentVerdict.Data.csproj
   ...
-Replaced 11 document(s) with 11 in /home/devops/.cache/vela/ScentVerdict-cf73472b44f18ae0.db.
+Replaced 11 document(s) with 11 in /home/devops/.dbhq/vela/ScentVerdict-cf73472b44f18ae0.db.
 Every other document in it is the one the last build wrote, and this run did not look at the
 code behind it.
 ```
@@ -264,7 +264,7 @@ What the index cache holds, and the one place to remove any of it by name.
 
 ```
 $ vela cache
-Index cache: /home/dan/.cache/vela
+Index cache: /home/dan/.dbhq/vela
   ScentVerdict-3f1a9c02b7d64e58.db  277.94MB  built 2026-07-30 08:12 UTC  of /home/dan/src/scentverdict/ScentVerdict.sln
   Vela-0ffb846e14f2a4c7.db            1.31MB  built 2026-07-31 09:04 UTC  of /home/dan/src/vela-skill/Vela.sln
 2 index(es), 279.25MB.
@@ -622,8 +622,9 @@ The rule that matters most: **an empty result is not proof that nothing uses the
 
 ## Where the index lives
 
-`$XDG_CACHE_HOME/vela/<SolutionName>-<hash>.db`, or `~/.cache/vela/...` when
-`XDG_CACHE_HOME` is unset. The hash is the first 16 hex characters of the SHA-256 of the
+`~/.dbhq/vela/<SolutionName>-<hash>.db`. `VELA_CACHE_HOME` overrides that, and
+`XDG_CACHE_HOME` overrides the default too, for a machine that keeps every cache
+somewhere specific. The hash is the first 16 hex characters of the SHA-256 of the
 absolute solution path, so two checkouts of the same repository have separate indexes.
 
 vela refuses to run if that directory resolves to somewhere inside the solution's own tree.
@@ -635,7 +636,7 @@ database it cannot read. The index is a cache, so it is rebuilt rather than migr
 
 ### What removes a cached index
 
-Until this existed, nothing ever did. `~/.cache/vela` on the machine vela is developed on
+Until this existed, nothing ever did. `~/.dbhq/vela` on the machine vela is developed on
 had reached 983MB across five databases, and it could only grow: index a few solutions, or
 one solution under two spellings, and a user who never thinks about the cache eventually
 notices their disk.

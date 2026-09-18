@@ -55,7 +55,7 @@ vela index --stats
 ```
 
 ```
-Indexed 23 documents to /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
+Indexed 23 documents to /home/you/.dbhq/vela/RazorDemo-6cbef186e8416dc7.db
 documents            : 23
   generated          : 8   (compiled, not on disk)
   razor views        : 7   (.cshtml and .razor)
@@ -163,5 +163,5 @@ The index is a cache. Delete the directory and it is gone:
 
 ```bash
 rm -rf ~/velatut
-rm -f ~/.cache/vela/RazorDemo-*.db
+rm -f ~/.dbhq/vela/RazorDemo-*.db
 ```

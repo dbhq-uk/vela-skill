@@ -72,7 +72,7 @@ vela index
 ```
 Using vela.json at /home/you/velatut/vela.json: 3 job(s): csharp and razor from vela's own
 indexer; typescript from scip-typescript at 'web'.
-Indexed 23 documents to /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
+Indexed 23 documents to /home/you/.dbhq/vela/RazorDemo-6cbef186e8416dc7.db
 No job covers javascript 1 file(s), so none of it is in this index. Nothing of yours is
 missing that a job asked for; this is what the repository holds beside it.
 The exclude list kept this count out of 3 director(ies) and rejected 0 further file(s).
@@ -105,7 +105,7 @@ vela import web/index.scip
 
 ```
 Imported 2 document(s) and 17 occurrence(s) from /home/you/velatut/web/index.scip, produced
-by scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
+by scip-typescript, into /home/you/.dbhq/vela/RazorDemo-6cbef186e8416dc7.db
 2 document(s) declare no position encoding, so their character offsets were read as UTF-16
 code units, which is what every other row in this index means. ...
 ```
@@ -215,7 +215,7 @@ written again, and you are told how many went and how many came:
 
 ```
 Imported 2 document(s) and 21 occurrence(s) from /home/you/velatut/web/index.scip, produced
-by scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
+by scip-typescript, into /home/you/.dbhq/vela/RazorDemo-6cbef186e8416dc7.db
 Replaced 2 document(s) already in the index: 17 occurrence(s) removed and 21 written in
 their place.
 The paths this .scip names were rewritten, whoever contributed them. A document from any
@@ -236,7 +236,7 @@ abandoned row out rather than leave `refs` answering from a file you deleted:
 
 ```
 Imported 1 document(s) and 12 occurrence(s) from /home/you/velatut/web/index.scip, produced
-by scip-typescript, into /home/you/.cache/vela/RazorDemo-6cbef186e8416dc7.db
+by scip-typescript, into /home/you/.dbhq/vela/RazorDemo-6cbef186e8416dc7.db
 Removed 1 document(s) with 9 occurrence(s): a previous import of this .scip put them in the
 index and this one no longer names them. The index is smaller than it was.
 ```

@@ -17,8 +17,9 @@ public static class IndexPaths
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// Thrown if the resolved cache directory is inside the directory tree of the
-    /// solution being indexed. This can happen if XDG_CACHE_HOME (or, on the
-    /// fallback path, the user profile) has been pointed at or under the repository.
+    /// solution being indexed. This can happen if VELA_CACHE_HOME or XDG_CACHE_HOME
+    /// (or, on the fallback path, the user profile) has been pointed at or under the
+    /// repository.
     /// Vela never falls back silently in this case: writing the index into the
     /// repository it is indexing would violate Constraint 2, so this is a loud
     /// failure rather than a quiet, surprising one.
@@ -35,12 +36,61 @@ public static class IndexPaths
     /// It does not create the directory. A cache directory that is not there holds no
     /// indexes, which is a perfectly good answer to give.
     /// </summary>
-    public static string CacheDirectory()
-    {
-        var cache = Environment.GetEnvironmentVariable("XDG_CACHE_HOME")
-                    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache");
+    public static string CacheDirectory() => ResolvedCacheDirectory();
 
-        return RealPath.Of(Path.Combine(cache, "vela"));
+    /// <summary>
+    /// Where indexes live, resolved once so the two callers below cannot drift.
+    ///
+    /// THE DEFAULT CHANGED ON 17 SEP 2026, from <c>~/.cache/vela</c> to
+    /// <c>~/.dbhq/vela</c>. Every DBHQ skill keeps its state in
+    /// <c>~/.dbhq/&lt;skill&gt;/</c> - one directory for the whole set, never a new
+    /// top-level dotfile and never <c>~/.config</c> - and this was the one that
+    /// did not. An index is machine-managed state like any credential file; the
+    /// fact that it is a cache says how easily it can be thrown away, not where
+    /// it belongs.
+    ///
+    /// <b>XDG_CACHE_HOME is still honoured, and that is not a contradiction.</b>
+    /// The rule is about where this program CHOOSES to write when nobody has
+    /// said otherwise. A user or a test that sets XDG_CACHE_HOME explicitly has
+    /// said otherwise, and refusing them would be a worse citizen than the
+    /// default ever was. VELA_CACHE_HOME wins over it, for a caller that wants
+    /// to move this one program without moving every cache on the machine.
+    ///
+    /// <b>There is deliberately no migration.</b> An index is derived from a
+    /// solution and rebuilt from it in seconds, so moving one would be work
+    /// done to preserve something that regenerates. A pre-existing
+    /// <c>~/.cache/vela</c> is simply orphaned, and `vela cache` says so rather
+    /// than this code deleting a directory it did not create on this run.
+    /// </summary>
+    private static string ResolvedCacheDirectory()
+    {
+        var explicitHome = Environment.GetEnvironmentVariable("VELA_CACHE_HOME");
+        if (!string.IsNullOrEmpty(explicitHome))
+            return RealPath.Of(Path.Combine(explicitHome, "vela"));
+
+        var xdg = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
+        if (!string.IsNullOrEmpty(xdg))
+            return RealPath.Of(Path.Combine(xdg, "vela"));
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        return RealPath.Of(Path.Combine(home, ".dbhq", "vela"));
+    }
+
+    /// <summary>
+    /// The directory indexes lived in before 17 Sep 2026, or null when nothing
+    /// is there. `vela cache` reports it so a reader knows what the megabytes
+    /// under <c>~/.cache/vela</c> are and that deleting them costs an index
+    /// rebuild and nothing else. Nothing here deletes it.
+    /// </summary>
+    public static string? OrphanedCacheDirectory()
+    {
+        if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VELA_CACHE_HOME"))
+            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("XDG_CACHE_HOME")))
+            return null;
+
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var legacy = Path.Combine(home, ".cache", "vela");
+        return Directory.Exists(legacy) ? legacy : null;
     }
 
     public static string ForSolution(string solutionPath)
@@ -58,9 +108,6 @@ public static class IndexPaths
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..16].ToLowerInvariant();
         var name = Path.GetFileNameWithoutExtension(full);
 
-        var cache = Environment.GetEnvironmentVariable("XDG_CACHE_HOME")
-                    ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache");
-
         // Resolved the same way the solution directory above it was, because the guard
         // below compares the two and a comparison between a resolved path and an
         // unresolved one answers about spelling rather than about location. It has to be
@@ -68,16 +115,21 @@ public static class IndexPaths
         // reaches the repository through a symbolic link really would write the index into
         // the repository, and Constraint 2 is about where the bytes land, not about how
         // the path was typed.
-        var dir = RealPath.Of(Path.Combine(cache, "vela"));
+        //
+        // Shared with CacheDirectory() rather than resolved again here. These two
+        // blocks were duplicated, which is one edit away from the index verb and
+        // the query verbs disagreeing about where the database is.
+        var dir = ResolvedCacheDirectory();
 
         if (IsWithin(dir, solutionDir))
         {
             throw new InvalidOperationException(
                 $"The resolved index cache directory '{dir}' is inside the solution directory " +
                 $"'{solutionDir}'. Indexing must never write into the repository being indexed " +
-                "(Constraint 2). Check the XDG_CACHE_HOME environment variable: it is set to a " +
-                "path inside this repository (or unset, with the user profile's .cache directory " +
-                "itself inside the repository), and must instead point somewhere outside it.");
+                "(Constraint 2). Check VELA_CACHE_HOME and XDG_CACHE_HOME: one of them is set to " +
+                "a path inside this repository (or both are unset, with the user profile's " +
+                ".dbhq directory itself inside the repository), and it must instead point " +
+                "somewhere outside it.");
         }
 
         return Path.Combine(dir, $"{name}-{hash}.db");

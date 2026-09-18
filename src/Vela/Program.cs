@@ -945,6 +945,19 @@ public static class Program
 
             output.WriteLine($"Index cache: {directory}");
 
+            // The cache moved to ~/.dbhq/vela on 17 Sep 2026 and nothing was
+            // migrated, because an index rebuilds from its solution in seconds.
+            // So say where the old one is rather than leaving a reader to find
+            // megabytes under ~/.cache/vela and wonder what still reads them.
+            // This verb reports; it does not delete.
+            var orphaned = IndexPaths.OrphanedCacheDirectory();
+            if (orphaned is not null)
+            {
+                output.WriteLine(
+                    $"Indexes built before 17 Sep 2026 are still at {orphaned} and nothing reads " +
+                    "them now. Deleting that directory costs one index rebuild and nothing else.");
+            }
+
             if (held.Count == 0)
             {
                 output.WriteLine("0 index(es), 0B. Nothing is cached yet.");

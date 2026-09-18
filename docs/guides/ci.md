@@ -62,7 +62,7 @@ Two notes on that job:
 
 - The solution has to restore, or MSBuild cannot load the projects, which is why
   `dotnet build` runs first.
-- The index goes to `$XDG_CACHE_HOME/vela` or `~/.cache/vela`, which on a fresh runner is
+- The index goes to `$VELA_CACHE_HOME/vela` or `~/.dbhq/vela`, which on a fresh runner is
   empty. Nothing is written into the checkout.
 
 ## Asserting coverage explicitly
