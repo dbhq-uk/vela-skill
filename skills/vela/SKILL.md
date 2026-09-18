@@ -1,11 +1,11 @@
 ---
 name: vela
-description: Compiler-exact code search for .NET solutions - find where a symbol is defined, every reference to it, who calls it, and what a change would break. Covers C#, VB, Razor Pages, MVC views and Blazor components, which grep and every other code-intelligence tool miss. Deterministic, built on Roslyn, never modifies the repository. Use instead of grep when searching for an ordinary identifier (Name, Status, Value, Id, Update), when you need callers or change impact, when a symbol might be used from a .cshtml or .razor file, or when grep returns too many hits to read. Trigger on phrases like "vela", "find references", "who calls", "where is this used", "change impact", "blast radius", "find usages".
+description: Compiler-exact code search over a SCIP index - find where a symbol is defined, every reference to it, who calls it, and what a change would break. Indexes .NET itself: C#, VB, Razor Pages, MVC views and Blazor components, which grep and every other code-intelligence tool miss. Any other language - TypeScript, Python, Go, Java - reaches the same database by importing the .scip file its own indexer produces, and then the same verbs answer over it; vela does not run those indexers itself. Deterministic, built on Roslyn, never modifies the repository. Use instead of grep when searching for an ordinary identifier (Name, Status, Value, Id, Update), when you need callers or change impact, when a symbol might be used from a .cshtml or .razor file, or when grep returns too many hits to read. Trigger on phrases like "vela", "find references", "who calls", "where is this used", "change impact", "blast radius", "find usages".
 ---
 
 # vela
 
-Compiler-exact code search for .NET. Answers come from Roslyn's semantic model, so they are what the compiler believes rather than what a pattern matched.
+Compiler-exact code search, over a SCIP index. .NET answers come from Roslyn's semantic model, so they are what the compiler believes rather than what a pattern matched; any other language reaches the same database through its own SCIP indexer, and the same verbs answer over both.
 
 Deterministic: no model calls, no network, and it never modifies the repository it indexes.
 

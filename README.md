@@ -16,10 +16,16 @@ A free, open-source tool by [DBHQ](https://dbhq.uk) - documented at [skills.dbhq
 
 ---
 
-vela builds a compiler-exact index of a .NET solution and answers questions about it in
-about a second: where is this symbol defined, everywhere it is used, who calls it, and what
-breaks if you change it. The answers come from Roslyn, so they are what the compiler
-believes, not what a regular expression matched.
+vela builds a compiler-exact index and answers questions about it in about a second: where
+is this symbol defined, everywhere it is used, who calls it, and what breaks if you change
+it. For .NET the answers come from Roslyn, so they are what the compiler believes rather
+than what a regular expression matched.
+
+**It speaks [SCIP](https://github.com/scip-code/scip), which is what makes it a
+whole-repository tool rather than a .NET one.** vela indexes C#, Visual Basic, Razor Pages,
+MVC views and Blazor components itself; every other language reaches the same database by
+importing the `.scip` file its own indexer produces, and then the same verbs answer over
+both. It does not run those indexers - you run them, vela imports the result.
 
 ## The problem
 

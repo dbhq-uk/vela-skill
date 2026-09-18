@@ -1,6 +1,6 @@
 # vela documentation
 
-Compiler-exact code search for .NET. Start at the [project README](../README.md) if you
+Compiler-exact code search, over a SCIP index. Start at the [project README](../README.md) if you
 have not read it.
 
 These pages are organised by what you are trying to do, rather than by feature. Each one is
