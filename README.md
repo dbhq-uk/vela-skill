@@ -32,7 +32,9 @@ both. It does not run those indexers - you run them, vela imports the result.
 An agent working in a .NET repository discovers structure by grepping. For distinctive
 identifiers that is fine. For the ordinary ones it is close to useless, and the failure is
 quiet: a plausible-looking answer that is mostly noise, or a missed call site and the
-conclusion that a symbol is unused. And nothing on the market can see inside a Razor view
+conclusion that a symbol is unused.
+
+And nothing on the market can see inside a Razor view
 at all.
 
 ## Why nothing else solves it
@@ -80,7 +82,9 @@ documents, 979,906 occurrences, 142,532 definitions. Indexing took about five mi
 
 Query cost once the index exists: a 0.09s process floor, about 0.55s for a `def`, about
 1.3s for a `refs` returning 3,156 results. Not milliseconds, and this README used to say it
-was. For comparison, loading the same solution into a live Roslyn workspace costs 9.3s plus
+was.
+
+For comparison, loading the same solution into a live Roslyn workspace costs 9.3s plus
 23.8s to compile the web project, and it costs that **on every invocation**, because nothing
 stays resident.
 
