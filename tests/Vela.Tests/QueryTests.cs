@@ -1096,6 +1096,43 @@ public class QueryTests
     }
 
     [Fact]
+    public void Impact_CountsTheReferencesItCouldNameNoCallerFor_EvenWhenItNamedOne()
+    {
+        // One C# caller and one Razor view. The view's reference sits inside no recorded
+        // body, so Run has no row for it, and that is the half that went missing without
+        // a word once any caller had been found.
+        using var db = new SqliteConnection("Data Source=:memory:");
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language, generated) VALUES
+                    (1, 'App/Pages/Error.cshtml.cs', 'csharp', 0),
+                    (2, 'App/Pages/Error.cshtml', 'razor', 0),
+                    (3, 'App/obj/Debug/net10.0/generated/Pages_Error_cshtml.g.cs', 'csharp', 1);
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Pages.ErrorModel.OnGet()',     1, 20, 4, 23, 5),
+                    (1, 'App.Pages.ErrorModel.RequestId',   0, 22, 8, NULL, NULL),
+                    (2, 'App.Pages.ErrorModel.RequestId',   0, 13, 51, NULL, NULL),
+                    (3, 'App.Pages.ErrorModel.RequestId',   0, 40, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        var hit = Assert.Single(ImpactQuery.Run(db, "RequestId"));
+        Assert.Equal("App.Pages.ErrorModel.OnGet()", hit.Symbol);
+
+        // The view, and not the generated document, which the default answer leaves out.
+        Assert.Equal(1, ImpactQuery.CountUnattributed(db, "RequestId"));
+        Assert.Equal(2, ImpactQuery.CountUnattributed(db, "RequestId", includeGenerated: true));
+
+        // A reference with a caller is not counted, so a fully attributed answer says nothing.
+        Assert.Equal(0, ImpactQuery.CountUnattributed(db, "OnGet"));
+    }
+
+    [Fact]
     public void Impact_ReturnsOnlyTheInnermostEnclosingDefinition()
     {
         // Real C# nests: a method sits inside a type, which sits inside a namespace,
@@ -2078,6 +2115,50 @@ public class QueryTests
     }
 
     [Fact]
+    public async Task Impact_WhenItNamesACallerAndAViewAlsoRefersToTheSymbol_SaysSoAfterTheResults()
+    {
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempCacheHome();
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteCallerAndViewIndexFile(indexPath);
+
+        var result = await InvokeAsync("impact", "RequestId", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(1, ReportedTotal(result.Output));
+        Assert.Contains("App.Pages.ErrorModel.OnGet()", result.Output, StringComparison.Ordinal);
+
+        var note = result.Output.IndexOf("1 reference(s) could not be attributed to a caller", StringComparison.Ordinal);
+        Assert.True(note >= 0, result.Output);
+        Assert.True(note > result.Output.IndexOf("1 result(s)", StringComparison.Ordinal), result.Output);
+        Assert.Contains("Run refs to see them", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Impact_WhenEveryReferenceHasACaller_PrintsNoUnattributedNote()
+    {
+        using var repo = new TempDirectory();
+        var solution = Path.Combine(repo.Path, "App.sln");
+        File.WriteAllText(solution, "");
+
+        using var cache = new TempCacheHome();
+
+        var indexPath = IndexPaths.ForSolution(solution);
+        IndexPaths.EnsureDirectoryExists(indexPath);
+        WriteAmbiguousCallerIndexFile(indexPath);
+
+        var result = await InvokeAsync("impact", "Perfume.Status", "--solution", solution);
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.DoesNotContain("could not be attributed", result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Impact_WhenThePatternResolvesToOneSymbol_PrintsNoAmbiguityNotice()
     {
         using var repo = new TempDirectory();
@@ -2706,6 +2787,36 @@ public class QueryTests
                     (1, 'App.Data.Entities.Perfume',             0, 33, 12, NULL, NULL),
                     (1, 'App.Data.Entities.Perfume.Status',      0, 34, 12, NULL, NULL),
                     (1, 'App.Data.Enums.EntityType.Perfume',     0, 52, 12, NULL, NULL);
+                """;
+            cmd.ExecuteNonQuery();
+        }
+
+        IndexHealth.Write(db, new HealthRecord(DateTime.UtcNow, null, false, null));
+    }
+
+    /// <summary>
+    /// The shape of the scaffold's Error page: one C# method refers to RequestId, and so
+    /// does the Razor view, which has no recorded body range.
+    /// </summary>
+    private static void WriteCallerAndViewIndexFile(string path)
+    {
+        if (File.Exists(path)) File.Delete(path);
+
+        var connectionString = new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
+        using var db = new SqliteConnection(connectionString);
+        db.Open();
+        Schema.Create(db);
+
+        using (var cmd = db.CreateCommand())
+        {
+            cmd.CommandText = """
+                INSERT INTO document(id, relative_path, language) VALUES
+                    (1, 'App/Pages/Error.cshtml.cs', 'csharp'),
+                    (2, 'App/Pages/Error.cshtml', 'razor');
+                INSERT INTO occurrence(document_id, symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char) VALUES
+                    (1, 'App.Pages.ErrorModel.OnGet()',   1, 20,  4,   23,    5),
+                    (1, 'App.Pages.ErrorModel.RequestId', 0, 22,  8, NULL, NULL),
+                    (2, 'App.Pages.ErrorModel.RequestId', 0, 13, 51, NULL, NULL);
                 """;
             cmd.ExecuteNonQuery();
         }

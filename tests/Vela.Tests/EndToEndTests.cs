@@ -88,6 +88,28 @@ public class EndToEndTests
     }
 
     [Fact]
+    public async Task Impact_OnTheScaffold_SaysTheRazorReferenceHasNoCaller()
+    {
+        // The scaffold's Error page model declares RequestId, uses it in C# from OnGet and
+        // ShowRequestId, and Error.cshtml uses it too. impact named the two C# callers at
+        // exit 0 and left the view out without a word, so "what breaks if I change this"
+        // came back as a partial list that read as the whole of it.
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        var refs = await InvokeAsync("refs", "RequestId", "--solution", fx.SolutionPath);
+        Assert.Contains("Error.cshtml", refs.Output, StringComparison.Ordinal);
+
+        var impact = await InvokeAsync("impact", "RequestId", "--solution", fx.SolutionPath);
+
+        Assert.Equal(0, impact.ExitCode);
+        Assert.Contains("OnGet", impact.Output, StringComparison.Ordinal);
+        Assert.Matches(@"\d+ reference\(s\) could not be attributed to a caller", impact.Output);
+    }
+
+    [Fact]
     public async Task Index_RecordsWhatEachProjectWasBuiltFrom()
     {
         // The ledger has to be written by the command people actually run, not only by
