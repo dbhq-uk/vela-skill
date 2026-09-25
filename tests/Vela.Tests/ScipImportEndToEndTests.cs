@@ -413,7 +413,9 @@ public class ScipImportEndToEndTests
         Assert.Equal(IndexHealth.ExitDegraded, stale.ExitCode);
         Assert.Contains("INCOMPLETE INDEX", stale.Output, StringComparison.Ordinal);
         Assert.Contains("App/wwwroot/js/site.ts", stale.Output, StringComparison.Ordinal);
-        Assert.Contains("vela import --replace " + scip, stale.Output, StringComparison.Ordinal);
+        // Through RealPath, which is how vela records the .scip: on macOS the temp directory
+        // is reached through /var, a link to /private/var, and the banner names the target.
+        Assert.Contains("vela import --replace " + RealPath.Of(scip), stale.Output, StringComparison.Ordinal);
 
         // A full re-index replays the unchanged .scip at a later time than the edit. The
         // clock is when the .scip was written, so the replay does not wash the edit out.
