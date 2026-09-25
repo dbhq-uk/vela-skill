@@ -52,17 +52,26 @@ called as `x.Foo()` is actually defined, which overload is meant, and what
 (Interface implementations are a SCIP `Relationship`, which vela does not emit yet
 and no verb answers. They are not in the list above for that reason.)
 
-## The gap nothing else fills
+## The gap
 
-Every general-purpose code-intelligence tool for agents stops at what is on disk.
-Checked directly, not inferred:
+The general-purpose code-intelligence tools for agents checked when this was written
+stopped at what is on disk. Checked directly, not inferred:
 
-| Tool | Stars | Indexes `.cshtml` / `.razor` |
-|---|---|---|
-| CodeGraph | 63k | no |
-| codebase-memory-mcp | 36k | no |
-| Serena | 27k | no - matcher is `.cs` only (`ls_config.py:374`) |
-| Sourcegraph `scip-dotnet` | 32 | **no** - verified by indexing a real solution |
+| Tool | Indexes `.cshtml` / `.razor` |
+|---|---|
+| CodeGraph | no |
+| codebase-memory-mcp | no |
+| Serena | no - matcher is `.cs` only (`ls_config.py:374`) |
+| Sourcegraph `scip-dotnet` | **no** - verified by indexing a real solution |
+
+> **Since then.** The field moved, and the claim that holds is narrower than "nothing else
+> indexes Razor". CodeGraph added a Razor extractor in June 2026 that works by pattern
+> rather than through the compiler. csharp-ls resolves `.cshtml` references through the
+> compiler behind `--features razor-support`, and the Roslyn language server has Razor
+> cohosting from 5.8, but both answer from a running language server. What vela still does
+> alone, as far as we know, is write compiler-resolved Razor and Blazor references into a
+> saved index that answers with no server running. The star counts this table once carried
+> are gone, because they went stale.
 
 Sourcegraph's indexer is Roslyn-based and still misses Razor, for one identifiable
 reason. `ScipProjectIndexer.cs:110`:
@@ -100,7 +109,8 @@ Perfume  707 refs |  5 in Razor  ->  Pages_Shared__DupeBanner_cshtml.g.cs
 
 The same generator handles Blazor. A default Blazor app emits 11 generated
 documents from its `.razor` components. So the whole Razor family - Razor Pages,
-MVC views, and Blazor - is reachable, and nothing on the market reaches it.
+MVC views, and Blazor - is reachable, and none of the tools in the table above reached it
+(see the **Since then** note there).
 
 ## What vela is
 

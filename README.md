@@ -34,18 +34,24 @@ identifiers that is fine. For the ordinary ones it is close to useless, and the 
 quiet: a plausible-looking answer that is mostly noise, or a missed call site and the
 conclusion that a symbol is unused.
 
-And nothing on the market can see inside a Razor view
-at all.
+And grep cannot tell you what a name in a Razor view binds to.
 
-## Why nothing else solves it
+## Why it sees what other tools miss
 
-**It indexes Razor and Blazor. Nothing else does.** Razor views and Blazor components never
-exist as files the compiler reads. They arrive as *source-generated documents*. Every
-general-purpose code-intelligence tool iterates the files on disk and therefore skips them:
-CodeGraph (63k stars), codebase-memory-mcp (36k), Serena (27k), and even Sourcegraph's own
-Roslyn-based `scip-dotnet`. On ScentVerdict, the real ten-project solution vela is developed
-against, that was 334 views and 62,358 lines of the presentation layer on 30 July 2026,
-invisible. vela reads the compilation instead of the directory, so they are simply there.
+**It writes compiler-resolved Razor and Blazor references into a saved index.** We know of
+no other tool that does. Razor views and Blazor components never exist as files the
+compiler reads. They arrive as *source-generated documents*, so a tool that iterates the
+files on disk skips them, and Sourcegraph's own Roslyn-based `scip-dotnet` is one of those.
+On ScentVerdict, the real ten-project solution vela is developed against, such a tool
+missed 334 views and 62,358 lines of the presentation layer on 30 July 2026. vela reads
+the compilation instead of the directory, so they are simply there.
+
+Some tools do reach Razor, in other ways. csharp-ls resolves `.cshtml` references through
+the compiler behind its `--features razor-support` flag, and the Roslyn language server has
+Razor cohosting from 5.8, but both answer from a language server that has to be running.
+CodeGraph has a Razor extractor that works by pattern rather than through the compiler.
+vela's answer is on disk before the question is asked, and any agent can query it with no
+server running.
 
 **It is deterministic, and only deterministic.** No model calls, no API key, no network.
 Every answer follows from the compiler's semantic model, so there is nothing to triage.

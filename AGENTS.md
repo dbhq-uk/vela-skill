@@ -34,7 +34,7 @@ Break any of these and it stops being the thing people can trust:
 
 3. **An incomplete index must never look like a complete one.** This matters more here than in most tools. If a project fails to load, every query touching it must say so and the exit code must reflect it. An agent that receives an empty reference list will conclude the symbol is unused and delete it. Absence of results is never evidence of absence - report the gap loudly or do not answer.
 
-## Why Razor works here and nowhere else
+## Why Razor works here
 
 Razor views and Blazor components never exist as files Roslyn reads from disk. The Razor source generator emits them into the compilation. Tools that iterate `project.Documents` see on-disk files only and miss every one of them - that is the single line that makes Sourcegraph's `scip-dotnet` Razor-blind (`ScipProjectIndexer.cs:110`).
 

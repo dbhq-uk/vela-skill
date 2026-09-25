@@ -1,6 +1,6 @@
 ---
 name: vela
-description: 'Compiler-exact code search over a SCIP index - find where a symbol is defined, every reference to it, who calls it, and what a change would break. Indexes .NET itself: C#, VB, Razor Pages, MVC views and Blazor components, which grep and every other code-intelligence tool miss. Any other language - TypeScript, Python, Go, Java - reaches the same database by importing the .scip file its own indexer produces, and then the same verbs answer over it; vela does not run those indexers itself. Deterministic, built on Roslyn, never modifies the repository. Use instead of grep when searching for an ordinary identifier (Name, Status, Value, Id, Update), when you need callers or change impact, when a symbol might be used from a .cshtml or .razor file, or when grep returns too many hits to read. Trigger on phrases like "vela", "find references", "who calls", "where is this used", "change impact", "blast radius", "find usages".'
+description: 'Compiler-exact code search over a SCIP index - find where a symbol is defined, every reference to it, who calls it, and what a change would break. Indexes .NET itself: C#, VB, Razor Pages, MVC views and Blazor components, with every Razor reference resolved by the compiler into a saved index, where grep sees only text. Any other language - TypeScript, Python, Go, Java - reaches the same database by importing the .scip file its own indexer produces, and then the same verbs answer over it; vela does not run those indexers itself. Deterministic, built on Roslyn, never modifies the repository. Use instead of grep when searching for an ordinary identifier (Name, Status, Value, Id, Update), when you need callers or change impact, when a symbol might be used from a .cshtml or .razor file, or when grep returns too many hits to read. Trigger on phrases like "vela", "find references", "who calls", "where is this used", "change impact", "blast radius", "find usages".'
 ---
 
 # vela
@@ -18,7 +18,7 @@ Use vela when:
 - the name is ordinary - `Name`, `Status`, `Value`, `Id`, `Update`. Measured on a real solution, grep is 91 to 99% noise for these.
 - you need **callers**, not just textual matches
 - you need to know **what breaks** if you change something
-- the symbol might be referenced from a **`.cshtml` or `.razor`** file. Nothing else indexes these, including grep, which finds the text but cannot tell you it binds to a specific property on a specific type
+- the symbol might be referenced from a **`.cshtml` or `.razor`** file. grep finds the text but cannot tell you it binds to a specific property on a specific type, and tools that read only the files on disk skip these views entirely
 - grep returned more hits than you can read, which means the answer is now a context-window problem rather than a search problem
 
 ## Steps
