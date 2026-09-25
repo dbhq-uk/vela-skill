@@ -320,7 +320,12 @@ Reads a `.scip` file produced by any language's SCIP indexer into the same datab
 `vela import`, and a later `vela index` replays what was imported rather than losing it.
 
 Importing into no index at all is legitimate: a repository with no .NET in it is still a
-repository vela can answer about.
+repository vela can answer about. In a git repository with no `.sln` or `.slnx`, the index is
+keyed on the repository itself, so neither `import` nor the query verbs need `--solution`.
+`import` says so when it does it. See [global options](#global-options).
+
+Every file an import names is checked for freshness against the time its `.scip` was
+written. See [imported languages](#imported-languages).
 
 ### `vela find`
 
@@ -392,6 +397,10 @@ opens an index - `index`, `import` and each query verb - picks the solution the 
    directory upwards, bounded by the repository root.
 2. Otherwise, the only `.sln` or `.slnx` in the current directory, or in the nearest
    directory above it that holds one, stopping at the repository root.
+3. Otherwise, in a git repository with no solution at all, the index keyed on the repository
+   itself. `vela import` creates it, and the query verbs use it once it exists. `vela index`
+   has nothing to build there and says so. `vela cache` lists such an index as
+   `of the repository at <root> (no solution)`.
 
 The walk stops at the first directory holding any solution file. Two there, such as an
 `App.sln` beside the `App.slnx` that `dotnet sln migrate` wrote, is an error that names
@@ -563,7 +572,7 @@ Every reason the banner fires:
 | `compile-error:` | A project compiled with errors. Every reference that depended on a type the compiler could not resolve is simply absent. |
 | `no-compilation:` | A project produced no compilation at all. |
 | `outside-project-root:` | A document could not be represented because it lies outside the project root. |
-| `stale index:` | A watched file under the repository root is newer than the index. |
+| `stale index:` | A watched file under the repository root is newer than the index, a file the index was built from has gone, or a file an imported `.scip` names changed after that `.scip` was written or has gone. |
 | `index freshness could not be checked:` | The root the index was built against has moved, been renamed or been removed. |
 | `index freshness could only be partly checked:` | A directory under the root could not be read. |
 | `index has no health record` | The index does not record whether its own build succeeded. |
@@ -672,7 +681,7 @@ absolute solution path, so two checkouts of the same repository have separate in
 vela refuses to run if that directory resolves to somewhere inside the solution's own tree.
 Indexing must never write into the repository being indexed.
 
-The index carries a schema version (currently 11). If you upgrade vela and the shape has
+The index carries a schema version (currently 12). If you upgrade vela and the shape has
 changed, every verb refuses to answer and tells you to re-index rather than querying a
 database it cannot read. The index is a cache, so it is rebuilt rather than migrated.
 
@@ -811,6 +820,27 @@ degraded, which is a warning nobody reads.
 
 It is timestamps only. No file is read and nothing is hashed, so the check cannot say
 whether the symbol you asked about was the one that changed.
+
+### Imported languages
+
+A file an imported `.scip` names is checked too, whatever its extension and wherever it is,
+against the time that `.scip` was written rather than the time the index was built. So an
+edit to TypeScript after `scip-typescript` ran makes the next query exit 3:
+
+```
+!! INCOMPLETE INDEX - these results may be missing references.
+   stale index: 1 file(s) covered by an imported .scip changed after that .scip was written,
+   most recently 'web/src/app.ts' at 2026-09-25 10:12:03Z. Answers about it describe the code
+   as it was. Run its indexer again, then: vela import --replace /repo/web/index.scip
+```
+
+A file the `.scip` names that is no longer on disk is reported the same way, as
+`file(s) an imported .scip names are no longer on disk`.
+
+The clock is the `.scip`'s own modification time, read when it is imported. The import time
+would not do: `vela index` replays an unchanged `.scip` later than the edit, and that would
+make the edit look older than the index. The cost is one stat per imported document per
+query.
 
 ### Deletions and renames
 

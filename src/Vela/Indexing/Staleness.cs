@@ -78,11 +78,17 @@ public static class Staleness
     /// which is what an index built by `vela import` alone looks like, and the deletion
     /// check simply does not run.
     /// </param>
+    /// <param name="importedFiles">
+    /// The files each imported .scip names, from <see cref="ImportedSources.ReadCoveredFiles"/>,
+    /// each checked against the time its own .scip was written rather than against the
+    /// index's build time. Null or empty for an index nothing was imported into.
+    /// </param>
     public static HealthRecord Check(
         HealthRecord health,
         string projectRoot,
         string? indexPath = null,
-        IReadOnlyList<string>? indexedFiles = null)
+        IReadOnlyList<string>? indexedFiles = null,
+        IReadOnlyList<ImportedFile>? importedFiles = null)
     {
         var root = string.IsNullOrEmpty(projectRoot) ? null : Path.GetFullPath(projectRoot);
 
@@ -147,6 +153,32 @@ public static class Staleness
                     + $"on disk, the first of them '{missing.FirstMissing}'. Answers may name files that "
                     + "cannot be opened, and code that has moved is recorded under the path it moved from. "
                     + "Run vela index.");
+            }
+        }
+
+        // The languages vela did not index itself. The walk above watches .NET extensions
+        // only, so an edit to TypeScript imported from a .scip left every answer about it at
+        // exit 0 with no banner, although the index described the code before the edit.
+        if (importedFiles is { Count: > 0 })
+        {
+            var imported = ScanImported(root, importedFiles);
+
+            if (imported.ChangedCount > 0)
+            {
+                health = Degrade(health,
+                    $"stale index: {imported.ChangedCount} file(s) covered by an imported .scip changed after "
+                    + $"that .scip was written, most recently '{imported.NewestPath}' at {imported.NewestTime:u}. "
+                    + "Answers about it describe the code as it was. Run its indexer again, then: "
+                    + $"vela import --replace {imported.NewestSource}");
+            }
+
+            if (imported.MissingCount > 0)
+            {
+                health = Degrade(health,
+                    $"stale index: {imported.MissingCount} file(s) an imported .scip names are no longer on "
+                    + $"disk, the first of them '{imported.FirstMissing}'. Answers may name files that cannot "
+                    + "be opened. Run its indexer again, then: "
+                    + $"vela import --replace {imported.FirstMissingSource}");
             }
         }
 
@@ -222,6 +254,64 @@ public static class Staleness
         }
 
         return new MissingScan(count, first, checkedFiles);
+    }
+
+    /// <summary>
+    /// Which files named by an imported .scip changed after that .scip was written, and which
+    /// are no longer on disk.
+    ///
+    /// Every named file is checked, whatever its extension and wherever it is: the .scip
+    /// chose them, so each one is a file the index claims to describe. That is one stat per
+    /// imported document per query, the same cost per file as the deletion check above.
+    ///
+    /// The clock is the .scip's own write time, not the time it was imported. A file edited
+    /// after the indexer ran and before the import is newer than what the index holds, and
+    /// `vela index` replays an unchanged .scip at a later time than the edit, which would
+    /// otherwise make the edit look older than the index.
+    ///
+    /// The newest change is reported, ties broken on the path, and the first missing file
+    /// is the ordinally least, so the same tree gives the same sentence (Constraint 1).
+    /// </summary>
+    public static ImportedScan ScanImported(string root, IReadOnlyList<ImportedFile> files)
+    {
+        var full = Path.GetFullPath(root);
+        var changed = 0;
+        string? newestPath = null, newestSource = null;
+        var newestTime = DateTime.MinValue;
+        var missing = 0;
+        string? firstMissing = null, firstMissingSource = null;
+
+        foreach (var file in files)
+        {
+            var path = Path.Combine(full, file.RelativePath);
+
+            if (!File.Exists(path))
+            {
+                missing++;
+                if (firstMissing is null || string.CompareOrdinal(file.RelativePath, firstMissing) < 0)
+                    (firstMissing, firstMissingSource) = (file.RelativePath, file.Source);
+                continue;
+            }
+
+            DateTime modified;
+            try
+            {
+                modified = File.GetLastWriteTimeUtc(path);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                continue;
+            }
+
+            if (modified <= file.ScipModifiedAtUtc) continue;
+
+            changed++;
+            if (modified > newestTime
+                || (modified == newestTime && string.CompareOrdinal(file.RelativePath, newestPath) < 0))
+                (newestTime, newestPath, newestSource) = (modified, file.RelativePath, file.Source);
+        }
+
+        return new ImportedScan(changed, newestPath, newestTime, newestSource, missing, firstMissing, firstMissingSource);
     }
 
     /// <summary>
@@ -437,3 +527,17 @@ public readonly record struct StalenessScan(
 /// machine; a wall clock is.
 /// </summary>
 public readonly record struct MissingScan(int MissingCount, string? FirstMissing, int FilesChecked);
+
+/// <summary>
+/// What one pass over the files imported .scip files name found: how many changed after
+/// their .scip was written and the newest of them, how many are gone and the first of those,
+/// each with the .scip that names it, so the banner can say which import to redo.
+/// </summary>
+public readonly record struct ImportedScan(
+    int ChangedCount,
+    string? NewestPath,
+    DateTime NewestTime,
+    string? NewestSource,
+    int MissingCount,
+    string? FirstMissing,
+    string? FirstMissingSource);

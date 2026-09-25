@@ -24,10 +24,11 @@ public static class Schema
     /// each project was built from. 9 adds project_note and project_document, which are
     /// what let a project be SKIPPED without its problems and its documents being
     /// forgotten, and index_health.rebuild. 10 adds index_identity. 11 adds
-    /// occurrence.file_level. A future change bumps this and nothing else: there is no migration, because re-indexing takes seconds and
-    /// rebuilds from the truth rather than from a guess about what the old rows meant.
+    /// occurrence.file_level. 12 adds imported_source.scip_modified_at_utc. A future change
+    /// bumps this and nothing else: there is no migration, because re-indexing takes seconds
+    /// and rebuilds from the truth rather than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 11;
+    public const int Version = 12;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -256,12 +257,19 @@ public static class Schema
             -- documents and occurrences are what that import contributed, so a replay
             -- that comes back smaller is a fact a reader can check rather than one
             -- nobody can see.
+            --
+            -- scip_modified_at_utc is when the indexer wrote the .scip, read off the file
+            -- as it was imported. It is the freshness clock for every document that .scip
+            -- names: a file edited after it is newer than what the index holds for it. The
+            -- import time would not do, because `vela index` replays an unchanged .scip
+            -- and would move that time forward over an edit nobody has re-indexed.
             CREATE TABLE IF NOT EXISTS imported_source (
-                source          TEXT NOT NULL PRIMARY KEY,
-                imported_at_utc TEXT NOT NULL,
-                content_hash    TEXT NOT NULL,
-                documents       INTEGER NOT NULL,
-                occurrences     INTEGER NOT NULL
+                source               TEXT NOT NULL PRIMARY KEY,
+                imported_at_utc      TEXT NOT NULL,
+                content_hash         TEXT NOT NULL,
+                documents            INTEGER NOT NULL,
+                occurrences          INTEGER NOT NULL,
+                scip_modified_at_utc TEXT NOT NULL
             );
 
             -- WHAT EACH PROJECT WAS BUILT FROM. Nothing recorded this, so nothing could

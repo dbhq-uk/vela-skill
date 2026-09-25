@@ -426,7 +426,10 @@ public sealed record CachedIndex(string Path, string? SolutionPath, long Bytes, 
     /// </summary>
     private static bool HasReallyGone(string solutionPath)
     {
-        if (File.Exists(solutionPath)) return false;
+        // Directory.Exists as well, because the index of a repository with no solution is
+        // keyed on its `.git` entry, which is a directory in an ordinary clone. See
+        // RepositoryKey. Asking File.Exists alone called every such index an orphan.
+        if (File.Exists(solutionPath) || Directory.Exists(solutionPath)) return false;
 
         // Fully qualified: this record has a Path property of its own, and it is not
         // System.IO.Path.
@@ -451,7 +454,7 @@ public sealed record CachedIndex(string Path, string? SolutionPath, long Bytes, 
 
         // Asked again now the directory has answered, so a mount that finished coming up
         // between the two questions is not called gone on the strength of the first.
-        return !File.Exists(solutionPath);
+        return !File.Exists(solutionPath) && !Directory.Exists(solutionPath);
     }
 }
 

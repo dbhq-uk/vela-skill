@@ -149,6 +149,59 @@ public class SolutionDiscoveryTests
         Assert.DoesNotContain("NotThisOne", result.Output, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ARepositoryWithNoSolution_ImportsAndAnswersWithoutASolutionArgument()
+    {
+        // A repository whose only languages arrive through vela import has no solution, and
+        // the documentation told people to invent one: --solution whatever.sln on every
+        // command. Now the index is keyed on the repository.
+        using var cache = new TempCacheHome();
+        using var repository = new TempDirectory();
+        Directory.CreateDirectory(Path.Combine(repository.Path, ".git"));
+        var web = Path.Combine(repository.Path, "web");
+        Directory.CreateDirectory(web);
+        File.WriteAllText(Path.Combine(web, "site.ts"), "\n\n\nexport function greet() {}\n");
+        File.SetLastWriteTimeUtc(Path.Combine(web, "site.ts"), DateTime.UtcNow.AddHours(-1));
+
+        var scip = Path.Combine(repository.Path, "index.scip");
+        File.WriteAllBytes(scip, Google.Protobuf.MessageExtensions.ToByteArray(
+            ScipImportEndToEndTests.ForeignIndex(repository.Path, "web/site.ts", "greet")));
+
+        // Before any import there is nothing to answer from, and the error says what to pass.
+        var before = await InDirectory(web, "refs", "greet");
+        Assert.Equal(Program.ExitCannotAnswer, before.ExitCode);
+        Assert.Contains("No .sln or .slnx found", before.Output, StringComparison.Ordinal);
+
+        var imported = await InDirectory(web, "import", scip);
+        Assert.True(imported.ExitCode == 0, imported.Output);
+        Assert.Contains("keyed on the repository", imported.Output, StringComparison.Ordinal);
+
+        // From anywhere in the repository, with no --solution.
+        foreach (var directory in new[] { repository.Path, web })
+        {
+            var refs = await InDirectory(directory, "refs", "greet");
+            Assert.True(refs.ExitCode == 0, refs.Output);
+            Assert.Contains("web/site.ts", refs.Output, StringComparison.Ordinal);
+        }
+
+        Assert.Equal(0, (await InDirectory(repository.Path, "outline", "web/site.ts")).ExitCode);
+
+        // Importing again with --replace finds the same index.
+        Assert.Equal(0, (await InDirectory(repository.Path, "import", "--replace", scip)).ExitCode);
+
+        // The cache knows what the index is of, and does not take it for an orphan: the
+        // made-up solution the documentation used to suggest looked deleted, so the next
+        // `vela index` of anything else could have removed it.
+        var listing = await InDirectory(repository.Path, "cache");
+        Assert.Contains($"of the repository at {repository.Path} (no solution)", listing.Output, StringComparison.Ordinal);
+        Assert.DoesNotContain("NOT THERE", listing.Output, StringComparison.Ordinal);
+
+        // vela index has nothing to build here, and still says so.
+        var index = await InDirectory(repository.Path, "index");
+        Assert.Equal(Program.ExitCannotAnswer, index.ExitCode);
+        Assert.Contains("vela import builds an index keyed on the repository", index.Output, StringComparison.Ordinal);
+    }
+
     /// <summary>Swaps the fixture's .sln for a .slnx holding the same project, which is
     /// what `dotnet new sln` produces on an SDK 10 scaffold.</summary>
     private static string ReplaceSlnWithSlnx(FixtureSolution fx)

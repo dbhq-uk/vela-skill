@@ -45,6 +45,14 @@ public static class ProjectRoot
     }
 
     /// <summary>
+    /// The root of the git working tree a directory sits in, or null when it sits in none.
+    /// Unlike <see cref="ForSolutionDirectory"/> it does not fall back to the directory
+    /// itself, because the caller needs to know whether there is a repository at all.
+    /// </summary>
+    public static string? RepositoryRootOf(string directory) =>
+        FindRepositoryRoot(Path.GetFullPath(directory));
+
+    /// <summary>
     /// The root of the git working tree a directory sits in, or null when it sits in
     /// none.
     ///
