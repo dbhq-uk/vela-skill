@@ -5,141 +5,89 @@ description: 'Compiler-exact code search over a SCIP index - find where a symbol
 
 # vela
 
-Compiler-exact code search, over a SCIP index. .NET answers come from Roslyn's semantic model, so they are what the compiler believes rather than what a pattern matched; any other language reaches the same database through its own SCIP indexer, and the same verbs answer over both.
+Compiler-exact code search over a SCIP index. .NET answers come from Roslyn, other languages from their own indexers' `.scip` files. It never writes to the repository.
 
-Deterministic: no model calls, no network, and it never modifies the repository it indexes.
+## Which tool
 
-## When to use this instead of grep
-
-Use grep when the identifier is distinctive. `grep -w PerfumeService` returns thirty-two lines, costs nothing, and needs no index.
-
-Use vela when:
-
-- the name is ordinary - `Name`, `Status`, `Value`, `Id`, `Update`. Measured on a real solution, grep is 91 to 99% noise for these.
-- you need **callers**, not just textual matches
-- you need to know **what breaks** if you change something
-- the symbol might be referenced from a **`.cshtml` or `.razor`** file. grep finds the text but cannot tell you it binds to a specific property on a specific type, and tools that read only the files on disk skip these views entirely
-- grep returned more hits than you can read, which means the answer is now a context-window problem rather than a search problem
+- **grep** when the name is distinctive. It is free and needs no index.
+- **The LSP tool**, where your host has one, for code you have just edited and for "what implements this". It stays live after an edit, where vela needs a re-index, which takes minutes on a large solution.
+- **vela** for:
+  - ordinary names (`Name`, `Status`, `Id`), where grep is mostly noise and vela reports when a name is ambiguous
+  - references from `.cshtml` and `.razor` files
+  - callers, and what a change touches
+  - a survey of a clean tree before a change
+- **Not vela** in a repository with no .NET code and no `.scip` to import. There is nothing to index.
 
 ## Steps
 
-### 0. Check the vela command is installed
+### 0. Check the command is installed
 
 ```bash
 command -v vela
 ```
 
-The plugin and skills.sh installs copy this file and nothing else. They do not install the `vela` command. If `command -v vela` prints nothing, stop and tell the user what vela needs. Do not fall back to grep without saying so.
+Plugin and skills.sh installs copy this file, not the command. If it prints nothing, stop and tell the user rather than quietly falling back to grep. vela needs:
 
-- **The .NET SDK 10.0 or newer.** `dotnet --list-sdks` shows what is installed.
-- **The tool itself.** Clone `https://github.com/dbhq-uk/vela-skill` and run `./install.sh` from the clone. It builds vela and installs it as a .NET global tool.
-- **`~/.dotnet/tools` on `PATH`**, which is where .NET global tools go.
+- the .NET SDK 10.0 or newer
+- the tool itself: clone `https://github.com/dbhq-uk/vela-skill` and run `./install.sh`
+- `~/.dotnet/tools` on `PATH`
 
-### 1. Ensure an index exists
+### 1. Build the index
 
-**Restore the solution first** if it has never been restored: run `dotnet restore` (or `dotnet build`) in the solution directory. vela does not run a restore, and a project MSBuild cannot restore does not load.
+vela does not restore packages. Run `dotnet restore` first if the solution has never been built.
 
 ```bash
 vela index
 ```
 
-Builds the index for the solution `vela.json` names, or else the only `.sln` or `.slnx` in the current directory or the nearest directory above it, up to the repository root. If it cannot pick one it says why: pass `--solution <path>` to `vela index` and to every query verb after it. It costs about what a build costs: roughly 8 seconds on a scaffolded Razor Pages app, and about five minutes at 2.1GB peak on ScentVerdict, a real ten-project solution of 388,323 lines of C# with 334 Razor views, measured 30 July 2026. Expect it to scale with the solution rather than to match that figure. It is needed once, plus after any code change: the index is a snapshot, and every verb reports it as degraded once a watched file under the repository root is newer than it.
+vela uses the solution `vela.json` names, or else the only `.sln` or `.slnx` in this directory or the nearest one above it, up to the repository root. If it cannot pick one, pass `--solution <path>` to `vela index` and to every verb after it.
 
-A **deleted or renamed** file is caught too, and by a different route: the index records the files it was built from, and every query compares that record against the tree. Without it a rename was invisible - moving a file keeps its modification time, so the new path is not newer than the index - and every reference to the file kept answering at exit 0, naming a path that could not be opened.
+Indexing costs about what a build costs. Re-index after every code change: once a watched file is newer than the index, answers carry the stale banner. `vela index --incremental` rebuilds only what changed. Index without it before you delete or rename anything.
 
-**The watch is narrower than the index, so the absence of a banner is not proof the tree is unchanged.** What is watched is every `.cs`, `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`, `.slnx`, `.props` and `.targets` file under the repository root - the sources vela indexes, plus the project and solution files that decide what is compiled - and nothing under `bin`, `obj`, `.git`, `.vs`, `.idea`, `node_modules` or the index's own cache directory. A change anywhere else is invisible to the check: a checked-in generated artefact with another extension, a source file that only exists under an excluded directory, or a `Directory.Build.props` inside `obj`. If you have edited code yourself, or you know something ran that rewrites files, re-index rather than reading a quiet answer as confirmation the index is current.
+If a project fails to load or compile, vela says so. Anything that depended on it is missing from the index.
 
-The index is rooted at the **repository root** - the working tree the solution sits in, or the solution's own directory when it is in no repository. So a `repo/src/App.sln` layout still covers `repo/tests/`, every path you are given is relative to that root, and that is the form `outline` expects back.
-
-The solution must build. If a project fails to load, or compiles with errors, vela says so - do not proceed as though the index were complete. Compilation errors matter more than they look: every reference that depends on a type the compiler could not resolve is simply absent from the index.
-
-`vela index` may print a plain line such as `1 document(s) contributed by a NuGet package or the .NET SDK were not indexed`. That is not a warning and has no `!!` banner: those files live in the NuGet package cache or the .NET installation, none of the repository's code is missing, and the exit code stays 0. Do not treat it as a gap. Anything vela cannot attribute to a package or the SDK is treated as a gap instead, and arrives with the banner and exit 3.
-
-Add `--stats` to see what was indexed, including how many Razor views were covered and the path of every document that was left out.
-
-An interrupted `vela index` is safe: the new index is built beside the old one and renamed over it at the end, so Ctrl-C, an OOM kill or a full disk leaves the index that was already there byte-identical and still answering.
-
-`vela cache` lists every index held, with the solution each is of and its size, and `vela cache clear --all | --orphaned | --solution <path>` removes them. `vela index` also removes an index whose solution has been deleted - deleted, not merely out of reach: if the directory that held it will not answer, as an unmounted drive does not, the index stays - and, above a 2GB total, the least recently built - never one built in the last week, never the one it just wrote, and never one whose removal would leave the cache over budget anyway. It says which and why on the run that does it. `VELA_CACHE_MAX_BYTES=0` turns all of that off. No query ever removes anything.
-
-**There is a `--incremental` flag. It is opt-in, and a plain `vela index` is the safe choice whenever you are not sure.** `vela index --incremental` rebuilds only the projects whose inputs changed plus every project downstream of them, reusing the rest. A full rebuild cannot be stale, because it reads everything; an incremental one is a claim that what it skipped has not changed. What it saves depends entirely on where the edit was: measured on a real ten-project solution, nothing changed took 11.9s against a 158.1s full index, a one-line edit to a leaf project took 22.2s, and a one-line edit to the project everything else depends on rebuilt all ten and took 153.9s, which is a full rebuild and no saving at all. **It helps most when you edit a leaf, and not at all when you edit the bottom of the dependency graph.**
-
-It refuses rather than guesses. If there is no index yet, if the schema changed, if a different build of vela wrote the index, if the set of projects changed, if the change reaches every project, or if anything at all goes wrong deciding, it prints `Falling back to a full rebuild:` with the reason and rebuilds everything. "A different build" means a different binary and not a different version number, so the first incremental run after you upgrade, rebuild or relocate vela is a full one - relocate included, because vela's own build embeds its source paths, so identical source built at another absolute path is a different binary. That is a good outcome, not a failure. A project that was skipped keeps saying it does not compile, so the banner cannot go quiet on you. What it cannot see is an assembly rebuilt in place at the same path and version, because references are compared by path rather than content - so after anything outside the solution was rebuilt, index without the flag. **If you are about to delete or rename on the strength of an answer, index without the flag first.**
-
-If the repository has a `vela.json`, `vela index` says so and lists the jobs it declares. A job whose indexer is not `vela` is a language vela cannot produce itself: it names where that indexer's `.scip` is expected, and until you run the indexer and `vela import` that file, the index is missing that language, every answer carries the banner and the exit code is 3. That is a real gap, not noise - the language really is absent - so either import it or say plainly that the answer covers only the .NET half. `vela index` will also print which languages no job covers at all; that line is information and never raises the exit code, because vela was never going to index them.
-
-The index is a cache, and it carries the schema version of the vela that wrote it. If you upgrade vela and the shape of the index has changed, every verb refuses to answer and tells you to re-index rather than querying a database it cannot read. Re-index; there is nothing else to do.
-
-### 2. Establish shape before pulling content
+### 2. Add other languages
 
 ```bash
-vela outline <file>
+vela import path/to/index.scip             # first time
+vela import --replace path/to/index.scip   # after re-running that indexer
 ```
 
-Takes a path relative to the repository root, and returns the symbol tree without reading the file. Do this first: it is far cheaper than reading a 900-line source file to find out what is in it.
+Run `vela index` first, then import. A later `vela index` replays the imports. If `vela index` names a `.scip` that a `vela.json` job expects, run that indexer and import it: until then every answer carries the banner.
 
-### 3. Ask the specific question
+### 3. Ask
 
 ```bash
-vela def    <symbol>          # declaration, signature, source span
-vela refs   <symbol>          # every usage, grouped by file
-vela impact <symbol>          # direct callers, one hop
-vela find   <pattern>         # symbol search by name
+vela outline <file>    # what a file defines, cheaper than reading it
+vela def     <symbol>  # where it is declared
+vela refs    <symbol>  # every use, grouped by file
+vela impact  <symbol>  # direct callers, one hop
+vela find    <pattern> # discover a name by prefix
 ```
 
-Symbols can be given bare (`Status`) or qualified (`Perfume.Status`). `def`, `refs` and `impact` match a **whole dotted segment**, case-sensitively: `Status` matches `App.Models.Perfume.Status` and does **not** match `HttpStatus`, `OrderStatus` or `status`. So a bare name is safe to use, and **vela will tell you when the name is ambiguous**: if several distinct symbols really do end in that segment, the answer names each one with its own count and suggests a longer name that picks one out.
+`def`, `refs` and `impact` match a whole dotted segment, case-sensitively. `Status` matches `App.Models.Perfume.Status` but not `HttpStatus`. Give more of the name (`Perfume.Status`) to narrow it. Paths are relative to the repository root, which is the form `outline` takes.
 
-A method matches with or without its parameter list (`Publish` or `PerfumeService.Publish`), and a local or a parameter matches by its own name rather than by the name of the method or type it is declared in: `refs PerfumeService` finds the type and its constructor, not the variables that constructor is handed, and `refs Get` finds the methods rather than every local declared inside one.
+## Reading the answer
 
-Generic type arguments are not part of a name either, so a bare name reaches a generic whatever it was constructed with: `refs ILogger` finds every `ILogger<T>` in the solution, and `refs RunWithAuditAsync` finds every instantiation of the method as well as its declaration. A type argument is not counted as an occurrence of the symbol it names, so `ILogger<PerfumeService>` is an occurrence of `ILogger` and not of `PerfumeService`, which has its own occurrence at its own position.
-
-`find` is the exception: it searches name tokens with a trailing prefix, so `find Stat` finds `Status` where `refs Stat` finds nothing. Use `find` to discover a name and the other three to ask about it.
-
-## Reading the output
-
-Results are grouped by file and shaped for a context window rather than a terminal.
-
-**Razor and Blazor hits are reported against the originating `.cshtml` or `.razor` file**, not the generated code, so the location is one you can open and edit. A Blazor component's definition and its uses by tag (`<Badge />`) print `file` instead of a line, because the Razor compiler records none: search that file for the tag.
-
-**Some locations are not on disk.** The Razor generator's output is compiled but never written out, so `refs` and `impact` leave it out by default and print a line saying how much they left out. Pass `--include-generated` if you need it. `def` and `outline` always include it, marked `(generated)` - for some Razor page members the generated code holds the only declaration there is, and the marker is there to tell you the path cannot be opened.
-
-**`impact` names direct callers only, one hop.** A reference from a Razor view or a top level statement sits inside no recorded body, so no caller can be named for it. `impact` prints how many such references there are after the results, even when it has found other callers. Read that line before sizing a change, and run `refs` to see them.
-
-**A total that spans several symbols says so.** Because matching is by whole dotted segment, `refs Perfume` on a real solution answered 3,156 results on 30 July 2026 - the entity, the entity's constructor, an enum member called `Perfume`, and a property of an unrelated response type, all merged into one number. Every hit was real; the total counted nothing that exists. So when a pattern matches more than one distinct symbol, `def`, `refs` and `impact` print an ambiguity block after the results:
-
-```
-'Perfume' is ambiguous: the 3156 result(s) above span 25 distinct symbols:
-    1977  ScentVerdict.Data.Entities.Perfume
-     381  ScentVerdict.Data.Enums.EntityType.Perfume
-     ...
-     144  (+15 further symbol(s))
-To ask about one of them, give more of its name: 'Entities.Perfume' matches
-ScentVerdict.Data.Entities.Perfume and none of the others.
-```
-
-**Never size a change from a total that carries that block.** Ask again with the longer name it suggests, then use that answer. Nothing is filtered out to produce the block - the same results come back either way - it only says what they span. At most ten symbols are listed by name and the rest are summarised into one line, so the counts always add up to the reported total. `impact` labels its numbers differently, because its rows are the callers rather than the symbol you asked about.
-
-The block describes the answer above it, not the index: the count is of the symbols these results span, and `refs` and `impact` leave generated code out by default. So its absence means the results above are all occurrences of one symbol - which is a statement about this answer. If the answer also reports further results in generated code, a second symbol of that name may be living there, uncounted; ask again with `--include-generated` before treating the name as resolved. `outline` never prints the block, since its argument is a file path and a file defines many symbols by nature.
-
-One further note appears where the block does not. Where an answer is all of one symbol but covers several stored names that differ only inside their type arguments, vela says so in a sentence. That is either one generic used several ways or overloads no pattern can select between, so there is nothing to narrow to - the note exists so a single-symbol answer never silently stands for more than one signature.
+- **Razor and Blazor hits name the `.cshtml` or `.razor` file**, so you can open them. A Blazor component's definition and its uses by tag (`<Badge />`) print `file` instead of a line, because the Razor compiler records none. Search that file for the tag.
+- **Generated code** is left out of `refs` and `impact` by default. A line says how much, and `--include-generated` shows it. `def` and `outline` show it, marked `(generated)`.
+- **An ambiguity block** after the results means the total spans several symbols. Never size a change from that total. Ask again with the longer name it suggests.
+- **`impact` names direct callers only**, one hop. A reference from a Razor view or a top level statement has no caller, and `impact` prints how many there are. Run `refs` to see them, and `impact` on a caller to go further.
 
 ## The rule that matters most
 
 **An empty result is not proof that nothing uses the symbol.**
 
-If vela reports that a project failed to load, that a project did not compile, that the index is stale relative to the working tree, or that freshness could not be checked at all - because the root the index was built against has moved or a directory under it could not be read - treat the answer as incomplete and say so. All of them print a banner above the results and exit 3. Do not delete or rename a symbol on the strength of an empty reference list from a degraded index. vela is built to report its own gaps loudly; honour that signal rather than reading past it.
+A banner starting `!! INCOMPLETE INDEX`, with exit code 3, means the index is missing code, out of date, or could not be checked, and it says which. Treat the answer as incomplete and say so. Never delete or rename on an empty answer from such an index. A quiet answer is not proof either: the freshness check watches .NET source and project files only. If you have edited code, re-index.
 
-Every verb also explains an empty answer rather than printing a bare zero, and the explanation distinguishes "nothing of that name is indexed" from "it is indexed and there is nothing to report" and from "it is indexed and every occurrence is in generated code". Read it: they mean different things, and only the first is about a name the codebase does not have.
+Every empty answer says which absence it is: no such name, nothing to report, or only in generated code. Read that line.
 
 ## What it does not do
 
-- It does not edit, refactor or rename. It reports.
-- It does not do semantic or similarity search. The index is exact.
-- It does not answer "what implements this interface". That is a SCIP relationship, and vela does not emit those yet.
-- It does not cover F#. Roslyn covers C# and Visual Basic only.
-- It does not run other languages' indexers. It imports their `.scip` output.
+- It does not edit, refactor or rename.
+- It does not answer "what implements this". Use the LSP tool.
+- It does not cover F#, and it does not run other languages' indexers.
 
-## Where the detail is
+## More detail
 
-Every flag, exit code, output line and `vela.json` property is in
-[docs/reference.md](../../docs/reference.md). The full documentation index is
-[docs/README.md](../../docs/README.md).
+Every flag, output line, exit code and `vela.json` property: https://github.com/dbhq-uk/vela-skill/blob/main/docs/reference.md. All documentation: https://github.com/dbhq-uk/vela-skill/blob/main/docs/README.md.
