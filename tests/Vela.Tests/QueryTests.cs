@@ -1852,7 +1852,9 @@ public class QueryTests
 
         var output = OutputWriter.Render(hits, new HealthRecord(DateTime.UtcNow, null, false, null));
 
-        Assert.Matches(@"(?m)^\s+file\s+ref  Shop\.Components\.Badge$", output);
+        // \r? because the output is written with the platform's line ending, and in
+        // multiline mode $ matches before \n only.
+        Assert.Matches(@"(?m)^\s+file\s+ref  Shop\.Components\.Badge\r?$", output);
         Assert.DoesNotContain("1:1", output, StringComparison.Ordinal);
         Assert.Contains("9:8", output, StringComparison.Ordinal);
         Assert.Contains("file marks a use", output, StringComparison.Ordinal);
