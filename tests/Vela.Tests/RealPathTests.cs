@@ -140,17 +140,13 @@ public class RealPathTests
         // that runs alone, and it is pinned here so the two answers cannot straddle
         // another test changing it.
         var cacheRoot = Path.Combine(Path.GetTempPath(), "vela-cache-" + Guid.NewGuid().ToString("N")[..8]);
-        var previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
         string asCreated, asShouted;
-        try
+        using (CacheEnvironment.Save()
+                   .With(CacheEnvironment.VelaCacheHome, null)
+                   .With(CacheEnvironment.XdgCacheHome, cacheRoot))
         {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", cacheRoot);
             asCreated = IndexPaths.ForSolution(solution);
             asShouted = IndexPaths.ForSolution(shouted);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", previous);
         }
 
         Assert.Equal(asCreated, asShouted);

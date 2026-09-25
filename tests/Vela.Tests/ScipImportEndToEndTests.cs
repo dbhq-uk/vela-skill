@@ -11,7 +11,7 @@ using Xunit;
 
 namespace Vela.Tests;
 
-// `vela import` resolves the index path from XDG_CACHE_HOME, which is process-wide, so
+// `vela import` resolves the index path from VELA_CACHE_HOME, which is process-wide, so
 // this class shares the non-parallel collection with everything else that touches it.
 [Collection(EnvironmentSensitive.Name)]
 public class ScipImportEndToEndTests
@@ -919,26 +919,5 @@ public class ScipImportEndToEndTests
 
         var exitCode = await Program.BuildRootCommand().Parse(args).InvokeAsync(configuration);
         return (exitCode, writer.ToString());
-    }
-
-    /// <summary>Points XDG_CACHE_HOME at a disposable directory, and puts it back.</summary>
-    private sealed class TempCacheHome : IDisposable
-    {
-        private readonly string? previous;
-        private readonly string path;
-
-        public TempCacheHome()
-        {
-            path = Path.Combine(Path.GetTempPath(), "vela-import-" + Guid.NewGuid().ToString("N")[..8]);
-            Directory.CreateDirectory(path);
-            previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", path);
-        }
-
-        public void Dispose()
-        {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", previous);
-            try { Directory.Delete(path, recursive: true); } catch { /* temp dir, best effort */ }
-        }
     }
 }

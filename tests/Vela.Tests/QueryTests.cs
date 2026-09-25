@@ -3,12 +3,13 @@ using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Vela.Indexing;
 using Vela.Query;
+using Vela.Tests.Fixtures;
 using Xunit;
 
 /// <summary>
-/// Tests that mutate process-wide state (XDG_CACHE_HOME) belong to this collection so
-/// they can never run beside each other. xUnit runs collections in parallel by
-/// default, and an environment variable is shared by every test in the process.
+/// Tests that mutate process-wide state (VELA_CACHE_HOME, XDG_CACHE_HOME) belong to this
+/// collection so they can never run beside each other. xUnit runs collections in parallel
+/// by default, and an environment variable is shared by every test in the process.
 /// </summary>
 [CollectionDefinition(EnvironmentSensitive.Name, DisableParallelization = true)]
 public class EnvironmentSensitive
@@ -1485,8 +1486,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1538,8 +1538,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1565,8 +1564,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1594,8 +1592,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1672,8 +1669,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1754,8 +1750,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1848,8 +1843,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1889,8 +1883,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1913,8 +1906,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1940,8 +1932,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -1968,8 +1959,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2006,8 +1996,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2038,8 +2027,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2065,8 +2053,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2097,8 +2084,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2130,8 +2116,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2176,8 +2161,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2216,8 +2200,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2245,8 +2228,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2307,8 +2289,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2334,8 +2315,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2367,8 +2347,7 @@ public class QueryTests
         Directory.CreateDirectory(Path.GetDirectoryName(source)!);
         File.WriteAllText(source, "public class Perfume { }");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2428,8 +2407,7 @@ public class QueryTests
         Directory.CreateDirectory(Path.GetDirectoryName(test)!);
         File.WriteAllText(test, "public class PerfumeTests { }");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var indexPath = IndexPaths.ForSolution(solution);
         IndexPaths.EnsureDirectoryExists(indexPath);
@@ -2468,8 +2446,7 @@ public class QueryTests
         var solution = Path.Combine(repo.Path, "App.sln");
         File.WriteAllText(solution, "");
 
-        using var cache = new TempDirectory();
-        using var _ = new CacheHome(cache.Path);
+        using var cache = new TempCacheHome();
 
         var result = await InvokeAsync("refs", "Perfume.Status", "--solution", solution);
 
@@ -2933,19 +2910,5 @@ public class QueryTests
         {
             try { Directory.Delete(Path, recursive: true); } catch { /* temp dir, best effort */ }
         }
-    }
-
-    /// <summary>Points XDG_CACHE_HOME somewhere disposable, and puts it back.</summary>
-    private sealed class CacheHome : IDisposable
-    {
-        private readonly string? _previous;
-
-        public CacheHome(string path)
-        {
-            _previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", path);
-        }
-
-        public void Dispose() => Environment.SetEnvironmentVariable("XDG_CACHE_HOME", _previous);
     }
 }

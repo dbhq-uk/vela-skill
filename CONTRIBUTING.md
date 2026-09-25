@@ -53,6 +53,9 @@ vela index --stats     # in a dotnet new webapp scaffold
 - Tests are hermetic: no network for the tool, throwaway solutions in temp directories. The
   fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
   NuGet cache needs network for test setup.
+- A test that indexes, imports or queries through the CLI uses `Fixtures/TempCacheHome`.
+  It sets `VELA_CACHE_HOME`, which outranks `XDG_CACHE_HOME`, so running the suite never
+  writes to or clears your own index cache, whatever your shell has set.
 - Documentation follows [Diataxis](https://diataxis.fr): a page is a tutorial, a how-to
   guide, reference, or explanation, and mixing modes on one page is the standard failure.
   Put a new page in [docs/](docs/) under the mode it belongs to and add it to

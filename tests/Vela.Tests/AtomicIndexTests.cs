@@ -19,7 +19,7 @@ namespace Vela.Tests;
 /// These tests drive the real command against a real solution and inject a real write
 /// failure, because the property is about what is on disk after something went wrong and
 /// nothing short of the filesystem can say that. Indexing through the CLI resolves the
-/// index path from XDG_CACHE_HOME, which is process-wide, so this class shares the
+/// index path from VELA_CACHE_HOME, which is process-wide, so this class shares the
 /// non-parallel collection with every other test that touches it.
 /// </summary>
 [Collection(EnvironmentSensitive.Name)]
@@ -295,26 +295,5 @@ public class AtomicIndexTests
 
         var exitCode = await Program.BuildRootCommand().Parse(args).InvokeAsync(configuration);
         return (exitCode, writer.ToString());
-    }
-
-    /// <summary>Points XDG_CACHE_HOME at a disposable directory, and puts it back.</summary>
-    private sealed class TempCacheHome : IDisposable
-    {
-        private readonly string? _previous;
-        private readonly string _path;
-
-        public TempCacheHome()
-        {
-            _path = Path.Combine(Path.GetTempPath(), "vela-atomic-" + Guid.NewGuid().ToString("N")[..8]);
-            Directory.CreateDirectory(_path);
-            _previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", _path);
-        }
-
-        public void Dispose()
-        {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", _previous);
-            try { Directory.Delete(_path, recursive: true); } catch { /* temp dir, best effort */ }
-        }
     }
 }
