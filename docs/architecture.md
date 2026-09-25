@@ -23,7 +23,7 @@ It differs from Sourcegraph's `scip-dotnet` in two deliberate ways:
 
 - **It iterates the compilation's syntax trees**, including source-generated documents,
   rather than `project.Documents`. This is what buys Razor and Blazor. See
-  [Why Razor works here](#why-razor-works-here-and-nowhere-else).
+  [Why Razor works here](#why-razor-works-here).
 - **It records enclosing ranges**, so `impact` is a stored edge rather than an inference.
 
 Both are upstreamable. The first
@@ -89,21 +89,26 @@ tool that costs a gigabyte to have installed.
 **Consuming `scip-dotnet` unmodified.** It is missing both of the things vela exists to
 provide.
 
-## Why Razor works here and nowhere else
+## Why Razor works here
 
 Razor views and Blazor components never exist as files Roslyn reads from disk. The Razor
 source generator turns each `.cshtml` and `.razor` into C# and hands it straight to the
 compilation, so those documents live behind `Project.GetSourceGeneratedDocumentsAsync`.
 
-Every general-purpose code-intelligence tool iterates the files on disk and therefore skips
-them. Checked directly rather than inferred:
+A tool that iterates the files on disk skips them. Some tools reach Razor another way, and
+the difference is where the answer comes from:
 
-| Tool | Stars | Indexes `.cshtml` / `.razor` |
-|---|---|---|
-| CodeGraph | 63k | no |
-| codebase-memory-mcp | 36k | no |
-| Serena | 27k | no, the matcher is `.cs` only (`ls_config.py:374`) |
-| Sourcegraph `scip-dotnet` | 32 | **no**, verified by indexing a real solution |
+| Tool | `.cshtml` / `.razor` |
+|---|---|
+| Sourcegraph `scip-dotnet` | **not indexed**, verified by indexing a real solution |
+| Serena | not indexed: its C# matcher is `.cs` only (`ls_config.py:374`) |
+| codebase-memory-mcp | not indexed |
+| CodeGraph | a Razor extractor since June 2026 that works by pattern, not through the compiler |
+| csharp-ls | resolved through the compiler behind `--features razor-support`, by a running language server |
+| Roslyn language server | Razor cohosting from 5.8, by a running language server |
+
+vela is the one that writes compiler-resolved Razor and Blazor references into a saved
+index, which answers with no server running.
 
 For `scip-dotnet` the cause is one line, `ScipProjectIndexer.cs:110`:
 

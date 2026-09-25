@@ -1,6 +1,6 @@
 {
   "name": "vela",
-  "description": "Compiler-exact code search for Claude Code and Codex - where a symbol is defined, every reference, who calls it, and what a change breaks. It speaks SCIP, so one set of verbs answers across a whole repository: .NET is indexed natively through Roslyn, including the Razor Pages, MVC views and Blazor components that never exist as files on disk and that every other tool therefore skips, and any other language reaches the same database through its own SCIP indexer. Deterministic: no model calls, no network, and it never modifies the repository it indexes.",
+  "description": "Compiler-exact code search for Claude Code and Codex - where a symbol is defined, every reference, who calls it, and what a change breaks. It speaks SCIP, so one set of verbs answers across a whole repository: .NET is indexed natively through Roslyn, including the Razor Pages, MVC views and Blazor components that never exist as files on disk, with every reference resolved by the compiler into a saved index, and any other language reaches the same database through its own SCIP indexer. Deterministic: no model calls, no network, and it never modifies the repository it indexes.",
   "author": {
     "name": "DBHQ",
     "email": "dan@dbhq.uk"

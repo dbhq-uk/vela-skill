@@ -139,9 +139,10 @@ column 12, and vela knows it binds to `ErrorModel.ShowRequestId` and not to anyt
 of that name. The hit is reported against the `.cshtml` you can open, not against the
 generated C# under `obj/` that nobody can.
 
-That is the thing nothing else does. Sourcegraph's own Roslyn-based `scip-dotnet` indexes
-this same app and finds zero `.cshtml` documents. So does every general-purpose
-code-intelligence tool for agents.
+That is the part most tools miss. Sourcegraph's own Roslyn-based `scip-dotnet` indexes
+this same app and finds zero `.cshtml` documents, because it reads the files on disk and
+the view's C# is never one of them. vela reads the compilation, and the answer sits in an
+index you can query with no server running.
 
 ## That is the tutorial
 
