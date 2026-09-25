@@ -27,7 +27,7 @@ namespace Vela.Tests;
 /// moment somebody runs one is the moment they are most likely to be about to use another
 /// index.
 ///
-/// Indexing through the CLI resolves the cache directory from XDG_CACHE_HOME, which is
+/// Indexing through the CLI resolves the cache directory from VELA_CACHE_HOME, which is
 /// process-wide, so this class shares the non-parallel collection with every other test
 /// that touches it.
 /// </summary>
@@ -484,26 +484,5 @@ public class IndexCacheTests
             Environment.SetEnvironmentVariable("VELA_CACHE_MAX_BYTES", value);
 
         public void Dispose() => Environment.SetEnvironmentVariable("VELA_CACHE_MAX_BYTES", _previous);
-    }
-
-    /// <summary>Points XDG_CACHE_HOME at a disposable directory, and puts it back.</summary>
-    private sealed class TempCacheHome : IDisposable
-    {
-        private readonly string? _previous;
-        private readonly string _path;
-
-        public TempCacheHome()
-        {
-            _path = Path.Combine(Path.GetTempPath(), "vela-cache-" + Guid.NewGuid().ToString("N")[..8]);
-            Directory.CreateDirectory(_path);
-            _previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", _path);
-        }
-
-        public void Dispose()
-        {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", _previous);
-            try { Directory.Delete(_path, recursive: true); } catch { /* temp dir, best effort */ }
-        }
     }
 }

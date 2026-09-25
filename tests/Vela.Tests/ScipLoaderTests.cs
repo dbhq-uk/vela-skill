@@ -68,18 +68,17 @@ public class ScipLoaderTests : IClassFixture<HarvestedWebApp>
         using var fxB = FixtureSolution.CreateEmptySolution();
 
         var cacheRoot = Path.Combine(Path.GetTempPath(), "vela-cache-" + Guid.NewGuid().ToString("N")[..8]);
-        var previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
         string pathA1, pathA2, pathB;
-        try
+        // VELA_CACHE_HOME outranks XDG_CACHE_HOME, so it is cleared for the call: set in
+        // the shell running the suite, it would answer instead, and the two files below
+        // would be written into that real directory.
+        using (CacheEnvironment.Save()
+                   .With(CacheEnvironment.VelaCacheHome, null)
+                   .With(CacheEnvironment.XdgCacheHome, cacheRoot))
         {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", cacheRoot);
             pathA1 = IndexPaths.ForSolution(fxA.SolutionPath);
             pathA2 = IndexPaths.ForSolution(fxA.SolutionPath);
             pathB = IndexPaths.ForSolution(fxB.SolutionPath);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", previous);
         }
 
         Assert.Equal(pathA1, pathA2);
@@ -124,8 +123,9 @@ public class ScipLoaderTests : IClassFixture<HarvestedWebApp>
         // sibling directory that merely shares a string prefix with the solution
         // root (e.g. "/repo-backup" against "/repo").
         using var fx = FixtureSolution.CreateEmptySolution();
-        var previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
-        try
+        // VELA_CACHE_HOME outranks XDG_CACHE_HOME, so it is cleared or a value in the
+        // shell running the suite would be the one checked.
+        using (CacheEnvironment.Save().With(CacheEnvironment.VelaCacheHome, null))
         {
             // Exactly the solution directory, with a trailing separator: must be
             // caught, not just a strict subdirectory.
@@ -142,10 +142,6 @@ public class ScipLoaderTests : IClassFixture<HarvestedWebApp>
             Environment.SetEnvironmentVariable("XDG_CACHE_HOME", fx.Root.TrimEnd(Path.DirectorySeparatorChar) + "-backup");
             var siblingPath = IndexPaths.ForSolution(fx.SolutionPath);
             Assert.False(string.IsNullOrEmpty(siblingPath));
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", previous);
         }
     }
 

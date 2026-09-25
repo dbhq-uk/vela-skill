@@ -19,7 +19,7 @@ namespace Vela.Tests;
 /// These tests drive the real commands with the real exception handler in place, which is
 /// what was never exercised: the suite disables that handler, so the production path was
 /// only ever reached by a user. They share the non-parallel collection with every other
-/// test that resolves an index through XDG_CACHE_HOME.
+/// test that resolves an index through VELA_CACHE_HOME.
 /// </summary>
 [Collection(EnvironmentSensitive.Name)]
 public class UnreadableIndexTests
@@ -182,26 +182,5 @@ public class UnreadableIndexTests
 
         var exitCode = await Program.BuildRootCommand().Parse(args).InvokeAsync(configuration);
         return (exitCode, writer.ToString());
-    }
-
-    /// <summary>Points XDG_CACHE_HOME at a disposable directory, and puts it back.</summary>
-    private sealed class TempCacheHome : IDisposable
-    {
-        private readonly string? _previous;
-        private readonly string _path;
-
-        public TempCacheHome()
-        {
-            _path = Path.Combine(Path.GetTempPath(), "vela-unreadable-" + Guid.NewGuid().ToString("N")[..8]);
-            Directory.CreateDirectory(_path);
-            _previous = Environment.GetEnvironmentVariable("XDG_CACHE_HOME");
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", _path);
-        }
-
-        public void Dispose()
-        {
-            Environment.SetEnvironmentVariable("XDG_CACHE_HOME", _previous);
-            try { Directory.Delete(_path, recursive: true); } catch { /* temp dir, best effort */ }
-        }
     }
 }
