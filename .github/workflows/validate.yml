@@ -7,7 +7,7 @@ name: Validate
 #
 # workflow_dispatch is the escape hatch that filter creates the need for: with
 # push filtered to main, a branch without a pull request open cannot be run at
-# all, so `gh workflow run CI --ref <branch>` is the way to check one before
+# all, so `gh workflow run Validate --ref <branch>` is the way to check one before
 # asking for review.
 on:
   push:
@@ -149,3 +149,59 @@ jobs:
         run: |
           find . -name '*.sh' -not -path '*/.venv/*' -print0 \
             | xargs -0 -r shellcheck -S warning
+
+  # Nothing used to run the installers, so `./install.sh` failing from the
+  # repository root - which is how the README says to run it - was only found by
+  # hand, weeks after it broke. This runs both installers for real, from the
+  # repository root, under a throwaway HOME, and checks what they leave behind:
+  # the skill where Claude Code and Codex look for it, and a vela built from this
+  # very commit rather than one already on the machine.
+  #
+  # Linux only. The installers are bash, and the three-OS matrix above already
+  # proves the tool builds and passes on each platform.
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Cache NuGet packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+      - name: Run install.sh and install-codex.sh from the repository root
+        run: |
+          # The package cache stays where actions/cache put it; everything else the
+          # installers touch lands in the throwaway HOME.
+          export NUGET_PACKAGES="$HOME/.nuget/packages"
+          HOME="$(mktemp -d)"
+          export HOME
+          export PATH="$HOME/.dotnet/tools:$PATH"
+
+          ./install.sh
+          ./install-codex.sh
+
+          test -f "$HOME/.claude/skills/vela/SKILL.md" \
+            || { echo "install.sh did not link the skill into ~/.claude/skills"; exit 1; }
+          test -f "$HOME/.codex/skills/vela/SKILL.md" \
+            || { echo "install-codex.sh did not install the skill into ~/.codex/skills"; exit 1; }
+
+          installed="$(command -v vela)"
+          case "$installed" in
+            "$HOME/.dotnet/tools/vela") ;;
+            *) echo "vela resolves to $installed, not the one the installer put in $HOME"; exit 1 ;;
+          esac
+
+          version="$(vela --version)"
+          commit="$(git rev-parse --short HEAD)"
+          echo "vela --version: $version"
+          echo "commit:         $commit"
+          case "$version" in
+            *"+$commit"*) ;;
+            *) echo "the installed vela was not built from this commit"; exit 1 ;;
+          esac
