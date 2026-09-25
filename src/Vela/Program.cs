@@ -78,6 +78,18 @@ public static class Program
     public static Task<int> Main(string[] args) =>
         BuildRootCommand().Parse(args).InvokeAsync();
 
+    /// <summary>
+    /// Runs inside <c>vela index</c> after the workspace has loaded and before anything is
+    /// harvested. Null except in one test, which uses it to edit a source file at exactly
+    /// that point: an edit made while an index is being built has to leave that index
+    /// stale, and a timer racing a harvest cannot land an edit there reliably.
+    ///
+    /// An <see cref="AsyncLocal{T}"/> rather than a plain static, so a hook set by one test
+    /// reaches only the run that test starts, and never an index another test is building
+    /// in parallel.
+    /// </summary>
+    internal static readonly AsyncLocal<Func<Task>?> AfterWorkspaceLoadForTesting = new();
+
     public static RootCommand BuildRootCommand()
     {
         var root = new RootCommand("Compiler-exact code search for .NET.");
@@ -350,7 +362,22 @@ public static class Program
                 // build's database is a precondition violation, not an update.
                 IndexPaths.EnsureDirectoryExists(path);
 
+                // The instant the index claims to describe the tree at, taken BEFORE the
+                // workspace reads a single file. Staleness calls a watched file stale when
+                // its mtime is later than this, so the clock has to be read before the
+                // harvest rather than after it. Read afterwards, as it was until 25 Sep 2026,
+                // a file edited while the harvest ran was older than the recorded time and
+                // counted as fresh, although the index might hold the text from before the
+                // edit. On a large solution that window is minutes long, and queries answered
+                // from the old text at exit 0 with no banner. Read here, an edit made during
+                // the run is newer than the index and raises the banner, which is the right
+                // answer: nobody can say whether the index holds that edit or not.
+                var builtAtUtc = DateTime.UtcNow;
+
                 var load = await Vela.Harvest.WorkspaceLoader.LoadAsync(solution, cancellationToken);
+
+                if (AfterWorkspaceLoadForTesting.Value is { } afterLoad)
+                    await afterLoad();
 
                 // Stop here when there is no solution to index. Everything below is rooted
                 // at the solution's own directory, and the empty fallback Roslyn hands back
@@ -391,7 +418,7 @@ public static class Program
 
                 if (rebuild is null)
                 {
-                    health = BuildHealthRecord(index, load.Failures);
+                    health = BuildHealthRecord(index, load.Failures, builtAtUtc);
 
                     // A job root that is not there can never be settled by an import, so it
                     // belongs in the indexing pass's own verdict, which this run rewrites: fix
@@ -511,7 +538,10 @@ public static class Program
                         // full rebuild moves this same timestamp without reading one of those
                         // either, so neither mode is blinder than the other. Documented in
                         // reference.md under --incremental.
-                        var builtAtUtc = DateTime.UtcNow;
+                        //
+                        // The instant itself is the one taken before the workspace was loaded,
+                        // for the same reason as on the full path: an edit made during this run
+                        // must come out newer than the index.
                         ProjectInputs.Write(
                             db, emitted.Fingerprints, Schema.Version, ProjectInputs.VelaVersion, builtAtUtc);
                         ProjectNotes.Write(db, emitted.Harvested, emitted.Notes);
@@ -1974,10 +2004,19 @@ public static class Program
     /// solution exit 3 forever.
     /// </summary>
     public static HealthRecord BuildHealthRecord(Scip.Index index, IReadOnlyList<string> failures) =>
+        BuildHealthRecord(index, failures, DateTime.UtcNow);
+
+    /// <param name="builtAtUtc">
+    /// When the run started, which <c>vela index</c> reads before it loads the workspace.
+    /// The two-argument form stamps the current time, which is only right for an index
+    /// whose sources cannot change while it is built.
+    /// </param>
+    public static HealthRecord BuildHealthRecord(
+        Scip.Index index, IReadOnlyList<string> failures, DateTime builtAtUtc) =>
         BuildHealthRecordFromNotes(
             index.Metadata?.ToolInfo?.Arguments ?? (IReadOnlyList<string>)Array.Empty<string>(),
             failures,
-            DateTime.UtcNow);
+            builtAtUtc);
 
     /// <summary>
     /// The same verdict, reached from the notes rather than from a freshly emitted index.
