@@ -44,8 +44,8 @@ vela is for and you can create it in one command.
 ```bash
 mkdir ~/velatut && cd ~/velatut
 dotnet new webapp -n RazorDemo -o RazorDemo
-dotnet new sln -n RazorDemo --format sln
-dotnet sln RazorDemo.sln add RazorDemo/RazorDemo.csproj
+dotnet new sln -n RazorDemo
+dotnet sln add RazorDemo/RazorDemo.csproj
 ```
 
 ## 3. Build the index

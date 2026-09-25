@@ -73,7 +73,8 @@ public static class Program
     private const string ExternalDocumentPrefix = "external-document:";
 
     private const string NoSolutionMessage =
-        "No single .sln found in the current directory. Pass --solution <path to the .sln>.";
+        "No .sln or .slnx found in the current directory or above it, up to the repository root, "
+        + "and no vela.json names one. Pass --solution <path to the .sln or .slnx>.";
 
     public static Task<int> Main(string[] args) =>
         BuildRootCommand().Parse(args).InvokeAsync();
@@ -94,10 +95,15 @@ public static class Program
     {
         var root = new RootCommand("Compiler-exact code search for .NET.");
 
+        // No default value, on purpose. A default is computed before anything knows which
+        // verb is running, so it could not defer to vela.json, and a verb could not tell a
+        // solution the user typed from one vela guessed. Every verb resolves an absent value
+        // itself, through ResolveSolution.
         var solutionOption = new Option<string>("--solution")
         {
-            Description = "Path to the .sln. Defaults to the only .sln in the current directory.",
-            DefaultValueFactory = _ => FindSolution()
+            Description = "Path to the .sln or .slnx. Defaults to the solution vela.json names, then to the "
+                        + "only .sln or .slnx in the current directory or the nearest directory above it "
+                        + "that has one, up to the repository root."
         };
 
         const string symbolHelp =
@@ -200,7 +206,8 @@ public static class Program
             var output = parseResult.InvocationConfiguration.Output;
             var error = parseResult.InvocationConfiguration.Error;
 
-            var solution = parseResult.GetValue(solutionOption);
+            var solution = SolutionForQuery(parseResult.GetValue(solutionOption), error);
+            if (solution is null) return ExitCannotAnswer;
             using var db = OpenIndex(solution, error);
             if (db is null) return ExitCannotAnswer;
 
@@ -277,11 +284,12 @@ public static class Program
             var output = parseResult.InvocationConfiguration.Output;
             var error = parseResult.InvocationConfiguration.Error;
 
-            var solution = parseResult.GetValue(solutionOption);
+            var solution = SolutionForQuery(parseResult.GetValue(solutionOption), error);
+            if (solution is null) return ExitCannotAnswer;
             using var db = OpenIndex(solution, error);
             if (db is null) return ExitCannotAnswer;
 
-            var health = CheckStaleness(IndexHealth.Read(db), solution!, db);
+            var health = CheckStaleness(IndexHealth.Read(db), solution, db);
             var symbols = FindQuery.Run(db, parseResult.GetRequiredValue(argument));
 
             // find answers with names rather than hits, but a degraded index makes
@@ -1442,8 +1450,15 @@ public static class Program
 
         if (string.IsNullOrWhiteSpace(config.Solution))
         {
-            error.WriteLine(NoSolutionMessage);
-            return false;
+            var found = DiscoverSolution(start, out var problem);
+            if (found is null)
+            {
+                error.WriteLine(problem);
+                return false;
+            }
+
+            resolvedSolution = found;
+            return true;
         }
 
         if (!File.Exists(config.Solution))
@@ -2282,9 +2297,90 @@ public static class Program
     private static string ConnectionStringFor(string path) =>
         new SqliteConnectionStringBuilder { DataSource = path, Pooling = false }.ToString();
 
-    private static string FindSolution()
+    /// <summary>
+    /// The solution a query verb answers for when --solution was not given: the one
+    /// vela.json names, or the one <see cref="DiscoverSolution"/> finds. Null, with the
+    /// reason already written, when there is neither.
+    ///
+    /// A --solution that WAS given is handed back exactly as typed, and vela.json is not
+    /// read for it. That is what every query did before vela.json could name a solution,
+    /// so a caller who passes the path sees no change at all, down to the spelling in an
+    /// error message.
+    ///
+    /// Before this, only index and import read vela.json. So a repository that named its
+    /// solution there, as the reference says it may "so --solution need not be repeated",
+    /// could build an index with a bare `vela index` and then not query it: every query
+    /// verb from the same directory exited 1 saying no solution was found.
+    /// </summary>
+    private static string? SolutionForQuery(string? requested, TextWriter error)
     {
-        var found = Directory.GetFiles(Directory.GetCurrentDirectory(), "*.sln");
-        return found.Length == 1 ? found[0] : "";
+        if (!string.IsNullOrWhiteSpace(requested)) return requested;
+        return TryResolveSolution(null, error, out var solution, out _) ? solution : null;
+    }
+
+    /// <summary>
+    /// The only solution file in the start directory, or failing that in the nearest
+    /// directory above it that holds one, stopping at the repository root. Null, with the
+    /// reason in <paramref name="problem"/>, when there is none or more than one.
+    ///
+    /// Both extensions count. `dotnet new sln` writes a .slnx on current SDKs, and this
+    /// used to look for *.sln alone, so a project scaffolded the ordinary way on .NET 10
+    /// failed `vela index` with "No single .sln found" beside the solution it needed.
+    ///
+    /// The walk stops at the first directory holding any solution file, and two there is
+    /// an answer rather than a reason to keep climbing: the nearer directory is the one
+    /// the user is working in, and picking one of two would be a guess about which
+    /// solution they mean. It is bounded by the repository root for the reason vela.json
+    /// is: a stray solution in a home directory must not be what a command run in some
+    /// unrelated folder indexes.
+    ///
+    /// Files are listed once and filtered by exact extension, from the same
+    /// <see cref="SolutionExtensions"/> the unopenable-solution advice uses, rather than
+    /// globbed once per extension, so the rule does not depend on how a platform matches
+    /// a search pattern.
+    /// </summary>
+    private static string? DiscoverSolution(string startDirectory, out string problem)
+    {
+        var start = Path.GetFullPath(startDirectory);
+        var root = ProjectRoot.ForSolutionDirectory(start);
+
+        for (var current = new DirectoryInfo(start); current is not null; current = current.Parent)
+        {
+            string[] found;
+            try
+            {
+                found = Directory.EnumerateFiles(current.FullName)
+                    .Where(f => SolutionExtensions.Contains(Path.GetExtension(f), StringComparer.OrdinalIgnoreCase))
+                    .Order(StringComparer.Ordinal)
+                    .ToArray();
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                found = Array.Empty<string>();
+            }
+
+            if (found.Length == 1)
+            {
+                problem = "";
+                return RealPath.Of(found[0]);
+            }
+
+            if (found.Length > 1)
+            {
+                problem = $"{current.FullName} holds more than one solution ("
+                        + string.Join(", ", found.Select(Path.GetFileName))
+                        + "), so vela cannot tell which one you mean. Pass --solution with one of them, "
+                        + "or name it as \"solution\" in vela.json.";
+                return null;
+            }
+
+            if (string.Equals(current.FullName.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                              root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar),
+                              StringComparison.Ordinal))
+                break;
+        }
+
+        problem = NoSolutionMessage;
+        return null;
     }
 }

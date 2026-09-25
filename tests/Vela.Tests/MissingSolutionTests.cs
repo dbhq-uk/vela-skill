@@ -179,7 +179,8 @@ public class MissingSolutionTests
 
         Assert.Equal(Program.ExitCannotAnswer, result.ExitCode);
         Assert.Contains(
-            "No single .sln found in the current directory. Pass --solution <path to the .sln>.",
+            "No .sln or .slnx found in the current directory or above it, up to the repository root, "
+            + "and no vela.json names one. Pass --solution <path to the .sln or .slnx>.",
             result.Output,
             StringComparison.Ordinal);
         Assert.DoesNotContain("could not open the solution", result.Output, StringComparison.Ordinal);
