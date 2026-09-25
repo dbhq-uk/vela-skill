@@ -28,7 +28,7 @@ vela find <pattern>            Symbol search by name
 vela def <symbol>              Where a symbol is defined
 vela refs <symbol>             Every usage of a symbol
 vela outline <file>            Symbols defined in a file
-vela impact <symbol>           Callers and blast radius
+vela impact <symbol>           Direct callers of a symbol, one hop
 ```
 
 ### `vela index`
@@ -349,8 +349,9 @@ file defines several symbols by nature.
 
 ### `vela impact`
 
-Callers and blast radius. A reference to the target that falls inside another symbol's
-recorded enclosing range is a call from it.
+Direct callers, one hop. A reference to the target that falls inside another symbol's
+recorded enclosing range is a call from it. Callers of those callers are not followed, so
+this is not a full blast radius: run `impact` again on a caller to go a level further.
 
 | Option | Meaning |
 |---|---|
@@ -361,8 +362,14 @@ pairs rather than on lines, because C# permits several members on one line and g
 Razor emits a great deal of code that way.
 
 **`impact` finds no caller for a reference that sits where no enclosing definition was
-recorded.** Top level statements and Razor views are the normal cases. An empty `impact`
-says so rather than implying nothing calls the symbol.
+recorded.** Top level statements and Razor views are the normal cases. Whenever there are
+any, `impact` prints how many after the results, whether or not it found other callers:
+
+```
+1 reference(s) could not be attributed to a caller, because they sit inside no recorded body (Razor views and top level statements are the usual cases). Run refs to see them.
+```
+
+An empty `impact` also says why it is empty rather than implying nothing calls the symbol.
 
 ## Global options
 

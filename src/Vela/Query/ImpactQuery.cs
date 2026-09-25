@@ -5,14 +5,15 @@ namespace Vela.Query;
 public static class ImpactQuery
 {
     /// <summary>
-    /// Callers, derived from stored enclosing ranges: a reference to the target
-    /// that falls inside another symbol's enclosing range is a call from it.
+    /// Direct callers, derived from stored enclosing ranges: a reference to the target
+    /// that falls inside another symbol's enclosing range is a call from it. One hop
+    /// only. Callers of those callers are not followed.
     ///
     /// Only the innermost enclosing definition counts. Real C# nests, and the
     /// emitter stores an enclosing range for namespace and type declarations as
     /// well as for methods, so a single reference sits inside three ranges at once.
     /// Listing the namespace and the type beside the method would treble the answer
-    /// with things that call nothing, and an agent reading a blast radius acts on
+    /// with things that call nothing, and an agent reading a list of callers acts on
     /// every name in it.
     ///
     /// Containment is tested on (line, character) pairs, not on lines. Both halves of
@@ -46,7 +47,7 @@ public static class ImpactQuery
 
     /// <summary>
     /// How many callers the default answer left out because they live in generated
-    /// code. A blast radius that quietly shrinks is worse than one that is too large,
+    /// code. A list of callers that quietly shrinks is worse than one that is too large,
     /// so the caller prints this rather than letting the shorter list stand alone
     /// (Constraint 3).
     /// </summary>
@@ -87,6 +88,55 @@ public static class ImpactQuery
             GROUP BY o.symbol
             """, symbolPattern);
 
+    /// <summary>
+    /// How many references to the target sit inside no recorded body at all, so that no
+    /// caller can be named for them. Razor views and top level statements are the normal
+    /// cases: a view's markup is mapped back to the .cshtml or .razor file, but the
+    /// method the generator wrapped it in is not.
+    ///
+    /// <see cref="Run"/> has no row for these, and <see cref="ExplainEmpty"/> only
+    /// speaks when the answer is empty. So once impact could name a single C# caller,
+    /// every reference from a view dropped out of the answer with nothing to say it had,
+    /// and an agent asking what a change breaks got a partial list at exit 0 that read
+    /// as complete (Constraint 3). The caller prints this count whenever it is above
+    /// zero.
+    ///
+    /// The document filter mirrors <see cref="Run"/>, so the count describes the same
+    /// view of the index as the answer above it.
+    /// </summary>
+    public static int CountUnattributed(SqliteConnection db, string symbolPattern, bool includeGenerated = false)
+        => QueryHelper.Count(db, $"""
+            SELECT COUNT(*)
+            FROM occurrence target
+            JOIN document d ON d.id = target.document_id
+            WHERE target.is_definition = 0
+              AND {QueryHelper.SymbolMatches("target.symbol")}
+              {(includeGenerated ? "" : "AND d.generated = 0")}
+              AND NOT EXISTS (
+                  SELECT 1 FROM occurrence caller
+                  WHERE {Encloses("caller", "target")})
+            """, symbolPattern);
+
+    /// <summary>
+    /// The one test of whether a definition encloses a reference, shared by the answer
+    /// and by <see cref="CountUnattributed"/> so the two cannot disagree about which
+    /// references have a caller. Containment is on (line, character) pairs: see
+    /// <see cref="Run"/> for why a line-granular test is wrong.
+    /// </summary>
+    private static string Encloses(string caller, string target)
+        => $"""
+            {caller}.document_id = {target}.document_id
+                 AND {caller}.is_definition = 1
+                 AND {caller}.enc_end_line IS NOT NULL
+                 AND {caller}.enc_end_char IS NOT NULL
+                 AND ({target}.start_line > {caller}.start_line
+                      OR ({target}.start_line = {caller}.start_line
+                          AND {target}.start_char >= {caller}.start_char))
+                 AND ({target}.start_line < {caller}.enc_end_line
+                      OR ({target}.start_line = {caller}.enc_end_line
+                          AND {target}.start_char <= {caller}.enc_end_char))
+            """;
+
     private static string Sql(string documentFilter, string projection)
         => $"""
             WITH target AS (
@@ -112,16 +162,7 @@ public static class ImpactQuery
                        ) AS depth
                 FROM target
                 JOIN occurrence caller
-                  ON caller.document_id = target.document_id
-                 AND caller.is_definition = 1
-                 AND caller.enc_end_line IS NOT NULL
-                 AND caller.enc_end_char IS NOT NULL
-                 AND (target.start_line > caller.start_line
-                      OR (target.start_line = caller.start_line
-                          AND target.start_char >= caller.start_char))
-                 AND (target.start_line < caller.enc_end_line
-                      OR (target.start_line = caller.enc_end_line
-                          AND target.start_char <= caller.enc_end_char))
+                  ON {Encloses("caller", "target")}
             )
             {projection}
             FROM ranked

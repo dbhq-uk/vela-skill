@@ -104,12 +104,14 @@ this mentioned" and "whose behaviour depends on it".
 
 `impact` rows are the **calling** symbols, so the symbol you asked about does not appear in
 them. Only the innermost enclosing definition counts: a reference inside a method inside a
-type inside a namespace is attributed to the method, not to all three.
+type inside a namespace is attributed to the method, not to all three. It is one hop: the
+callers of those callers are not followed.
 
 **`impact` cannot name a caller for a reference that sits inside no recorded body.** Top
-level statements and Razor views are the normal cases, and an empty `impact` says so
-outright rather than implying nothing calls the symbol. Run `refs` to see the references
-themselves.
+level statements and Razor views are the normal cases. Whenever there are any, `impact`
+prints how many after the results, even when it has named other callers, and an empty
+`impact` says so outright rather than implying nothing calls the symbol. Run `refs` to see
+the references themselves.
 
 ## What breaks if I change this?
 

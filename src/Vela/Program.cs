@@ -128,10 +128,11 @@ public static class Program
             solutionOption,
             (db, value, _) => OutlineQuery.Run(db, AsIndexPath(value)),
             (db, value) => OutlineQuery.ExplainEmpty(db, AsIndexPath(value))));
-        root.Add(BuildHitCommand("impact", "Callers and blast radius",
+        root.Add(BuildHitCommand("impact", "Direct callers of a symbol, one hop",
             "symbol", symbolHelp,
             solutionOption, ImpactQuery.Run, ImpactQuery.ExplainEmpty, ImpactQuery.CountInGeneratedCode,
-            matchedSymbols: ImpactQuery.MatchedSymbols));
+            matchedSymbols: ImpactQuery.MatchedSymbols,
+            countUnattributed: ImpactQuery.CountUnattributed));
 
         return root;
     }
@@ -163,6 +164,12 @@ public static class Program
     /// ambiguous pattern is explained in the singular, and the block is the only thing
     /// that says the explanation covers several symbols at once.
     /// </param>
+    /// <param name="countUnattributed">
+    /// Supplied by impact alone: how many references to the target sit inside no
+    /// recorded body, so that no caller could be named for them. Printed whenever it is
+    /// above zero, because a reference from a Razor view is exactly as real when impact
+    /// has found C# callers as when it has found none.
+    /// </param>
     private static Command BuildHitCommand(
         string name, string description,
         string argumentName, string argumentDescription,
@@ -171,7 +178,8 @@ public static class Program
         Func<SqliteConnection, string, string> explainEmpty,
         Func<SqliteConnection, string, int>? countInGeneratedCode = null,
         bool hitsAreOccurrencesOfTheArgument = false,
-        Func<SqliteConnection, string, bool, IReadOnlyList<SymbolTally>>? matchedSymbols = null)
+        Func<SqliteConnection, string, bool, IReadOnlyList<SymbolTally>>? matchedSymbols = null,
+        Func<SqliteConnection, string, bool, int>? countUnattributed = null)
     {
         var argument = new Argument<string>(argumentName) { Description = argumentDescription };
         var command = new Command(name, description) { argument, solutionOption };
@@ -226,6 +234,21 @@ public static class Program
                 {
                     output.WriteLine($"{suppressed} further result(s) in generated code, which is not on "
                                    + "disk. Pass --include-generated to see them.");
+                }
+            }
+
+            // Beside the generated-code line and for the same reason: it qualifies the
+            // count. impact names a caller only for a reference inside a recorded body, so
+            // a reference from a Razor view or a top level statement has no row, and until
+            // this was printed it vanished whenever any C# caller had been found.
+            if (countUnattributed is not null)
+            {
+                var unattributed = countUnattributed(db, value, includeGenerated);
+                if (unattributed > 0)
+                {
+                    output.WriteLine($"{unattributed} reference(s) could not be attributed to a caller, because "
+                                   + "they sit inside no recorded body (Razor views and top level statements "
+                                   + "are the usual cases). Run refs to see them.");
                 }
             }
 

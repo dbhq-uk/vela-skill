@@ -82,7 +82,7 @@ Takes a path relative to the repository root, and returns the symbol tree withou
 ```bash
 vela def    <symbol>          # declaration, signature, source span
 vela refs   <symbol>          # every usage, grouped by file
-vela impact <symbol>          # callers and blast radius
+vela impact <symbol>          # direct callers, one hop
 vela find   <pattern>         # symbol search by name
 ```
 
@@ -101,6 +101,8 @@ Results are grouped by file and shaped for a context window rather than a termin
 **Razor and Blazor hits are reported against the originating `.cshtml` or `.razor` file**, not the generated code, so the location is one you can open and edit.
 
 **Some locations are not on disk.** The Razor generator's output is compiled but never written out, so `refs` and `impact` leave it out by default and print a line saying how much they left out. Pass `--include-generated` if you need it. `def` and `outline` always include it, marked `(generated)` - for some Razor page members the generated code holds the only declaration there is, and the marker is there to tell you the path cannot be opened.
+
+**`impact` names direct callers only, one hop.** A reference from a Razor view or a top level statement sits inside no recorded body, so no caller can be named for it. `impact` prints how many such references there are after the results, even when it has found other callers. Read that line before sizing a change, and run `refs` to see them.
 
 **A total that spans several symbols says so.** Because matching is by whole dotted segment, `refs Perfume` on a real solution answered 3,156 results on 30 July 2026 - the entity, the entity's constructor, an enum member called `Perfume`, and a property of an unrelated response type, all merged into one number. Every hit was real; the total counted nothing that exists. So when a pattern matches more than one distinct symbol, `def`, `refs` and `impact` print an ambiguity block after the results:
 
