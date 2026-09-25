@@ -21,13 +21,18 @@
          and zero .razor. So this version is a FLOOR set by the SDK, not a preference:
          it must be at least the Roslyn the newest SDK in use ships.
 
-         Prerelease because nuget.org's newest stable Microsoft.CodeAnalysis is 5.6.0.
-         This exact build, 5.9.0-1.26379.115, is the one SDK 10.0.400 itself was
-         assembled from. See NuGet.config and docs/upstream/razor-sdk-10-0-400.md.
+         5.9.0 is that floor for SDK 10.0.400, and it is a stable release on nuget.org.
+         When the floor was first raised, on 17 Aug 2026, the only 5.9 build was a
+         prerelease on the .NET team's own feed, reached through a NuGet.config with
+         package source mapping. 5.9.0 reached nuget.org later that day. The file is
+         gone now: its mapping made install.sh fail, because dotnet tool update will
+         not take an extra source alongside source mapping, and it pointed Dependabot
+         at nightly builds. Keep these three on stable nuget.org releases. See
+         docs/upstream/razor-sdk-10-0-400.md.
          RazorGeneratorTests is the guard: it fails loudly if this drifts behind again. -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.9.0-1.26467.109" />
-    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.9.0-1.26467.109" />
-    <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces" Version="5.9.0-1.26467.109" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Workspaces" Version="5.9.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.9.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.VisualBasic.Workspaces" Version="5.9.0" />
     <PackageReference Include="System.CommandLine" Version="2.0.12" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
     <PackageReference Include="Google.Protobuf" Version="3.36.2" />

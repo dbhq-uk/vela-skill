@@ -17,6 +17,7 @@ what was done about it, and what a user should expect.
 | Upstream | [dotnet/roslyn#84137](https://github.com/dotnet/roslyn/issues/84137), and before it [#84221](https://github.com/dotnet/roslyn/issues/84221) and [#77255](https://github.com/dotnet/roslyn/issues/77255) |
 | Fixed in vela by | `6674f1e` (the pin) and `5573a4b` (the check that makes a recurrence loud) |
 | Fix verified on | SDK 10.0.400, 442 passed, 0 failed, 3 skipped |
+| Feed removed | 25 Sep 2026: stable `5.9.0` from nuget.org, and `NuGet.config` deleted |
 
 ## What actually happens
 
@@ -117,6 +118,14 @@ it is what the Roslyn team themselves recommend on
 it to the Roslyn packages alone, so no other dependency can be served from it. Both the
 file and the `.csproj` say to take it back out when 5.9.0 reaches nuget.org.
 
+**Back on nuget.org** (25 Sep 2026). Stable `5.9.0` was published to nuget.org at 16:56
+UTC on 17 Aug 2026, a few hours after the pin above. The three references now use it, and
+`NuGet.config` is deleted. The file had two costs that outlived its purpose. Its package
+source mapping made `dotnet tool update --add-source` fail, so `./install.sh` stopped
+before it linked the skill when it was run from the repository root. And it sent
+Dependabot to the feed, which then proposed nightly builds instead of the stable release.
+`5.9.0` is still the floor SDK 10.0.400 sets, and `RazorGeneratorTests` still guards it.
+
 **Make a recurrence loud** (commit `5573a4b`). The pin fixes today. It does not fix the
 shape of the problem, which is that the Razor generator is not a dependency vela chooses:
 it is whatever the user's SDK contains, and every feature band may raise the floor again.
@@ -165,9 +174,8 @@ There is no error and no warning. `vela index --stats` is the only place it show
 From `5573a4b` onwards the same condition is reported at index time and raises the exit
 code, so a future SDK cannot repeat this quietly.
 
-If you build vela from source you need `NuGet.config`, which is in the repository root.
-A build that cannot reach the `dotnet-tools` feed will fail to restore rather than
-silently fall back.
+Building vela from source needs nuget.org and nothing else. Until 25 Sep 2026 it also
+needed `NuGet.config` and the `dotnet-tools` feed; see "Back on nuget.org" above.
 
 ## Is this an upstream bug
 

@@ -36,8 +36,8 @@ The property has an upstream half as well, and it is not vela's to control. The 
 generator lives inside whichever .NET SDK is installed, and Roslyn refuses to load a
 generator built against a newer compiler than the host - silently, with zero generators
 returned. So the `Microsoft.CodeAnalysis.*` versions in `Vela.csproj` are a floor set by
-the newest SDK in use, not a preference, and `NuGet.config` exists to reach a build of
-them that nuget.org does not yet carry. If
+the newest SDK in use, not a preference. They are stable releases from nuget.org, and
+there is no `NuGet.config`: raise them to a newer stable release, not to a feed build. If
 `RazorGeneratorTests.HostedCompiler_IsAtLeastTheOneTheSdksRazorGeneratorWasBuiltAgainst`
 fails, that is what it is telling you, and it names the version to raise the pin to. The
 whole story is in [docs/upstream/razor-sdk-10-0-400.md](docs/upstream/razor-sdk-10-0-400.md).
