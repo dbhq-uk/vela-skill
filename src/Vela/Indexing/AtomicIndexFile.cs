@@ -75,6 +75,7 @@ public sealed class AtomicIndexFile : IDisposable
     {
         var file = new AtomicIndexFile(destination);
         Remove(file.Path);
+        IndexPaths.EnsurePrivateFile(file.Path);
         return file;
     }
 
@@ -94,6 +95,7 @@ public sealed class AtomicIndexFile : IDisposable
         var file = new AtomicIndexFile(destination);
         Remove(file.Path);
         File.Copy(destination, file.Path);
+        IndexPaths.EnsurePrivateFile(file.Path);
         return file;
     }
 

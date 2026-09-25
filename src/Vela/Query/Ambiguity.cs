@@ -138,6 +138,18 @@ public static class Ambiguity
           + $"{DistinctSymbolsSpan(tally)}:");
 
     /// <summary>
+    /// The block for impls, whose rows are the implementations rather than the symbol
+    /// asked about, so the tally comes from the index and says what it counts.
+    /// </summary>
+    public static string RenderImplemented(string pattern, IReadOnlyList<SymbolTally> tally, bool anyFound) =>
+        Render(tally,
+            $"'{pattern}' is ambiguous: "
+          + (anyFound
+                ? $"the implementations above are of {DistinctSymbolsSpan(tally)} together, not of one."
+                : $"the empty answer above is about {DistinctSymbolsSpan(tally)} together, not about one.")
+          + " The number beside each symbol below is how many implementations of it there are:");
+
+    /// <summary>
     /// The block for impact, whose results are the callers and not the symbol asked
     /// about. A blast radius is the number an agent sizes a change from, so merging four
     /// symbols into one does more damage here than anywhere else.

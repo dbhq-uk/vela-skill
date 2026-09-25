@@ -13,7 +13,7 @@ public static class ScipLoader
     /// </summary>
     public static void Load(SqliteConnection db, Vela.Harvest.EmitResult emitted) =>
         Load(db, emitted.Index, emitted.GeneratedDocuments, emitted.DisplayNames,
-             emitted.FileLevelOccurrences);
+             emitted.FileLevelOccurrences, emitted.Implementations);
 
     /// <summary>
     /// Loads a SCIP index into the database. This is a one-shot bulk
@@ -54,7 +54,8 @@ public static class ScipLoader
         Scip.Index index,
         IReadOnlySet<string>? generatedDocuments = null,
         IReadOnlyDictionary<Scip.Occurrence, string>? displayNames = null,
-        IReadOnlySet<Scip.Occurrence>? fileLevel = null)
+        IReadOnlySet<Scip.Occurrence>? fileLevel = null,
+        IReadOnlyDictionary<Scip.Occurrence, IReadOnlyList<string>>? implementations = null)
     {
         using (var checkCmd = db.CreateCommand())
         {
@@ -78,7 +79,7 @@ public static class ScipLoader
 
         var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
 
-        InsertDocuments(db, tx, index, generatedDocuments, displayNames, fileLevel, null, display =>
+        InsertDocuments(db, tx, index, generatedDocuments, displayNames, fileLevel, implementations, null, display =>
         {
             // The full-text index is what `find` searches, and `find` is a person
             // typing a name, so it holds display names.
@@ -149,8 +150,12 @@ public static class ScipLoader
         using (var deleteDocument = db.CreateCommand())
         {
             deleteOccurrences.Transaction = tx;
+            // The implementation rows first, while the document they hang off is still
+            // there to be found by path.
             deleteOccurrences.CommandText =
-                "DELETE FROM occurrence WHERE document_id IN "
+                "DELETE FROM implementation WHERE document_id IN "
+                + "(SELECT id FROM document WHERE relative_path = $p AND source = ''); "
+                + "DELETE FROM occurrence WHERE document_id IN "
                 + "(SELECT id FROM document WHERE relative_path = $p AND source = '')";
             deleteOccurrences.Parameters.Add("$p", SqliteType.Text);
 
@@ -172,7 +177,7 @@ public static class ScipLoader
 
         var written = InsertDocuments(
             db, tx, index, emitted.GeneratedDocuments, emitted.DisplayNames, emitted.FileLevelOccurrences,
-            importOwned, null);
+            emitted.Implementations, importOwned, null);
 
         RebuildSymbolIndex(db, tx);
 
@@ -234,6 +239,7 @@ public static class ScipLoader
         IReadOnlySet<string>? generatedDocuments,
         IReadOnlyDictionary<Scip.Occurrence, string>? displayNames,
         IReadOnlySet<Scip.Occurrence>? fileLevel,
+        IReadOnlyDictionary<Scip.Occurrence, IReadOnlyList<string>>? implementations,
         IReadOnlySet<string>? skipPaths,
         Action<string>? onSymbol)
     {
@@ -267,6 +273,14 @@ public static class ScipLoader
             insertOcc.Parameters.Add(name, SqliteType.Integer);
         insertOcc.Parameters["$s"].SqliteType = SqliteType.Text;
         insertOcc.Parameters["$scip"].SqliteType = SqliteType.Text;
+
+        using var insertImplementation = db.CreateCommand();
+        insertImplementation.Transaction = tx;
+        insertImplementation.CommandText =
+            "INSERT INTO implementation(document_id, symbol, implements) VALUES ($d, $s, $i)";
+        insertImplementation.Parameters.Add("$d", SqliteType.Integer);
+        insertImplementation.Parameters.Add("$s", SqliteType.Text);
+        insertImplementation.Parameters.Add("$i", SqliteType.Text);
 
         var written = 0;
 
@@ -305,6 +319,17 @@ public static class ScipLoader
                     occ.EnclosingRange.Count > 3 ? occ.EnclosingRange[3] : (object)DBNull.Value;
                 insertOcc.Parameters["$fl"].Value = fileLevel is not null && fileLevel.Contains(occ) ? 1 : 0;
                 insertOcc.ExecuteNonQuery();
+
+                if (implementations is not null && implementations.TryGetValue(occ, out var implemented))
+                {
+                    foreach (var target in implemented)
+                    {
+                        insertImplementation.Parameters["$d"].Value = docId;
+                        insertImplementation.Parameters["$s"].Value = display;
+                        insertImplementation.Parameters["$i"].Value = target;
+                        insertImplementation.ExecuteNonQuery();
+                    }
+                }
 
                 onSymbol?.Invoke(display);
             }

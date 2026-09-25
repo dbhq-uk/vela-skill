@@ -54,6 +54,12 @@ namespace Vela.Harvest;
 /// solution holds when a reuse set was given. It is what the ledger clears before writing:
 /// a project that has been fixed has to be able to stop saying it is broken.
 /// </param>
+/// <param name="Implementations">
+/// What each definition implements, overrides or derives from, by display name, against the
+/// definition occurrence. SCIP carries the same facts as Relationship.is_implementation on
+/// the symbol, by moniker, and vela's queries match display names, so the names travel
+/// beside the index as <paramref name="DisplayNames"/> do.
+/// </param>
 /// <param name="FileLevelOccurrences">
 /// Occurrences the compiler placed in a file without recording a line for them: a Razor
 /// component's own definition and every use of it by tag, which the generator writes
@@ -70,7 +76,8 @@ public record EmitResult(
     IReadOnlyList<Vela.Indexing.ProjectNote>? ProjectNotes = null,
     IReadOnlyDictionary<string, IReadOnlyList<string>>? ProjectDocuments = null,
     IReadOnlyList<string>? HarvestedProjects = null,
-    IReadOnlySet<Scip.Occurrence>? FileLevelOccurrences = null)
+    IReadOnlySet<Scip.Occurrence>? FileLevelOccurrences = null,
+    IReadOnlyDictionary<Scip.Occurrence, IReadOnlyList<string>>? Implementations = null)
 {
     /// <summary>
     /// What each project was built from, and nothing at all for an index that did not
@@ -181,6 +188,10 @@ public static class ScipEmitter
 
         // Occurrences placed in a view with no line, see EmitResult.FileLevelOccurrences.
         var fileLevel = new HashSet<Scip.Occurrence>(ReferenceEqualityComparer.Instance);
+
+        // What each definition implements, overrides or derives from, by display name,
+        // against the definition occurrence. See EmitResult.Implementations.
+        var implementations = new Dictionary<Scip.Occurrence, IReadOnlyList<string>>(ReferenceEqualityComparer.Instance);
 
         // Which symbols each document has already described, so SymbolInformation is
         // written once per document however many times the symbol is defined in it.
@@ -372,6 +383,17 @@ public static class ScipEmitter
                     if (isFileLevel) fileLevel.Add(occurrence);
                     seen[key] = occurrence;
 
+                    var implemented = isDefinition
+                        ? Implementation.Of(symbol).ToList()
+                        : new List<ISymbol>();
+                    if (implemented.Count > 0)
+                    {
+                        implementations[occurrence] = implemented
+                            .Select(SymbolIdentity.For)
+                            .Distinct(StringComparer.Ordinal)
+                            .ToList();
+                    }
+
                     // scip.proto: a Document carries the symbols defined within it, so a
                     // consumer gets the kind and the documentation without having to
                     // re-run a compiler. Definitions only, and once each: a reference is
@@ -389,7 +411,25 @@ public static class ScipEmitter
                         described[doc.RelativePath] = alreadyDescribed = new HashSet<string>(StringComparer.Ordinal);
 
                     if (alreadyDescribed.Add(moniker))
-                        doc.Symbols.Add(monikers.Describe(symbol, doc.RelativePath));
+                    {
+                        var information = monikers.Describe(symbol, doc.RelativePath);
+
+                        // scip.proto's own way to say it, so an index vela writes answers
+                        // "go to implementations" for any consumer, not only for vela.
+                        foreach (var target in implemented)
+                        {
+                            var targetMoniker = monikers.For(target, doc.RelativePath);
+                            if (targetMoniker.Length == 0 || targetMoniker == moniker) continue;
+                            if (information.Relationships.Any(r => r.Symbol == targetMoniker)) continue;
+                            information.Relationships.Add(new Scip.Relationship
+                            {
+                                Symbol = targetMoniker,
+                                IsImplementation = true
+                            });
+                        }
+
+                        doc.Symbols.Add(information);
+                    }
                 }
             }
 
@@ -426,7 +466,8 @@ public static class ScipEmitter
             StringComparer.Ordinal);
 
         return new EmitResult(
-            index, generated, displayNames, fingerprints, notes, projectDocuments, harvestedProjects, fileLevel);
+            index, generated, displayNames, fingerprints, notes, projectDocuments, harvestedProjects, fileLevel,
+            implementations);
     }
 
     /// <summary>

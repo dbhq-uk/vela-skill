@@ -129,7 +129,7 @@ public static class Program
         root.Add(BuildHitCommand("refs", "Every usage of a symbol",
             "symbol", symbolHelp,
             solutionOption, RefsQuery.Run, RefsQuery.ExplainEmpty, RefsQuery.CountInGeneratedCode,
-            hitsAreOccurrencesOfTheArgument: true));
+            hitsAreOccurrencesOfTheArgument: true, canLimit: true));
         root.Add(BuildHitCommand("outline", "Symbols defined in a file",
             "file", "Path of the file, relative to the repository root (the solution directory "
                   + "when the solution is not in a repository).",
@@ -146,7 +146,12 @@ public static class Program
             "symbol", symbolHelp,
             solutionOption, ImpactQuery.Run, ImpactQuery.ExplainEmpty, ImpactQuery.CountInGeneratedCode,
             matchedSymbols: ImpactQuery.MatchedSymbols,
-            countUnattributed: ImpactQuery.CountUnattributed));
+            countUnattributed: ImpactQuery.CountUnattributed, canLimit: true));
+        root.Add(BuildHitCommand("impls", "What implements, overrides or derives from a symbol",
+            "symbol", symbolHelp,
+            solutionOption, (db, value, _) => ImplsQuery.Run(db, value), ImplsQuery.ExplainEmpty,
+            matchedSymbols: ImplsQuery.MatchedSymbols, renderMatched: Ambiguity.RenderImplemented,
+            canLimit: true));
 
         return root;
     }
@@ -193,10 +198,39 @@ public static class Program
         Func<SqliteConnection, string, int>? countInGeneratedCode = null,
         bool hitsAreOccurrencesOfTheArgument = false,
         Func<SqliteConnection, string, bool, IReadOnlyList<SymbolTally>>? matchedSymbols = null,
-        Func<SqliteConnection, string, bool, int>? countUnattributed = null)
+        Func<SqliteConnection, string, bool, int>? countUnattributed = null,
+        bool canLimit = false,
+        Func<string, IReadOnlyList<SymbolTally>, bool, string>? renderMatched = null)
     {
         var argument = new Argument<string>(argumentName) { Description = argumentDescription };
         var command = new Command(name, description) { argument, solutionOption };
+
+        // refs and impact, the two verbs whose answer grows with how common a name is. An
+        // ordinary name answered with thousands of rows on a real solution, with no way to
+        // ask for less, so a common name flooded the context it was asked from.
+        Option<int>? limitOption = null;
+        Option<bool>? filesOption = null;
+        if (canLimit)
+        {
+            limitOption = new Option<int>("--limit")
+            {
+                Description = "Print at most this many results, and say how many more there are. "
+                            + "The count is still the whole count. 0, the default, prints them all."
+            };
+            limitOption.Validators.Add(result =>
+            {
+                if (result.GetValueOrDefault<int>() < 0) result.AddError("--limit must be 0 or more.");
+            });
+
+            filesOption = new Option<bool>("--files")
+            {
+                Description = "Print one line per file with the number of results in it, instead of the "
+                            + "results themselves."
+            };
+
+            command.Add(limitOption);
+            command.Add(filesOption);
+        }
 
         Option<bool>? includeGeneratedOption = null;
         if (countInGeneratedCode is not null)
@@ -237,7 +271,9 @@ public static class Program
             // normal answer costs no extra query.
             var explanation = hits.Count == 0 ? explainEmpty(db, value) : null;
 
-            output.Write(OutputWriter.Render(hits, health, explanation));
+            var limit = limitOption is null ? 0 : parseResult.GetValue(limitOption);
+            var byFile = filesOption is not null && parseResult.GetValue(filesOption);
+            output.Write(OutputWriter.Render(hits, health, explanation, limit, byFile));
 
             // Printed here rather than after the ambiguity block, because it qualifies
             // the result count and a screen of symbol names between the two leaves the
@@ -274,7 +310,8 @@ public static class Program
             if (hitsAreOccurrencesOfTheArgument)
                 output.Write(Ambiguity.RenderOccurrences(value, Ambiguity.Of(hits)));
             else if (matchedSymbols is not null)
-                output.Write(Ambiguity.RenderCallers(value, matchedSymbols(db, value, includeGenerated), hits.Count > 0));
+                output.Write((renderMatched ?? Ambiguity.RenderCallers)(
+                    value, matchedSymbols(db, value, includeGenerated), hits.Count > 0));
 
             return health.Degraded ? IndexHealth.ExitDegraded : 0;
         });
@@ -1812,6 +1849,8 @@ public static class Program
             int version;
             try
             {
+                // Private to the user before SQLite writes a byte into it. See IndexPaths.
+                IndexPaths.EnsurePrivateFile(path);
                 db.Open();
 
                 // Created or read before anything is imported, and the reason a damaged

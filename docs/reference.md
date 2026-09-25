@@ -31,6 +31,7 @@ vela def <symbol>              Where a symbol is defined
 vela refs <symbol>             Every usage of a symbol
 vela outline <file>            Symbols defined in a file
 vela impact <symbol>           Direct callers of a symbol, one hop
+vela impls <symbol>            What implements, overrides or derives from a symbol
 ```
 
 ### `vela index`
@@ -350,8 +351,19 @@ Every occurrence of a symbol, definitions included, grouped by file.
 | Option | Meaning |
 |---|---|
 | `--include-generated` | Also report occurrences in source-generated code, which is compiled but not written to disk and so cannot be opened. |
+| `--limit <n>` | Print at most `n` results. The count below them is still the whole count, and a line says how many more there are. `0`, the default, prints them all. |
+| `--files` | Print one line per file with the number of results in it, instead of the results. |
 
 Excludes generated documents by default, and always says how many it left out.
+
+An ordinary name can answer with thousands of rows. `--files` shows where they are, and
+`--limit` keeps the list short. Neither cuts the banner above the results or the ambiguity
+block after them:
+
+```
+7 result(s)
+4 more not shown: --limit 3 cut the list. Raise --limit, or pass --files for a count per file.
+```
 
 ### `vela outline`
 
@@ -373,6 +385,7 @@ this is not a full blast radius: run `impact` again on a caller to go a level fu
 | Option | Meaning |
 |---|---|
 | `--include-generated` | As for `refs`. |
+| `--limit <n>`, `--files` | As for `refs`. |
 
 Only the innermost enclosing definition counts. Containment is tested on (line, character)
 pairs rather than on lines, because C# permits several members on one line and generated
@@ -387,6 +400,42 @@ any, `impact` prints how many after the results, whether or not it found other c
 ```
 
 An empty `impact` also says why it is empty rather than implying nothing calls the symbol.
+
+### `vela impls`
+
+What implements, overrides or derives from a symbol: the classes that implement an interface
+or derive from a class, and the members that implement an interface member or override a
+member, each at its definition.
+
+```
+$ vela impls IShape
+App/Shapes/Shapes.cs
+       9:23   def  Shop.Shapes.ShapeBase
+      15:21   def  Shop.Shapes.Square
+      21:21   def  Shop.Shapes.Circle
+
+3 result(s)
+```
+
+| Option | Meaning |
+|---|---|
+| `--limit <n>`, `--files` | As for `refs`. |
+
+- The symbol is matched by the same rule as `refs`, so `impls IRepository` reaches every
+  construction of a generic interface.
+- A class is listed for every interface it implements, directly or through a base class, and
+  for every base class above it except `System.Object`, `ValueType`, `Enum` and the delegate
+  bases.
+- A member is listed for every interface member it implements, explicitly or implicitly, for
+  every member it overrides, and for every interface member one of those implements. So
+  `impls IShape.Area` finds an override of an abstract `ShapeBase.Area` as well as
+  `ShapeBase.Area` itself.
+- Generated documents are included and marked, as `def` includes them. A Razor component
+  is found at its `.razor` file, marked `file`.
+- Implementations are recorded by vela's own harvest of C# and Visual Basic. A language
+  imported from a `.scip` records none, and an empty answer says so rather than reading as
+  "nothing implements this".
+- The same facts are written into the SCIP index as `Relationship.is_implementation`.
 
 ## Global options
 
@@ -488,8 +537,9 @@ Rules that hold every time:
 - Most hits first, ties broken by name, so the ordering is identical on every machine.
 - At most ten symbols are listed and the rest are summarised into one line, so the counts
   always add up to the reported total.
-- `impact` labels its numbers differently, because its rows are callers rather than
-  occurrences of the symbol asked about. It prints the block even when it named nobody.
+- `impact` and `impls` label their numbers differently, because their rows are callers or
+  implementations rather than occurrences of the symbol asked about. They print the block
+  even when they named nothing.
 - The block describes **the answer above it, not the index.** `refs` and `impact` leave
   generated code out by default, so a symbol of the same name that lives only there is in
   neither the results nor the count. If the answer also reports further results in
@@ -681,7 +731,12 @@ absolute solution path, so two checkouts of the same repository have separate in
 vela refuses to run if that directory resolves to somewhere inside the solution's own tree.
 Indexing must never write into the repository being indexed.
 
-The index carries a schema version (currently 12). If you upgrade vela and the shape has
+**The directory is private to you on Linux and macOS.** An index names every symbol and
+path in the code it covers. vela creates the `vela` directory at `700`, narrows it to `700`
+if it finds it wider, and creates each index at `600`. Windows has no mode bits to set, and
+the directory inherits your profile's permissions.
+
+The index carries a schema version (currently 13). If you upgrade vela and the shape has
 changed, every verb refuses to answer and tells you to re-index rather than querying a
 database it cannot read. The index is a cache, so it is rebuilt rather than migrated.
 
@@ -985,8 +1040,6 @@ a config cannot silently shrink an existing index.
 
 - It does not edit, refactor or rename. It reports.
 - It does not do semantic or similarity search. The index is exact.
-- It does not answer "what implements this interface". That is a SCIP relationship, and vela
-  does not emit those yet.
 - It does not run other languages' indexers. It imports their output.
 - It is not a language server, not an MCP server, and not a daemon.
 
@@ -998,8 +1051,8 @@ a config cannot silently shrink an existing index.
   was measured at 91 to 99% noise on a real solution; when you need callers or what a change
   touches; when the symbol may be used from a `.cshtml` or `.razor` file; and for a survey of
   a clean tree before a change.
-- **A language server**, such as the LSP tool in Claude Code, for code you have just edited
-  and for "what implements this". It stays live after an edit. vela answers from a snapshot,
+- **A language server**, such as the LSP tool in Claude Code, for code you have just edited.
+  It stays live after an edit. vela answers from a snapshot,
   and after an edit it needs a re-index, which takes minutes on a large solution.
 - **Not vela** in a repository with no .NET and no `.scip` to import. There is nothing for it
   to index.

@@ -187,11 +187,60 @@ public static class IndexPaths
     /// Creates the cache directory that holds the given index path, if it does not
     /// already exist. Path resolution itself must stay side-effect free, so callers
     /// that are about to open or create the database file call this first.
+    ///
+    /// <b>Private to the user, on Unix.</b> An index names every symbol and every path in
+    /// the code it covers, which is often code nobody else on the machine should read. The
+    /// directory was created with the process umask, which is 755 almost everywhere, and the
+    /// database inside it 644. The directory is now 700, and one that already exists with
+    /// wider permissions is narrowed: it is vela's own directory, and nothing else belongs in
+    /// it. Windows has no mode bits to set and inherits the profile's ACL, which is already
+    /// private to the user.
     /// </summary>
     public static void EnsureDirectoryExists(string indexPath)
     {
         var dir = Path.GetDirectoryName(indexPath);
-        if (!string.IsNullOrEmpty(dir))
+        if (string.IsNullOrEmpty(dir)) return;
+
+        if (OperatingSystem.IsWindows())
+        {
             Directory.CreateDirectory(dir);
+            return;
+        }
+
+        Directory.CreateDirectory(dir, PrivateDirectory);
+        if (File.GetUnixFileMode(dir) != PrivateDirectory)
+            File.SetUnixFileMode(dir, PrivateDirectory);
     }
+
+    /// <summary>
+    /// Makes sure a database file about to be opened is readable by its owner alone, on
+    /// Unix: created empty at 600 if it is not there, narrowed to 600 if it is. SQLite
+    /// reads a file of no bytes as an empty database, and gives its journal and WAL files
+    /// the mode of the database they belong to, so the whole index stays private. Every
+    /// index is built in a file that goes through here and then renamed into place, and a
+    /// rename keeps the mode.
+    /// </summary>
+    public static void EnsurePrivateFile(string path)
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        if (!File.Exists(path))
+        {
+            using var created = new FileStream(path, new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                UnixCreateMode = PrivateFile
+            });
+            return;
+        }
+
+        if (File.GetUnixFileMode(path) != PrivateFile)
+            File.SetUnixFileMode(path, PrivateFile);
+    }
+
+    private const UnixFileMode PrivateDirectory =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    private const UnixFileMode PrivateFile = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 }
