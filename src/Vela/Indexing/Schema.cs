@@ -24,11 +24,11 @@ public static class Schema
     /// each project was built from. 9 adds project_note and project_document, which are
     /// what let a project be SKIPPED without its problems and its documents being
     /// forgotten, and index_health.rebuild. 10 adds index_identity. 11 adds
-    /// occurrence.file_level. 12 adds imported_source.scip_modified_at_utc. A future change
-    /// bumps this and nothing else: there is no migration, because re-indexing takes seconds
+    /// occurrence.file_level. 12 adds imported_source.scip_modified_at_utc. 13 adds
+    /// implementation. A future change bumps this and nothing else: there is no migration, because re-indexing takes seconds
     /// and rebuilds from the truth rather than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 12;
+    public const int Version = 13;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -410,6 +410,24 @@ public static class Schema
             CREATE TABLE IF NOT EXISTS index_identity (
                 solution_path TEXT NOT NULL
             );
+
+            -- WHAT IMPLEMENTS WHAT. One row per symbol vela harvested a definition of and
+            -- per symbol it implements, overrides or derives from, both as display names:
+            -- a class and each interface it implements and each base class above it bar
+            -- System.Object, a member and the interface member or overridden member it
+            -- stands for. `vela impls` reads it. The same facts go into the emitted SCIP as
+            -- Relationship.is_implementation, so they are not vela's alone.
+            --
+            -- document_id is the document holding that definition, so a rebuild or a
+            -- replace that deletes the document deletes its rows with it. A .scip import
+            -- adds none: implementations come from vela's own harvest only.
+            CREATE TABLE IF NOT EXISTS implementation (
+                document_id INTEGER NOT NULL REFERENCES document(id),
+                symbol      TEXT NOT NULL,
+                implements  TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS ix_implementation_document ON implementation(document_id);
             """;
         cmd.ExecuteNonQuery();
 

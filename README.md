@@ -208,6 +208,7 @@ vela outline Services/PerfumeService.cs
 vela def    Perfume.Status
 vela refs   Perfume.Status        # includes .cshtml and .razor
 vela impact PerfumeService
+vela impls  IPerfumeRepository    # what implements or overrides it
 vela find   Repository
 vela cache                        # what the index cache holds, and how to clear it
 ```

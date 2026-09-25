@@ -141,6 +141,21 @@ Three things to check before you act on the answer:
 3. **Did the command exit 3?** Then the index is missing code, out of date, or could not be
    verified, and there is a banner above the results saying which.
 
+An interface or a virtual member has a third question: what implements it. Changing an
+interface member changes every implementation too, and those are not references to it.
+
+```bash
+vela impls IPerfumeRepository             # the classes that implement it
+vela impls IPerfumeRepository.GetAsync    # the members that implement that member
+```
+
+A name with thousands of results is easier to read by file first:
+
+```bash
+vela refs Name --files        # one line per file, with a count
+vela refs Name --limit 50     # the first fifty, and how many more there are
+```
+
 ## What is in this file?
 
 ```bash

@@ -42,8 +42,9 @@ restores vela's own dependencies from nuget.org.
 - **The `vela` command:** a .NET global tool in `~/.dotnet/tools`.
 - **The index cache:** `~/.dbhq/vela` by default. `VELA_CACHE_HOME`, or failing
   that `XDG_CACHE_HOME`, moves it. An index names every symbol and file path in
-  the code it covers, so treat it as you would the code. `vela cache clear`
-  removes indexes.
+  the code it covers, so treat it as you would the code. On Linux and macOS vela
+  keeps the directory at `700` and each index at `600`, readable by you alone.
+  `vela cache clear` removes indexes.
 - **Never modifies the repository.** vela reads the solution; it does not edit
   it. The index is kept outside the repository, and vela refuses to index if the
   cache directory resolves to somewhere inside it.

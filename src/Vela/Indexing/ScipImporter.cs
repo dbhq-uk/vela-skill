@@ -621,6 +621,17 @@ public static class ScipImporter
                 while (reader.Read()) replacedNames.Add(reader.GetString(0));
             }
 
+            // The implementation rows go with the document: --replace can rewrite a path
+            // vela's own harvest wrote, and those rows describe what was there. Deleted on
+            // their own so the occurrence count below counts occurrences only.
+            using (var deleteImplementations = db.CreateCommand())
+            {
+                deleteImplementations.Transaction = tx;
+                deleteImplementations.CommandText = "DELETE FROM implementation WHERE document_id = $d";
+                deleteImplementations.Parameters.AddWithValue("$d", documentId);
+                deleteImplementations.ExecuteNonQuery();
+            }
+
             using (var deleteOccurrences = db.CreateCommand())
             {
                 deleteOccurrences.Transaction = tx;
@@ -709,6 +720,14 @@ public static class ScipImporter
                 names.Parameters.AddWithValue("$src", source);
                 using var reader = names.ExecuteReader();
                 while (reader.Read()) replacedNames.Add(reader.GetString(0));
+            }
+
+            using (var deleteImplementations = db.CreateCommand())
+            {
+                deleteImplementations.Transaction = tx;
+                deleteImplementations.CommandText = $"DELETE FROM implementation WHERE document_id IN ({Abandoned})";
+                deleteImplementations.Parameters.AddWithValue("$src", source);
+                deleteImplementations.ExecuteNonQuery();
             }
 
             using (var deleteOccurrences = db.CreateCommand())
