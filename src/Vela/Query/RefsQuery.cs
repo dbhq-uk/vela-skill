@@ -22,7 +22,7 @@ public static class RefsQuery
     /// </summary>
     public static IReadOnlyList<Hit> Run(SqliteConnection db, string symbolPattern, bool includeGenerated = false)
         => QueryHelper.Select(db, $"""
-            SELECT d.relative_path, o.start_line, o.start_char, o.symbol, o.is_definition, d.generated
+            SELECT d.relative_path, o.start_line, o.start_char, o.symbol, o.is_definition, d.generated, o.file_level
             FROM occurrence o JOIN document d ON d.id = o.document_id
             WHERE {QueryHelper.SymbolMatches("o.symbol")}
               {(includeGenerated ? "" : "AND d.generated = 0")}

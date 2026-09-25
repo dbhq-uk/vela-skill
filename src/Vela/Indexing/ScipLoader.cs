@@ -12,7 +12,8 @@ public static class ScipLoader
     /// The empty-schema precondition of the overload below applies here unchanged.
     /// </summary>
     public static void Load(SqliteConnection db, Vela.Harvest.EmitResult emitted) =>
-        Load(db, emitted.Index, emitted.GeneratedDocuments, emitted.DisplayNames);
+        Load(db, emitted.Index, emitted.GeneratedDocuments, emitted.DisplayNames,
+             emitted.FileLevelOccurrences);
 
     /// <summary>
     /// Loads a SCIP index into the database. This is a one-shot bulk
@@ -43,11 +44,17 @@ public static class ScipLoader
     /// the moniker as its display name, which is what an index read from another tool's
     /// .scip file gets: their symbol is the only name it has.
     /// </param>
+    /// <param name="fileLevel">
+    /// Occurrences the compiler placed in a file with no line, stored with file_level set
+    /// so no verb prints their zero position as a line. See
+    /// <see cref="Vela.Harvest.EmitResult.FileLevelOccurrences"/>.
+    /// </param>
     public static void Load(
         SqliteConnection db,
         Scip.Index index,
         IReadOnlySet<string>? generatedDocuments = null,
-        IReadOnlyDictionary<Scip.Occurrence, string>? displayNames = null)
+        IReadOnlyDictionary<Scip.Occurrence, string>? displayNames = null,
+        IReadOnlySet<Scip.Occurrence>? fileLevel = null)
     {
         using (var checkCmd = db.CreateCommand())
         {
@@ -71,7 +78,7 @@ public static class ScipLoader
 
         var seenSymbols = new HashSet<string>(StringComparer.Ordinal);
 
-        InsertDocuments(db, tx, index, generatedDocuments, displayNames, null, display =>
+        InsertDocuments(db, tx, index, generatedDocuments, displayNames, fileLevel, null, display =>
         {
             // The full-text index is what `find` searches, and `find` is a person
             // typing a name, so it holds display names.
@@ -164,7 +171,8 @@ public static class ScipLoader
         }
 
         var written = InsertDocuments(
-            db, tx, index, emitted.GeneratedDocuments, emitted.DisplayNames, importOwned, null);
+            db, tx, index, emitted.GeneratedDocuments, emitted.DisplayNames, emitted.FileLevelOccurrences,
+            importOwned, null);
 
         RebuildSymbolIndex(db, tx);
 
@@ -225,6 +233,7 @@ public static class ScipLoader
         Scip.Index index,
         IReadOnlySet<string>? generatedDocuments,
         IReadOnlyDictionary<Scip.Occurrence, string>? displayNames,
+        IReadOnlySet<Scip.Occurrence>? fileLevel,
         IReadOnlySet<string>? skipPaths,
         Action<string>? onSymbol)
     {
@@ -251,10 +260,10 @@ public static class ScipLoader
         using var insertOcc = db.CreateCommand();
         insertOcc.Transaction = tx;
         insertOcc.CommandText = """
-            INSERT INTO occurrence(document_id, symbol, scip_symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char)
-            VALUES ($d, $s, $scip, $def, $sl, $sc, $el, $ec)
+            INSERT INTO occurrence(document_id, symbol, scip_symbol, is_definition, start_line, start_char, enc_end_line, enc_end_char, file_level)
+            VALUES ($d, $s, $scip, $def, $sl, $sc, $el, $ec, $fl)
             """;
-        foreach (var name in new[] { "$d", "$s", "$scip", "$def", "$sl", "$sc", "$el", "$ec" })
+        foreach (var name in new[] { "$d", "$s", "$scip", "$def", "$sl", "$sc", "$el", "$ec", "$fl" })
             insertOcc.Parameters.Add(name, SqliteType.Integer);
         insertOcc.Parameters["$s"].SqliteType = SqliteType.Text;
         insertOcc.Parameters["$scip"].SqliteType = SqliteType.Text;
@@ -294,6 +303,7 @@ public static class ScipLoader
                     occ.EnclosingRange.Count > 2 ? occ.EnclosingRange[2] : (object)DBNull.Value;
                 insertOcc.Parameters["$ec"].Value =
                     occ.EnclosingRange.Count > 3 ? occ.EnclosingRange[3] : (object)DBNull.Value;
+                insertOcc.Parameters["$fl"].Value = fileLevel is not null && fileLevel.Contains(occ) ? 1 : 0;
                 insertOcc.ExecuteNonQuery();
 
                 onSymbol?.Invoke(display);

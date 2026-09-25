@@ -1839,6 +1839,32 @@ public class QueryTests
     }
 
     [Fact]
+    public void Render_OnAFileLevelHit_PrintsFileWhereTheLineWouldGo()
+    {
+        // A component used by its tag has no line: the Razor generator writes it under
+        // #line hidden. It is stored at position 0, and printing that as 1:1 would send the
+        // reader to the top of the file for a tag that is somewhere else in it.
+        var hits = new[]
+        {
+            new Hit("App/Components/Pages/Home.razor", 0, 0, "Shop.Components.Badge", false, IsFileLevel: true),
+            new Hit("App/Components/Pages/Home.razor", 8, 7, "Shop.Components.Badge.Label", false)
+        };
+
+        var output = OutputWriter.Render(hits, new HealthRecord(DateTime.UtcNow, null, false, null));
+
+        // \r? because the output is written with the platform's line ending, and in
+        // multiline mode $ matches before \n only.
+        Assert.Matches(@"(?m)^\s+file\s+ref  Shop\.Components\.Badge\r?$", output);
+        Assert.DoesNotContain("1:1", output, StringComparison.Ordinal);
+        Assert.Contains("9:8", output, StringComparison.Ordinal);
+        Assert.Contains("file marks a use", output, StringComparison.Ordinal);
+
+        // The line explaining the marker travels only with an answer that carries one.
+        var ordinary = OutputWriter.Render(new[] { hits[1] }, new HealthRecord(DateTime.UtcNow, null, false, null));
+        Assert.DoesNotContain("file marks a use", ordinary, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Render_OnDegradedIndex_WarnsThatAShortResultIsNotProof()
     {
         // Constraint 3: the dangerous reading of a degraded index is the empty

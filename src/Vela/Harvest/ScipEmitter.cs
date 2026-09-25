@@ -6,7 +6,7 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 // type names, so VB is reached through an alias rather than a second using directive.
 using Vb = Microsoft.CodeAnalysis.VisualBasic.Syntax;
 
-using OccurrenceKey = (string Symbol, int Line, int Character, bool IsDefinition);
+using OccurrenceKey = (string Symbol, int Line, int Character, bool IsDefinition, bool FileLevel);
 
 namespace Vela.Harvest;
 
@@ -54,6 +54,14 @@ namespace Vela.Harvest;
 /// solution holds when a reuse set was given. It is what the ledger clears before writing:
 /// a project that has been fixed has to be able to stop saying it is broken.
 /// </param>
+/// <param name="FileLevelOccurrences">
+/// Occurrences the compiler placed in a file without recording a line for them: a Razor
+/// component's own definition and every use of it by tag, which the generator writes
+/// under <c>#line hidden</c>. Each is stored at the start of its view and marked, so no
+/// verb prints that position as though it were the line of the tag. SCIP's range has no
+/// way to say "somewhere in this file", so the mark travels beside the index, keyed by
+/// reference like <paramref name="DisplayNames"/>.
+/// </param>
 public record EmitResult(
     Scip.Index Index,
     IReadOnlySet<string> GeneratedDocuments,
@@ -61,7 +69,8 @@ public record EmitResult(
     IReadOnlyList<Vela.Indexing.ProjectFingerprint>? ProjectFingerprints = null,
     IReadOnlyList<Vela.Indexing.ProjectNote>? ProjectNotes = null,
     IReadOnlyDictionary<string, IReadOnlyList<string>>? ProjectDocuments = null,
-    IReadOnlyList<string>? HarvestedProjects = null)
+    IReadOnlyList<string>? HarvestedProjects = null,
+    IReadOnlySet<Scip.Occurrence>? FileLevelOccurrences = null)
 {
     /// <summary>
     /// What each project was built from, and nothing at all for an index that did not
@@ -170,6 +179,9 @@ public static class ScipEmitter
         var monikers = new ScipMoniker();
         var displayNames = new Dictionary<Scip.Occurrence, string>(ReferenceEqualityComparer.Instance);
 
+        // Occurrences placed in a view with no line, see EmitResult.FileLevelOccurrences.
+        var fileLevel = new HashSet<Scip.Occurrence>(ReferenceEqualityComparer.Instance);
+
         // Which symbols each document has already described, so SymbolInformation is
         // written once per document however many times the symbol is defined in it.
         var described = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
@@ -245,6 +257,10 @@ public static class ScipEmitter
                 SeedSourceDocuments(
                     harvested, root, byOriginalPath, index, roots, Note, contributed);
 
+                // The view this tree was generated from, for the occurrences the generator
+                // compiled from it without a line. Null for anything but a generated view.
+                var view = harvested.IsGenerated ? RazorMapper.ViewOf(root) : null;
+
                 foreach (var node in root.DescendantNodes())
                 {
                     var declared = model.GetDeclaredSymbol(node, ct);
@@ -265,6 +281,19 @@ public static class ScipEmitter
                     var location = RazorMapper.MapToOriginal(harvested.Tree, anchorPosition);
                     if (location is null) continue;
 
+                    // A Razor component used by its tag, or the component a .razor file
+                    // defines. The generator writes both under #line hidden, so the
+                    // position maps to nothing but its own output, and left there the
+                    // component was invisible to refs and def pointed at a .g.cs file. The
+                    // file is exact - the checksum names the view this tree was compiled
+                    // from - and the line is not known, so the occurrence goes to the view
+                    // and is marked as file-level rather than given a line it does not have.
+                    var isFileLevel = view is not null
+                        && string.Equals(location.FilePath, harvested.Tree.FilePath, StringComparison.OrdinalIgnoreCase)
+                        && RazorMapper.IsComponent(symbol);
+                    if (isFileLevel)
+                        location = new SourceLocation(view!, 0, 0);
+
                     var doc = GetOrAddDocument(
                         byOriginalPath, index, location.FilePath, roots, Note, contributed);
                     if (doc is null) continue;
@@ -282,8 +311,9 @@ public static class ScipEmitter
                     var name = SymbolIdentity.For(symbol);
                     var moniker = monikers.For(symbol, doc.RelativePath);
 
+                    // A file-level occurrence has no position for a body to open at.
                     int[]? enclosingRange = null;
-                    if (isDefinition && CanEnclose(symbol))
+                    if (isDefinition && !isFileLevel && CanEnclose(symbol))
                     {
                         var enclosing = RazorMapper.MapToOriginal(harvested.Tree, node.Span.End);
                         if (Encloses(location, enclosing))
@@ -296,7 +326,10 @@ public static class ScipEmitter
                     if (!emitted.TryGetValue(doc.RelativePath, out var seen))
                         emitted[doc.RelativePath] = seen = new Dictionary<OccurrenceKey, Scip.Occurrence>();
 
-                    var key = new OccurrenceKey(name, location.Line, location.Character, isDefinition);
+                    // Every use of one component by tag in one view folds into a single
+                    // file-level occurrence here, which is the claim it can make: this file
+                    // uses the component. Counting tags would need the lines it lacks.
+                    var key = new OccurrenceKey(name, location.Line, location.Character, isDefinition, isFileLevel);
                     if (seen.TryGetValue(key, out var already))
                     {
                         // The same symbol, at the same position, in the same role: one
@@ -336,6 +369,7 @@ public static class ScipEmitter
 
                     doc.Occurrences.Add(occurrence);
                     displayNames[occurrence] = name;
+                    if (isFileLevel) fileLevel.Add(occurrence);
                     seen[key] = occurrence;
 
                     // scip.proto: a Document carries the symbols defined within it, so a
@@ -392,7 +426,7 @@ public static class ScipEmitter
             StringComparer.Ordinal);
 
         return new EmitResult(
-            index, generated, displayNames, fingerprints, notes, projectDocuments, harvestedProjects);
+            index, generated, displayNames, fingerprints, notes, projectDocuments, harvestedProjects, fileLevel);
     }
 
     /// <summary>

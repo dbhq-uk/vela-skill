@@ -130,6 +130,17 @@ vela iterates the compilation's syntax trees instead, and maps every location ba
 its `#line` directives to the originating `.cshtml` or `.razor`, so the hit you are shown is
 one you can open.
 
+**Two things in a `.razor` file have no `#line` directive at all:** the component the file
+defines, and every use of a component by its tag (`<Badge />`). The generator writes both
+under `#line hidden`, as `public partial class Badge` and `OpenComponent<Badge>`, so a
+position lookup lands in the generated file. vela sends an occurrence there to the view the
+file was compiled from, named by the `#pragma checksum` at its top, when the symbol is a
+component type (a class that implements `IComponent`, asked of the semantic model, never
+of the name). The line is not known, so the occurrence is stored at the start of the file
+with `file_level` set, and the verbs print `file` where the line would go. Every use of
+one component in one view folds into one such row: the claim it can make is that the file
+uses the component, not how many times.
+
 **This is the property that regresses silently.** Lose it and the index still builds, every
 query still answers, and the Razor half of a codebase is simply not there. There is no error
 to see. `vela index --stats` counts it, and the test suite asserts both the document count
@@ -150,7 +161,8 @@ CREATE TABLE occurrence (
     start_line    INTEGER NOT NULL,
     start_char    INTEGER NOT NULL,
     enc_end_line  INTEGER,
-    enc_end_char  INTEGER
+    enc_end_char  INTEGER,
+    file_level    INTEGER NOT NULL      -- 1: in this file, line not recorded
 );
 ```
 
@@ -332,7 +344,7 @@ rebuild, since rebuilding all ten one at a time is a slower route to the same in
 
 ### No migrations
 
-The index carries a schema version, currently 9, and a build that reads a different one
+The index carries a schema version, currently 11, and a build that reads a different one
 refuses to answer. There is no migration path, deliberately: re-indexing takes seconds and
 rebuilds from the truth, where a migration would rebuild from a guess about what the old
 rows meant.
