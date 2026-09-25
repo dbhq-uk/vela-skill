@@ -14,13 +14,38 @@ command -v dotnet >/dev/null 2>&1 || {
   exit 1
 }
 
+# Every build gets a version of its own, so re-running this always replaces the
+# vela that is installed. Before, every build was 1.0.0, and `dotnet tool update`
+# over an installed 1.0.0 said so and exited 0, leaving the old binary in place.
+# The suffix is the commit's time, so a later commit is a higher version. A tree
+# with uncommitted changes, or no git at all, uses the time now instead.
+STAMP="$(git -C "$SCRIPT_DIR" log -1 --format=%ct 2>/dev/null || true)"
+if [ -z "$STAMP" ] || [ -n "$(git -C "$SCRIPT_DIR" status --porcelain 2>/dev/null)" ]; then
+  STAMP="$(date +%s)"
+fi
+
 echo "Building and installing the vela tool..."
-if ! dotnet pack "$SCRIPT_DIR/src/Vela/Vela.csproj" -c Release -o "$SCRIPT_DIR/nupkg" >"$PACK_LOG" 2>&1; then
+rm -rf "$SCRIPT_DIR/nupkg"
+if ! dotnet pack "$SCRIPT_DIR/src/Vela/Vela.csproj" -c Release -o "$SCRIPT_DIR/nupkg" \
+    --version-suffix "dev.$STAMP" >"$PACK_LOG" 2>&1; then
   echo "dotnet pack failed. Output:" >&2
   cat "$PACK_LOG" >&2
   exit 1
 fi
-dotnet tool update --global --add-source "$SCRIPT_DIR/nupkg" vela
+
+PACKAGES=("$SCRIPT_DIR"/nupkg/vela.*.nupkg)
+if [ "${#PACKAGES[@]}" -ne 1 ] || [ ! -f "${PACKAGES[0]}" ]; then
+  echo "dotnet pack did not leave exactly one vela package in $SCRIPT_DIR/nupkg." >&2
+  exit 1
+fi
+VERSION="$(basename "${PACKAGES[0]}" .nupkg)"
+VERSION="${VERSION#vela.}"
+
+# The exact version, so this build is the one installed even if a feed has a
+# newer one, and --allow-downgrade, so an older checkout's build still replaces
+# a newer install rather than being skipped.
+dotnet tool update --global --add-source "$SCRIPT_DIR/nupkg" vela \
+  --version "$VERSION" --allow-downgrade
 
 for src in "$SCRIPT_DIR"/skills/*/; do
   src="${src%/}"

@@ -8,6 +8,15 @@
     <ToolCommandName>vela</ToolCommandName>
     <PackageId>vela</PackageId>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+
+    <!-- The release this build is heading for. Nothing here made the version change
+         between builds, so every package was 1.0.0, and `dotnet tool update` over an
+         installed 1.0.0 said it was already installed and kept the old binary. The
+         installers now add a suffix of their own to every build, dev.<commit time>, so
+         two builds from different commits are different versions and a later commit is
+         a higher one: 1.1.0-dev.1790325656 sorts above 1.0.0 and below a released 1.1.0.
+         A release build sets the version from its tag and adds no suffix. -->
+    <VersionPrefix>1.1.0</VersionPrefix>
   </PropertyGroup>
 
   <ItemGroup>

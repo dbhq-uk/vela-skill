@@ -157,6 +157,11 @@ whole skill directory is symlinked untouched, while Codex does not, so its
 `SKILL.md` is rewritten at install time. Re-run the Codex one after editing
 `SKILL.md`.
 
+**To upgrade, pull and run the installer again.** Every build gets a version of its
+own, such as `1.1.0-dev.1790325656`, where the suffix is the commit's time, so the new
+build always replaces the installed one. `vela --version` shows the version and the
+commit it was built from.
+
 ## Requirements
 
 **The .NET SDK 10**, and `~/.dotnet/tools` on your `PATH` - `install.sh`

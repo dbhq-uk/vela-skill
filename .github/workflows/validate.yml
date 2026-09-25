@@ -171,11 +171,19 @@ jobs:
   #
   # Linux only. The installers are bash, and the three-OS matrix above already
   # proves the tool builds and passes on each platform.
+  #
+  # It installs an OLDER vela first, built from the previous commit, because the
+  # installers' other job is upgrading. Every build used to be version 1.0.0, so
+  # re-running the installer over an existing install said "already installed",
+  # exited 0 and kept the old binary. A run onto an empty HOME could not see that.
   install:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The previous commit as well, which is what the older vela is built from.
+          fetch-depth: 2
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: '10.0.x'
@@ -194,6 +202,17 @@ jobs:
           HOME="$(mktemp -d)"
           export HOME
           export PATH="$HOME/.dotnet/tools:$PATH"
+
+          # The previous commit's vela, packed the way that commit packs it and
+          # installed as a global tool, so the installers below have something to
+          # replace. The version check at the end fails if they leave it in place.
+          older="$(mktemp -d)"
+          git worktree add --detach "$older/tree" HEAD~1
+          dotnet pack "$older/tree/src/Vela/Vela.csproj" -c Release -o "$older/nupkg" >"$older/pack.log" 2>&1 \
+            || { cat "$older/pack.log"; exit 1; }
+          dotnet tool install --global --add-source "$older/nupkg" vela
+          echo "older vela --version: $(vela --version)"
+          git worktree remove --force "$older/tree"
 
           ./install.sh
           ./install-codex.sh
@@ -215,5 +234,5 @@ jobs:
           echo "commit:         $commit"
           case "$version" in
             *"+$commit"*) ;;
-            *) echo "the installed vela was not built from this commit"; exit 1 ;;
+            *) echo "the installed vela was not built from this commit, so the installer did not replace the older one"; exit 1 ;;
           esac
