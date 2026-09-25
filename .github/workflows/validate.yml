@@ -154,6 +154,27 @@ jobs:
             exit 1
           fi
 
+      # SKILL.md is loaded whole every time the skill triggers, so every word in it costs
+      # context on every use. It was 2,715 words, most of them reference detail an agent
+      # does not need to run the tool. The detail lives in docs/reference.md.
+      - name: SKILL.md stays under 1,000 words
+        run: |
+          words=$(wc -w < skills/vela/SKILL.md)
+          echo "skills/vela/SKILL.md is $words words"
+          if [ "$words" -ge 1000 ]; then
+            echo "Keep SKILL.md under 1,000 words and move the detail to docs/reference.md"
+            exit 1
+          fi
+
+      # install-codex.sh copies SKILL.md alone, and skills.sh installs do the same, so a
+      # relative link such as ../../docs/reference.md points at nothing once installed.
+      - name: SKILL.md links by URL, not by relative path
+        run: |
+          if grep -nE '\]\((\.|docs/)' skills/vela/SKILL.md; then
+            echo "Link from SKILL.md with a full https URL: a relative link breaks once installed"
+            exit 1
+          fi
+
       - name: shellcheck
         # -S warning, not the default, because `info` and `style` fire on
         # idioms these scripts use deliberately. xargs -r so a repo with no

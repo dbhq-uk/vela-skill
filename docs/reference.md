@@ -17,6 +17,8 @@ place. This page is for looking things up.
 - [Freshness](#freshness)
 - [vela.json](#velajson)
 - [Requirements](#requirements)
+- [What vela does not do](#what-vela-does-not-do)
+- [Choosing vela, grep or a language server](#choosing-vela-grep-or-a-language-server)
 
 ## Verbs
 
@@ -39,6 +41,16 @@ SQLite index. Rebuilds from nothing every time, unless you pass
 
 The new index is built beside the old one and renamed over it at the end, so
 [a failed rebuild keeps the index you had](#a-failed-rebuild-keeps-the-index-you-had).
+
+**vela does not restore packages.** Restore the solution first, with `dotnet restore` or a
+build: a project MSBuild cannot restore does not load, and the index is missing it.
+
+**It costs about what a build costs.** Roughly 8 seconds on a scaffolded Razor Pages app,
+and about five minutes at 2.1GB peak on ScentVerdict, a real ten-project solution of
+388,323 lines of C# with 334 Razor views, measured 30 July 2026. Expect it to scale with the
+solution rather than to match that figure. It is needed once, and again after any code
+change: the index is a snapshot, and every verb reports it stale once a watched file is
+newer than it (see [freshness](#freshness)).
 
 | Option | Meaning |
 |---|---|
@@ -947,3 +959,17 @@ a config cannot silently shrink an existing index.
   does not emit those yet.
 - It does not run other languages' indexers. It imports their output.
 - It is not a language server, not an MCP server, and not a daemon.
+
+## Choosing vela, grep or a language server
+
+- **grep** when the identifier is distinctive. `grep -w PerfumeService` returns thirty-two
+  lines on the solution vela is measured on, costs nothing and needs no index.
+- **vela** when the name is ordinary (`Name`, `Status`, `Value`, `Id`, `Update`), where grep
+  was measured at 91 to 99% noise on a real solution; when you need callers or what a change
+  touches; when the symbol may be used from a `.cshtml` or `.razor` file; and for a survey of
+  a clean tree before a change.
+- **A language server**, such as the LSP tool in Claude Code, for code you have just edited
+  and for "what implements this". It stays live after an edit. vela answers from a snapshot,
+  and after an edit it needs a re-index, which takes minutes on a large solution.
+- **Not vela** in a repository with no .NET and no `.scip` to import. There is nothing for it
+  to index.
