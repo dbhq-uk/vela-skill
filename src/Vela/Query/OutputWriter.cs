@@ -38,12 +38,25 @@ public static class OutputWriter
             var generated = group.Any(h => h.IsGenerated);
             sb.AppendLine(generated ? group.Key + "  (generated)" : group.Key);
 
+            // A file-level hit has no line, so it says `file` where the line would go
+            // rather than 1:1, which would send the reader to the top of the file looking
+            // for a tag that is not there. It sorts first, being stored at position 0.
             foreach (var hit in group.OrderBy(h => h.Line).ThenBy(h => h.Character))
-                sb.AppendLine($"  {hit.Line + 1,6}:{hit.Character + 1,-4} {(hit.IsDefinition ? "def" : "ref")}  {hit.Symbol}");
+            {
+                var kind = hit.IsDefinition ? "def" : "ref";
+                sb.AppendLine(hit.IsFileLevel
+                    ? $"  {"file",6} {"",-4} {kind}  {hit.Symbol}"
+                    : $"  {hit.Line + 1,6}:{hit.Character + 1,-4} {kind}  {hit.Symbol}");
+            }
         }
 
         sb.AppendLine();
         sb.AppendLine($"{hits.Count} result(s)");
+
+        if (hits.Any(h => h.IsFileLevel))
+            sb.AppendLine("file marks a use the compiler places in that file without a line: a Razor component's "
+                        + "own definition, or a use of it by tag such as <Badge />. The file is exact; search it "
+                        + "for the tag to find the line.");
 
         // A marker nobody can interpret is not a warning. def and outline report
         // generated documents deliberately, so the one line that explains what the

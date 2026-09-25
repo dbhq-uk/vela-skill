@@ -315,9 +315,12 @@ public static class QueryHelper
 
         var hits = new List<Hit>();
         using var reader = cmd.ExecuteReader();
+        // The seventh column, file_level, is optional: impact's rows name callers, and a
+        // caller is always a definition with a body, which a file-level occurrence never has.
         while (reader.Read())
             hits.Add(new Hit(reader.GetString(0), reader.GetInt32(1), reader.GetInt32(2),
-                             reader.GetString(3), reader.GetInt32(4) != 0, reader.GetInt32(5) != 0));
+                             reader.GetString(3), reader.GetInt32(4) != 0, reader.GetInt32(5) != 0,
+                             reader.FieldCount > 6 && reader.GetInt32(6) != 0));
         return hits;
     }
 

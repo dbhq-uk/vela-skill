@@ -23,11 +23,11 @@ public static class Schema
     /// imported_source. 8 adds project_input and its two child tables, the record of what
     /// each project was built from. 9 adds project_note and project_document, which are
     /// what let a project be SKIPPED without its problems and its documents being
-    /// forgotten, and index_health.rebuild. 10 adds index_identity. A future change bumps
-    /// this and nothing else: there is no migration, because re-indexing takes seconds and
+    /// forgotten, and index_health.rebuild. 10 adds index_identity. 11 adds
+    /// occurrence.file_level. A future change bumps this and nothing else: there is no migration, because re-indexing takes seconds and
     /// rebuilds from the truth rather than from a guess about what the old rows meant.
     /// </summary>
-    public const int Version = 10;
+    public const int Version = 11;
 
     /// <summary>
     /// The version stamped on a database, or 0 for one built before vela stamped them.
@@ -130,6 +130,13 @@ public static class Schema
             --   this column must therefore also match document_id. The display name in
             --   the symbol column is namespaced by document and does not have this
             --   problem, which is why it is the column every query uses.
+            --
+            -- file_level: 1 means the compiler placed this occurrence in this file and
+            -- recorded no line for it, so start_line and start_char are 0 and are not a
+            -- position. A Razor component's own definition and every use of it by tag
+            -- (<Badge />) are the cases: the Razor generator writes both under #line
+            -- hidden. The verbs print `file` where the line would go, rather than send a
+            -- reader to line 1 looking for a tag that is not there.
             CREATE TABLE IF NOT EXISTS occurrence (
                 id            INTEGER PRIMARY KEY,
                 document_id   INTEGER NOT NULL REFERENCES document(id),
@@ -139,7 +146,8 @@ public static class Schema
                 start_line    INTEGER NOT NULL,
                 start_char    INTEGER NOT NULL,
                 enc_end_line  INTEGER,
-                enc_end_char  INTEGER
+                enc_end_char  INTEGER,
+                file_level    INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE INDEX IF NOT EXISTS ix_occurrence_symbol ON occurrence(symbol);

@@ -98,7 +98,7 @@ Generic type arguments are not part of a name either, so a bare name reaches a g
 
 Results are grouped by file and shaped for a context window rather than a terminal.
 
-**Razor and Blazor hits are reported against the originating `.cshtml` or `.razor` file**, not the generated code, so the location is one you can open and edit.
+**Razor and Blazor hits are reported against the originating `.cshtml` or `.razor` file**, not the generated code, so the location is one you can open and edit. A Blazor component's definition and its uses by tag (`<Badge />`) print `file` instead of a line, because the Razor compiler records none: search that file for the tag.
 
 **Some locations are not on disk.** The Razor generator's output is compiled but never written out, so `refs` and `impact` leave it out by default and print a line saying how much they left out. Pass `--include-generated` if you need it. `def` and `outline` always include it, marked `(generated)` - for some Razor page members the generated code holds the only declaration there is, and the marker is there to tell you the path cannot be opened.
 

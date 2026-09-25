@@ -70,6 +70,14 @@ src/ScentVerdict.Web/Pages/Admin/Partials/_ReviewBanner.cshtml
        7:29   ref  ScentVerdict.Data.Entities.TaskInstance.Metadata
 ```
 
+A Blazor component used by its tag is there too, against the `.razor` file that uses it,
+marked `file` rather than given a line, because the Razor compiler records none for a tag:
+
+```
+App/Components/Pages/Home.razor
+    file      ref  Shop.Components.Badge
+```
+
 What is *not* there by default is the generated C# the Razor compiler produced, because
 those paths do not exist on disk. `refs` and `impact` leave them out and always say how
 many they left out:

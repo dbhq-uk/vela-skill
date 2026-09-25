@@ -503,6 +503,20 @@ src/ScentVerdict.Web/Pages/Admin/Commerce/RetailerDetail.cshtml
   the same question identically on every machine.
 - **Razor and Blazor hits are reported against the originating `.cshtml` or `.razor`**, not
   the generated code, so the location is one you can open and edit.
+- `file` in place of `line:col` marks a hit the compiler places in that file without a line.
+  A Razor component's own definition and every use of it by tag (`<Badge />`) are the cases:
+  the Razor generator writes both without a `#line` mapping. The file is exact; search it for
+  the tag to find the line. All the uses of one component in one file are one `file` row, and
+  one line under the count explains the marker whenever it appears:
+
+  ```
+  App/Components/Badge.razor
+      file      def  Shop.Components.Badge
+  App/Components/Pages/Home.razor
+      file      ref  Shop.Components.Badge
+
+  2 result(s)
+  ```
 - A file whose hits are in source-generated code is marked `  (generated)` after its path,
   and one line explains what the marker means.
 
@@ -646,7 +660,7 @@ absolute solution path, so two checkouts of the same repository have separate in
 vela refuses to run if that directory resolves to somewhere inside the solution's own tree.
 Indexing must never write into the repository being indexed.
 
-The index carries a schema version (currently 10). If you upgrade vela and the shape has
+The index carries a schema version (currently 11). If you upgrade vela and the shape has
 changed, every verb refuses to answer and tells you to re-index rather than querying a
 database it cannot read. The index is a cache, so it is rebuilt rather than migrated.
 

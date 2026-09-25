@@ -162,11 +162,15 @@ public sealed class FixtureSolution : IDisposable
             Run("dotnet", "restore Fixture.sln", root);
         });
 
+        // Named Shop, not App. The template has a component called App, so a project called
+        // App puts a class App inside a namespace App, and _Imports.razor's `@using App`
+        // then fails to compile. An index of a project with compile errors is marked
+        // incomplete, which would hide from every test here whether the answer is right.
         public static readonly Template BlazorApp = new(root =>
         {
-            Run("dotnet", "new blazor -o App --force", root);
+            Run("dotnet", "new blazor -o App -n Shop --force", root);
             Run("dotnet", "new sln -n Fixture --format sln", root);
-            Run("dotnet", "sln Fixture.sln add App/App.csproj", root);
+            Run("dotnet", "sln Fixture.sln add App/Shop.csproj", root);
             Run("dotnet", "restore Fixture.sln", root);
         });
 
