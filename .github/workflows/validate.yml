@@ -30,6 +30,14 @@ permissions:
   contents: read
 
 jobs:
+  # THE ESTATE FLOOR, defined once in dbhq-uk/.github (dbhq-uk/.github#4):
+  # SKILL.md frontmatter parses as YAML and names its directory, plugin.json
+  # parses and carries no version, skill paths are braced, every shell script
+  # passes bash -n and shellcheck, ruff E9,F where there is Python (none
+  # here), and no em or en dashes. Pinned by SHA; Dependabot moves the pin.
+  floor:
+    uses: dbhq-uk/.github/.github/workflows/skill-floor.yml@af131df509f44eb9abfe8b37ad6299c11f496c5f
+
   test:
     # vela is a global tool people install on Windows and macOS as readily as on
     # Linux, and nothing but a run on those runners can say whether it works there.
@@ -77,29 +85,13 @@ jobs:
           --filter "DocumentEnumeratorTests|IndexWithStats_ReportsTheCoverageThatMustNotRegress"
           --logger "console;verbosity=normal"
 
-  # THE SAME TWO LINTERS IN EVERY DBHQ SKILL REPO, added 17 Sep 2026. Nine of
-  # the fourteen ran no linter at all, in an estate that is mostly bash and
-  # Python - so a shell quoting hazard or a name that does not exist was only
-  # caught by somebody reading the diff.
-  #
-  # IT IS A DELIBERATELY NARROW RUFF SELECTION. `E9` is syntax errors and
-  # `F` is the pyflakes set: undefined names, unused imports, f-strings with no
-  # placeholders. Those are bugs. The full default selection flags import order
-  # and whitespace across every one of these repos, which would have meant
-  # reformatting thousands of lines in code other sessions are working in
-  # before the gate could go green - a large diff to buy a gate that catches
-  # less than this one does. garmin and imager run the full ruff and keep it.
+  # The rules that are about this skill rather than about every skill. The
+  # estate-wide checks, shellcheck and the frontmatter parse among them, are
+  # in the floor job above.
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # No `version` in plugin.json, on purpose (24 Sep 2026). Claude Code only
-      # updates an installed plugin when this field changes, it was never bumped,
-      # and marketplace installs sat on old code for weeks. With no version the
-      # commit is the version, so every merge to main reaches users.
-      - name: plugin.json carries no version
-        run: jq -e 'has("version") | not' .claude-plugin/plugin.json > /dev/null
 
       # A test count written in prose is wrong by the next test. Three files gave three
       # different counts, none of them current, so the counts were taken out rather than
@@ -110,47 +102,6 @@ jobs:
             echo "Leave the test count out of the prose: it goes stale with the next test"
             exit 1
           fi
-
-      # A real YAML parse, not a search for `name:` and `description:`. On 18 Sep
-      # an unquoted `: ` inside the description made the frontmatter invalid YAML
-      # with both keys still present, so a key search passed it. Claude Code
-      # tolerated the break; a strict loader, such as Codex's, skips the skill.
-      - name: Every SKILL.md has frontmatter that parses as YAML
-        run: |
-          python3 -m pip install --quiet --break-system-packages pyyaml
-          python3 - <<'PY'
-          import pathlib, re, sys, yaml
-          skills = sorted(pathlib.Path("skills").glob("*/SKILL.md"))
-          if not skills:
-              sys.exit("no skills/*/SKILL.md found")
-          ok = True
-          for skill in skills:
-              text = skill.read_text(encoding="utf-8")
-              match = re.match(r"^---\n(.*?)\n---\n", text, re.S)
-              if not match:
-                  print(f"{skill}: no frontmatter")
-                  ok = False
-                  continue
-              try:
-                  meta = yaml.safe_load(match.group(1))
-              except yaml.YAMLError as err:
-                  print(f"{skill}: frontmatter is not valid YAML: {err}")
-                  ok = False
-                  continue
-              if not isinstance(meta, dict):
-                  print(f"{skill}: frontmatter is not a mapping")
-                  ok = False
-                  continue
-              directory = skill.parent.name
-              if meta.get("name") != directory:
-                  print(f"{skill}: name is {meta.get('name')!r}, directory is {directory!r}")
-                  ok = False
-              description = meta.get("description")
-              if not isinstance(description, str) or not description.strip():
-                  print(f"{skill}: description is missing or empty")
-                  ok = False
-          sys.exit(0 if ok else 1)
-          PY
 
       # The plugin and skills.sh installs copy SKILL.md and no binary. An agent
       # whose first instruction is `vela index` fails with no way forward, so the
@@ -184,14 +135,6 @@ jobs:
             echo "Link from SKILL.md with a full https URL: a relative link breaks once installed"
             exit 1
           fi
-
-      - name: shellcheck
-        # -S warning, not the default, because `info` and `style` fire on
-        # idioms these scripts use deliberately. xargs -r so a repo with no
-        # shell scripts is a pass rather than a shellcheck usage error.
-        run: |
-          find . -name '*.sh' -not -path '*/.venv/*' -print0 \
-            | xargs -0 -r shellcheck -S warning
 
   # Nothing used to run the installers, so `./install.sh` failing from the
   # repository root - which is how the README says to run it - was only found by
