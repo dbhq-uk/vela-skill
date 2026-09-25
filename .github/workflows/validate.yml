@@ -101,6 +101,47 @@ jobs:
       - name: plugin.json carries no version
         run: jq -e 'has("version") | not' .claude-plugin/plugin.json > /dev/null
 
+      # A real YAML parse, not a search for `name:` and `description:`. On 18 Sep
+      # an unquoted `: ` inside the description made the frontmatter invalid YAML
+      # with both keys still present, so a key search passed it. Claude Code
+      # tolerated the break; a strict loader, such as Codex's, skips the skill.
+      - name: Every SKILL.md has frontmatter that parses as YAML
+        run: |
+          python3 -m pip install --quiet --break-system-packages pyyaml
+          python3 - <<'PY'
+          import pathlib, re, sys, yaml
+          skills = sorted(pathlib.Path("skills").glob("*/SKILL.md"))
+          if not skills:
+              sys.exit("no skills/*/SKILL.md found")
+          ok = True
+          for skill in skills:
+              text = skill.read_text(encoding="utf-8")
+              match = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+              if not match:
+                  print(f"{skill}: no frontmatter")
+                  ok = False
+                  continue
+              try:
+                  meta = yaml.safe_load(match.group(1))
+              except yaml.YAMLError as err:
+                  print(f"{skill}: frontmatter is not valid YAML: {err}")
+                  ok = False
+                  continue
+              if not isinstance(meta, dict):
+                  print(f"{skill}: frontmatter is not a mapping")
+                  ok = False
+                  continue
+              directory = skill.parent.name
+              if meta.get("name") != directory:
+                  print(f"{skill}: name is {meta.get('name')!r}, directory is {directory!r}")
+                  ok = False
+              description = meta.get("description")
+              if not isinstance(description, str) or not description.strip():
+                  print(f"{skill}: description is missing or empty")
+                  ok = False
+          sys.exit(0 if ok else 1)
+          PY
+
       - name: shellcheck
         # -S warning, not the default, because `info` and `style` fire on
         # idioms these scripts use deliberately. xargs -r so a repo with no
