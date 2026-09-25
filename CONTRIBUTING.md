@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for looking. vela works: the CLI is built, 420 tests pass, and it is measured on a
-real ten-project solution of 388,323 lines of C#. The design is written up in
+Thanks for looking. vela works: the CLI is built, the test suite passes on Linux, macOS and
+Windows, and it is measured on a real ten-project solution of 388,323 lines of C#. The design is written up in
 [docs/design-notes.md](docs/design-notes.md), which is now a historical record;
 [docs/architecture.md](docs/architecture.md) is the current picture.
 
@@ -50,8 +50,8 @@ vela index --stats     # in a dotnet new webapp scaffold
 ## House style
 
 - British English, plain hyphens. No em or en dashes.
-- Tests are hermetic: no network for the tool, throwaway solutions in temp directories. The
-  fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
+- The tool needs no network under test, and every test works on throwaway solutions in temp
+  directories. The fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
   NuGet cache needs network for test setup.
 - A test that indexes, imports or queries through the CLI uses `Fixtures/TempCacheHome`.
   It sets `VELA_CACHE_HOME`, which outranks `XDG_CACHE_HOME`, so running the suite never

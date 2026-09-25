@@ -156,7 +156,7 @@ documents            : 25
   generated          : 8   (compiled, not on disk)
   razor views        : 7   (.cshtml and .razor)
 occurrences          : 2691
-  in razor views     : 22
+  in razor views     : 27
   definitions        : 189
 sources              : 2   (where each document came from)
   roslyn harvest     : 23 document(s), 2670 occurrence(s)

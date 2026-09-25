@@ -12,6 +12,22 @@ public class SmokeTests
     }
 
     [Fact]
+    public async Task Help_DescribesASCIPToolThatIndexesDotNet()
+    {
+        // `--help` said "code search for .NET" after vela had become a SCIP tool that
+        // imports any language, which undersold it to anyone deciding whether to use it.
+        using var writer = new StringWriter();
+        var configuration = new InvocationConfiguration { Output = writer, Error = writer };
+
+        var exit = await Program.BuildRootCommand().Parse(new[] { "--help" }).InvokeAsync(configuration);
+
+        Assert.Equal(0, exit);
+        Assert.Contains("SCIP", writer.ToString(), StringComparison.Ordinal);
+        Assert.Contains(".NET", writer.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("for .NET", writer.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void RootCommand_HasTheFiveQueryVerbs()
     {
         var root = Program.BuildRootCommand();

@@ -101,6 +101,16 @@ jobs:
       - name: plugin.json carries no version
         run: jq -e 'has("version") | not' .claude-plugin/plugin.json > /dev/null
 
+      # A test count written in prose is wrong by the next test. Three files gave three
+      # different counts, none of them current, so the counts were taken out rather than
+      # updated, and this keeps them out.
+      - name: No test count in README, AGENTS or CONTRIBUTING
+        run: |
+          if grep -nE '[0-9]{3} tests' README.md AGENTS.md CONTRIBUTING.md; then
+            echo "Leave the test count out of the prose: it goes stale with the next test"
+            exit 1
+          fi
+
       # A real YAML parse, not a search for `name:` and `description:`. On 18 Sep
       # an unquoted `: ` inside the description made the frontmatter invalid YAML
       # with both keys still present, so a key search passed it. Claude Code

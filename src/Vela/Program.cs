@@ -77,6 +77,11 @@ public static class Program
         + "and no vela.json names one. Pass --solution <path to the .sln or .slnx>. In a git repository "
         + "with no .NET in it, vela import builds an index keyed on the repository instead.";
 
+    /// <summary>What `vela --help` says vela is.</summary>
+    internal const string RootDescription =
+        "Compiler-exact code search over a SCIP index. Indexes .NET itself (C#, Visual Basic, Razor "
+        + "and Blazor) and imports the .scip file any other language's indexer writes.";
+
     public static Task<int> Main(string[] args) =>
         BuildRootCommand().Parse(args).InvokeAsync();
 
@@ -94,7 +99,9 @@ public static class Program
 
     public static RootCommand BuildRootCommand()
     {
-        var root = new RootCommand("Compiler-exact code search for .NET.");
+        // Said the way the README says it: a SCIP tool that indexes .NET itself. "Code
+        // search for .NET" was the description before vela could import other languages.
+        var root = new RootCommand(RootDescription);
 
         // No default value, on purpose. A default is computed before anything knows which
         // verb is running, so it could not defer to vela.json, and a verb could not tell a
