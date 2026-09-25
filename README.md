@@ -112,12 +112,19 @@ support than that we kept it. The write-up is in
 
 ## Install
 
+**The skill and the `vela` command install separately.** The plugin and skills.sh
+installs below copy the skill only. They do not build or install the command. Install the
+command with the [local install](#local-install-claude-code-or-codex), which does both.
+The skill checks for the command before its first step and says what is missing.
+
 ### As a Claude Code plugin (recommended)
 
 ```
 /plugin marketplace add dbhq-uk/marketplace
 /plugin install vela@dbhq
 ```
+
+This installs the skill only. The `vela` command needs the local install as well.
 
 ### Any agent (Cursor, Copilot, Windsurf, Gemini, Cline and more)
 
@@ -126,7 +133,8 @@ npx skills add dbhq-uk/vela-skill
 ```
 
 The [skills.sh](https://skills.sh) CLI installs into whichever agent directories
-it finds, so this works outside Claude Code and Codex too.
+it finds, so this works outside Claude Code and Codex too. It installs the skill only.
+The `vela` command needs the local install as well.
 
 ### Local install (Claude Code or Codex)
 

@@ -142,6 +142,18 @@ jobs:
           sys.exit(0 if ok else 1)
           PY
 
+      # The plugin and skills.sh installs copy SKILL.md and no binary. An agent
+      # whose first instruction is `vela index` fails with no way forward, so the
+      # skill must check for the command before it first runs it.
+      - name: SKILL.md checks for the vela command before it runs vela index
+        run: |
+          check=$(grep -n -m1 'command -v vela' skills/vela/SKILL.md | cut -d: -f1)
+          first=$(grep -n -m1 '^vela index' skills/vela/SKILL.md | cut -d: -f1)
+          if [ -z "$check" ] || [ -z "$first" ] || [ "$check" -ge "$first" ]; then
+            echo "skills/vela/SKILL.md must run 'command -v vela' before its first 'vela index'"
+            exit 1
+          fi
+
       - name: shellcheck
         # -S warning, not the default, because `info` and `style` fire on
         # idioms these scripts use deliberately. xargs -r so a repo with no

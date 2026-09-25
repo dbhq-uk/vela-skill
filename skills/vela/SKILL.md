@@ -23,7 +23,21 @@ Use vela when:
 
 ## Steps
 
+### 0. Check the vela command is installed
+
+```bash
+command -v vela
+```
+
+The plugin and skills.sh installs copy this file and nothing else. They do not install the `vela` command. If `command -v vela` prints nothing, stop and tell the user what vela needs. Do not fall back to grep without saying so.
+
+- **The .NET SDK 10.0 or newer.** `dotnet --list-sdks` shows what is installed.
+- **The tool itself.** Clone `https://github.com/dbhq-uk/vela-skill` and run `./install.sh` from the clone. It builds vela and installs it as a .NET global tool.
+- **`~/.dotnet/tools` on `PATH`**, which is where .NET global tools go.
+
 ### 1. Ensure an index exists
+
+**Restore the solution first** if it has never been restored: run `dotnet restore` (or `dotnet build`) in the solution directory. vela does not run a restore, and a project MSBuild cannot restore does not load.
 
 ```bash
 vela index
