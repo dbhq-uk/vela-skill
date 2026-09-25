@@ -749,6 +749,11 @@ The index is a snapshot. Every query compares its build time against the modific
 of the files it watches under the repository root, and if one of them is newer, every verb
 says so and exits 3.
 
+The build time is taken when `vela index` starts, before it reads a single file, on both the
+full and the incremental path. So a file edited while the index is being built is newer than
+the index, and the next query reports it stale. That is deliberate: the index may hold the
+file as it was before the edit, and nothing can tell which.
+
 Watched extensions: `.cs`, `.vb`, `.cshtml`, `.razor`, `.csproj`, `.vbproj`, `.sln`,
 `.slnx`, `.props`, `.targets`.
 
