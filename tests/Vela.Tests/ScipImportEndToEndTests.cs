@@ -386,6 +386,55 @@ public class ScipImportEndToEndTests
     }
 
     [Fact]
+    public async Task Import_AnEditToAFileTheScipCovers_MakesTheNextQueryStale()
+    {
+        // The freshness walk watches the extensions vela indexes itself, so an edit to
+        // TypeScript imported from a .scip left every answer about it at exit 0 with no
+        // banner, describing code that had changed.
+        using var fx = FixtureSolution.CreateWebApp();
+        using var cache = new TempCacheHome();
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+
+        // The file on disk predates the .scip, as it does when an indexer has just run.
+        var site = Path.Combine(fx.Root, "App", "wwwroot", "js", "site.ts");
+        var scip = Path.Combine(fx.Root, "foreign.scip");
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet"));
+        Assert.True(File.GetLastWriteTimeUtc(site) < File.GetLastWriteTimeUtc(scip));
+        Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
+
+        var fresh = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
+        Assert.Equal(0, fresh.ExitCode);
+        Assert.DoesNotContain("INCOMPLETE", fresh.Output, StringComparison.Ordinal);
+
+        // An edit after the indexer wrote the .scip.
+        File.SetLastWriteTimeUtc(site, DateTime.UtcNow.AddMinutes(1));
+
+        var stale = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
+        Assert.Equal(IndexHealth.ExitDegraded, stale.ExitCode);
+        Assert.Contains("INCOMPLETE INDEX", stale.Output, StringComparison.Ordinal);
+        Assert.Contains("App/wwwroot/js/site.ts", stale.Output, StringComparison.Ordinal);
+        Assert.Contains("vela import --replace " + scip, stale.Output, StringComparison.Ordinal);
+
+        // A full re-index replays the unchanged .scip at a later time than the edit. The
+        // clock is when the .scip was written, so the replay does not wash the edit out.
+        Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
+        Assert.Equal(IndexHealth.ExitDegraded,
+            (await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath)).ExitCode);
+
+        // Re-running the indexer after the edit, and importing again, settles it.
+        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        File.SetLastWriteTimeUtc(scip, DateTime.UtcNow.AddMinutes(2));
+        Assert.Equal(0, (await InvokeAsync("import", "--replace", scip, "--solution", fx.SolutionPath)).ExitCode);
+        Assert.Equal(0, (await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath)).ExitCode);
+
+        // A file the .scip names that has gone is stale too: answers would name it.
+        File.Delete(site);
+        var gone = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
+        Assert.Equal(IndexHealth.ExitDegraded, gone.ExitCode);
+        Assert.Contains("no longer on disk", gone.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Import_ThroughTheCli_SaysSoAndDegradesWhenAFileCannotBeRead()
     {
         using var fx = FixtureSolution.CreateWebApp();
@@ -438,9 +487,7 @@ public class ScipImportEndToEndTests
         Assert.Contains("INCOMPLETE", banner.Output, StringComparison.Ordinal);
 
         // The indexer is re-run from the right root and the same file imported again.
-        File.WriteAllBytes(
-            scip,
-            ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet"));
 
         var repaired = await InvokeAsync("import", scip, "--solution", fx.SolutionPath);
         Assert.Equal(0, repaired.ExitCode);
@@ -468,7 +515,7 @@ public class ScipImportEndToEndTests
         Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
 
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet", "farewell").ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet", "farewell"));
         Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
 
         // Without --replace the second import is refused, in the same words as before,
@@ -479,7 +526,7 @@ public class ScipImportEndToEndTests
 
         // The indexer is re-run over code that has since lost `farewell`, and the same
         // file is imported again over the top of itself.
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet"));
         var replaced = await InvokeAsync("import", "--replace", scip, "--solution", fx.SolutionPath);
 
         Assert.Equal(0, replaced.ExitCode);
@@ -523,10 +570,9 @@ public class ScipImportEndToEndTests
         Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
 
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex(
-            fx.Root,
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root,
             ("App/wwwroot/js/site.ts", new[] { "greet" }),
-            ("App/wwwroot/js/legacy.ts", new[] { "retired" })).ToByteArray());
+            ("App/wwwroot/js/legacy.ts", new[] { "retired" })));
 
         Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
         Assert.Contains("1 result(s)",
@@ -535,8 +581,7 @@ public class ScipImportEndToEndTests
 
         // legacy.ts was deleted from the project, so the indexer's next run does not name
         // it at all.
-        File.WriteAllBytes(scip, ForeignIndex(
-            fx.Root, ("App/wwwroot/js/site.ts", new[] { "greet" })).ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, ("App/wwwroot/js/site.ts", new[] { "greet" })));
 
         var replaced = await InvokeAsync("import", "--replace", scip, "--solution", fx.SolutionPath);
         Assert.Equal(0, replaced.ExitCode);
@@ -583,10 +628,9 @@ public class ScipImportEndToEndTests
         Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
 
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex(
-            fx.Root,
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root,
             ("App/wwwroot/js/site.ts", new[] { "greet" }),
-            ("App/wwwroot/js/cart.ts", new[] { "total" })).ToByteArray());
+            ("App/wwwroot/js/cart.ts", new[] { "total" })));
         Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
 
         var stats = await InvokeAsync("index", "--stats", "--solution", fx.SolutionPath);
@@ -636,12 +680,11 @@ public class ScipImportEndToEndTests
         Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
 
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex(
-            fx.Root, ("App/wwwroot/js/site.ts", new[] { "greet" })).ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, ("App/wwwroot/js/site.ts", new[] { "greet" })));
         Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
 
         // The indexer run produced nothing at all.
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root).ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root));
 
         var replaced = await InvokeAsync("import", "--replace", scip, "--solution", fx.SolutionPath);
         Assert.Equal(0, replaced.ExitCode);
@@ -680,7 +723,7 @@ public class ScipImportEndToEndTests
         Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
 
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet"));
         Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
 
         var before = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
@@ -731,7 +774,7 @@ public class ScipImportEndToEndTests
         Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
 
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet"));
         Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
 
         // The indexer's output was cleaned away, as build output is.
@@ -749,7 +792,7 @@ public class ScipImportEndToEndTests
         Assert.Contains("mobile.scip", after.Output, StringComparison.Ordinal);
 
         // And re-importing it clears the record, exactly as settling a pending job does.
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet"));
         Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
 
         var clean = await InvokeAsync("refs", "greet", "--solution", fx.SolutionPath);
@@ -772,12 +815,11 @@ public class ScipImportEndToEndTests
         Assert.Equal(0, (await InvokeAsync("index", "--solution", fx.SolutionPath)).ExitCode);
 
         var scip = Path.Combine(fx.Root, "mobile.scip");
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet").ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet"));
         Assert.Equal(0, (await InvokeAsync("import", scip, "--solution", fx.SolutionPath)).ExitCode);
 
         // The indexer was re-run and the code had gained a function since.
-        File.WriteAllBytes(
-            scip, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet", "farewell").ToByteArray());
+        WriteScip(scip, fx.Root, ForeignIndex(fx.Root, "App/wwwroot/js/site.ts", "greet", "farewell"));
 
         var rebuilt = await InvokeAsync("index", "--solution", fx.SolutionPath);
         Assert.Equal(0, rebuilt.ExitCode);
@@ -811,17 +853,36 @@ public class ScipImportEndToEndTests
     }
 
     /// <summary>
+    /// Writes a .scip the way an indexer run leaves one: every file it names is on disk under
+    /// the root, and older than the .scip, because an indexer reads the files before it
+    /// writes its output. vela checks the files an import names for freshness, so a .scip
+    /// naming files that were never there reads as stale, which is what it would be.
+    /// </summary>
+    private static void WriteScip(string scip, string root, Scip.Index index)
+    {
+        foreach (var document in index.Documents)
+        {
+            var file = Path.Combine(root, document.RelativePath.Replace('/', Path.DirectorySeparatorChar));
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            if (!File.Exists(file)) File.WriteAllText(file, "");
+            File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddHours(-1));
+        }
+
+        File.WriteAllBytes(scip, index.ToByteArray());
+    }
+
+    /// <summary>
     /// One document rooted where the caller says, defining one function per name given,
     /// standing in for what an indexer for some other language writes.
     /// </summary>
-    private static Scip.Index ForeignIndex(string root, string relativePath, params string[] names) =>
+    internal static Scip.Index ForeignIndex(string root, string relativePath, params string[] names) =>
         ForeignIndex(root, (relativePath, names));
 
     /// <summary>
     /// A .scip naming any number of files, which is the only shape in which a run of the
     /// indexer can DROP a file the previous run named.
     /// </summary>
-    private static Scip.Index ForeignIndex(string root, params (string Path, string[] Names)[] documents)
+    internal static Scip.Index ForeignIndex(string root, params (string Path, string[] Names)[] documents)
     {
         var index = new Scip.Index
         {

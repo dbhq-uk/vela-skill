@@ -344,7 +344,7 @@ rebuild, since rebuilding all ten one at a time is a slower route to the same in
 
 ### No migrations
 
-The index carries a schema version, currently 11, and a build that reads a different one
+The index carries a schema version, currently 12, and a build that reads a different one
 refuses to answer. There is no migration path, deliberately: re-indexing takes seconds and
 rebuilds from the truth, where a migration would rebuild from a guess about what the old
 rows meant.

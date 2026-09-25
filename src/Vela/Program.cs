@@ -74,7 +74,8 @@ public static class Program
 
     private const string NoSolutionMessage =
         "No .sln or .slnx found in the current directory or above it, up to the repository root, "
-        + "and no vela.json names one. Pass --solution <path to the .sln or .slnx>.";
+        + "and no vela.json names one. Pass --solution <path to the .sln or .slnx>. In a git repository "
+        + "with no .NET in it, vela import builds an index keyed on the repository instead.";
 
     public static Task<int> Main(string[] args) =>
         BuildRootCommand().Parse(args).InvokeAsync();
@@ -1043,7 +1044,8 @@ public static class Program
                 {
                     null => "of an unrecorded solution (built by an older vela, or unreadable)",
                     var path when index.IsOrphaned => $"of {path}, WHICH IS NOT THERE",
-                    var path when !File.Exists(path) => $"of {path}, WHICH VELA CANNOT REACH",
+                    var path when !File.Exists(path) && !Directory.Exists(path) => $"of {path}, WHICH VELA CANNOT REACH",
+                    var path when RepositoryKey.Is(path) => $"of the repository at {RepositoryKey.RootOf(path)} (no solution)",
                     var path => "of " + path
                 };
 
@@ -1393,8 +1395,17 @@ public static class Program
     /// file is a solution at all is a question for whoever opens it, and the answer they
     /// give is better than any guess made from an extension.
     /// </summary>
+    /// <param name="repositoryKey">
+    /// Whether a repository with no solution anywhere may be answered for by the index keyed
+    /// on the repository itself (see <see cref="RepositoryKey"/>), given that key. Null for
+    /// `vela index`, which has nothing to build without a solution. `vela import` accepts the
+    /// key always, because importing into nothing is how such an index is made; the query
+    /// verbs accept it only when that index exists, so a repository whose solution is merely
+    /// somewhere this walk does not look still gets the error that says to pass --solution.
+    /// </param>
     private static bool TryResolveSolution(
-        string? solution, TextWriter error, out string resolvedSolution, out VelaConfig config)
+        string? solution, TextWriter error, out string resolvedSolution, out VelaConfig config,
+        Func<string, bool>? repositoryKey = null)
     {
         resolvedSolution = "";
         config = VelaConfig.Default;
@@ -1450,9 +1461,19 @@ public static class Program
 
         if (string.IsNullOrWhiteSpace(config.Solution))
         {
-            var found = DiscoverSolution(start, out var problem);
+            var found = DiscoverSolution(start, out var problem, out var noneFound);
             if (found is null)
             {
+                // No solution anywhere between here and the repository root, which in a
+                // repository with no .NET in it is the normal state, not a mistake.
+                if (noneFound && repositoryKey is not null
+                    && ProjectRoot.RepositoryRootOf(start) is { } repository
+                    && repositoryKey(RepositoryKey.For(repository)))
+                {
+                    resolvedSolution = RepositoryKey.For(repository);
+                    return true;
+                }
+
                 error.WriteLine(problem);
                 return false;
             }
@@ -1616,9 +1637,13 @@ public static class Program
             }
 
             string hash;
+            DateTime written;
             ImportReport report;
             try
             {
+                // Read before the file is, so a .scip rewritten while it is being read is
+                // stamped with the older time, which errs towards calling files stale.
+                written = File.GetLastWriteTimeUtc(record.Source);
                 hash = ImportedSources.HashOf(record.Source);
                 report = ScipImporter.ImportFile(
                     db, record.Source, repositoryRoot, replace: false, source: record.Source);
@@ -1633,7 +1658,7 @@ public static class Program
             }
 
             ImportedSources.Write(db, new ImportedSource(
-                record.Source, DateTime.UtcNow, hash, report.Documents, report.Occurrences));
+                record.Source, DateTime.UtcNow, hash, report.Documents, report.Occurrences, written));
 
             var detail = report.Degraded ? Summarise(report.Problems) : null;
             IndexHealth.WriteImport(db, record.Source, detail);
@@ -1743,10 +1768,19 @@ public static class Program
             // Through the same resolver `vela index` uses, so a repository whose vela.json
             // names its solution can import without repeating --solution, and so a config
             // that cannot be honoured stops both verbs in the same place.
-            if (!TryResolveSolution(parseResult.GetValue(solutionOption), error, out var solution, out _))
+            if (!TryResolveSolution(parseResult.GetValue(solutionOption), error, out var solution, out _,
+                                    repositoryKey: _ => true))
                 return ExitCannotAnswer;
 
             var repositoryRoot = ProjectRoot.ForSolution(solution);
+
+            // Said, because it decides where later queries find this index: from anywhere in
+            // the repository with no --solution, as long as no solution file appears.
+            if (RepositoryKey.Is(solution))
+            {
+                output.WriteLine($"No .sln or .slnx was found, so this index is keyed on the repository at "
+                               + $"{repositoryRoot}. Query it from anywhere in the repository without --solution.");
+            }
             var scipPath = ResolveScipPath(parseResult.GetRequiredValue(argument), repositoryRoot);
             if (scipPath is null)
             {
@@ -1792,9 +1826,13 @@ public static class Program
                 error.WriteLine($"The index at {path} was built against schema version {version}, and "
                               + $"this vela reads version {Schema.Version}. Importing into it would "
                               + "write rows a later read cannot trust.");
-                error.WriteLine($"Run: vela index --solution {solution}");
+                error.WriteLine(RebuildAdvice(solution));
                 return ExitCannotAnswer;
             }
+
+            // When the indexer wrote this file, read before the file is: the freshness clock
+            // for every document it names. See imported_source.scip_modified_at_utc.
+            var written = File.GetLastWriteTimeUtc(scipPath);
 
             ImportReport report;
             try
@@ -1975,7 +2013,7 @@ public static class Program
             // because a degraded import is still an import and still has to be replayed.
             ImportedSources.Write(db, new ImportedSource(
                 scipPath, DateTime.UtcNow, ImportedSources.HashOf(scipPath),
-                report.Documents, report.Occurrences));
+                report.Documents, report.Occurrences, written));
 
             if (!report.Degraded) return 0;
 
@@ -2166,7 +2204,8 @@ public static class Program
                 health,
                 ProjectRoot.ForSolution(solution),
                 IndexPaths.ForSolution(solution),
-                ProjectInputs.ReadDocumentInputs(db));
+                ProjectInputs.ReadDocumentInputs(db),
+                ImportedSources.ReadCoveredFiles(db));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
                                       or InvalidOperationException or SqliteException)
@@ -2248,7 +2287,7 @@ public static class Program
                           + $"{Schema.Version}. It cannot be queried, and answering from it anyway would "
                           + "risk a wrong answer rather than no answer.");
             error.WriteLine("The index is a cache, so it is rebuilt rather than migrated.");
-            error.WriteLine($"Run: vela index --solution {solution}");
+            error.WriteLine(RebuildAdvice(solution));
             return null;
         }
 
@@ -2281,8 +2320,18 @@ public static class Program
         error.WriteLine(consequence);
         error.WriteLine("An index is a cache, so it is rebuilt rather than repaired, and none of your "
                       + "code is in it.");
-        error.WriteLine($"Run: vela index --solution {solution}");
+        error.WriteLine(RebuildAdvice(solution));
     }
+
+    /// <summary>
+    /// The command that builds a fresh index for this key. For a solution it is `vela index`.
+    /// An index keyed on a repository with no solution was made by `vela import` alone, and
+    /// `vela index` has nothing to build there, so the advice is to clear it and import again.
+    /// </summary>
+    private static string RebuildAdvice(string solution) =>
+        RepositoryKey.Is(solution)
+            ? $"Run: vela cache clear --solution {solution}, then vela import each .scip again."
+            : $"Run: vela index --solution {solution}";
 
     /// <summary>
     /// Built rather than interpolated: an index path contains the solution name, and
@@ -2315,7 +2364,10 @@ public static class Program
     private static string? SolutionForQuery(string? requested, TextWriter error)
     {
         if (!string.IsNullOrWhiteSpace(requested)) return requested;
-        return TryResolveSolution(null, error, out var solution, out _) ? solution : null;
+        return TryResolveSolution(null, error, out var solution, out _,
+                                  repositoryKey: key => File.Exists(IndexPaths.ForSolution(key)))
+            ? solution
+            : null;
     }
 
     /// <summary>
@@ -2339,8 +2391,15 @@ public static class Program
     /// globbed once per extension, so the rule does not depend on how a platform matches
     /// a search pattern.
     /// </summary>
-    private static string? DiscoverSolution(string startDirectory, out string problem)
+    /// <param name="noneFound">
+    /// True when the walk found no solution at all, as opposed to two in one directory. Only
+    /// the first can fall back to the repository key: two solutions is a choice the user has
+    /// to make, and keying on the repository would make it for them.
+    /// </param>
+    private static string? DiscoverSolution(string startDirectory, out string problem, out bool noneFound)
     {
+        noneFound = false;
+
         var start = Path.GetFullPath(startDirectory);
         var root = ProjectRoot.ForSolutionDirectory(start);
 
@@ -2381,6 +2440,7 @@ public static class Program
         }
 
         problem = NoSolutionMessage;
+        noneFound = true;
         return null;
     }
 }

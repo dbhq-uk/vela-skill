@@ -21,12 +21,26 @@ namespace Vela.Indexing;
 /// changed code between one `vela index` and the next, so a replay reporting the numbers
 /// from the earlier import would be reporting something that is no longer true.
 /// </param>
+/// <param name="ScipModifiedAtUtc">
+/// When the indexer wrote the file, read off it as it was imported, and the freshness clock
+/// for every document it names. Null only in a record read by <see cref="ImportedSources.Read"/>,
+/// which a rebuild uses on the index it is about to replace, and which may be from an older
+/// schema that did not store it. The rebuild reads the time off the file again in any case.
+/// </param>
 public sealed record ImportedSource(
     string Source,
     DateTime ImportedAtUtc,
     string ContentHash,
     int Documents,
-    int Occurrences);
+    int Occurrences,
+    DateTime? ScipModifiedAtUtc = null);
+
+/// <summary>
+/// One file an imported .scip names, with the .scip it came from and the time that .scip
+/// was written. A file changed after that time is newer than what the index holds for it.
+/// </summary>
+/// <param name="RelativePath">Relative to the repository root, '/'-separated, as stored.</param>
+public sealed record ImportedFile(string Source, DateTime ScipModifiedAtUtc, string RelativePath);
 
 /// <summary>
 /// What a rebuild has to put back, and whether it could be asked at all.
@@ -133,6 +147,37 @@ public static class ImportedSources
     }
 
     /// <summary>
+    /// Every document an import put in this index, with the .scip it came from and when
+    /// that .scip was written, ordered by path so the freshness check reports the same file
+    /// first on every run (Constraint 1).
+    ///
+    /// This is what lets an edit to an imported language raise the stale banner. The
+    /// freshness walk watches the extensions vela indexes itself, so without this an edit
+    /// to TypeScript imported from a .scip left every answer about it at exit 0.
+    /// </summary>
+    public static IReadOnlyList<ImportedFile> ReadCoveredFiles(SqliteConnection db)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = """
+            SELECT s.source, s.scip_modified_at_utc, d.relative_path
+            FROM document d JOIN imported_source s ON s.source = d.source
+            ORDER BY d.relative_path
+            """;
+        using var reader = cmd.ExecuteReader();
+
+        var files = new List<ImportedFile>();
+        while (reader.Read())
+        {
+            files.Add(new ImportedFile(
+                reader.GetString(0),
+                DateTime.Parse(reader.GetString(1), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
+                reader.GetString(2)));
+        }
+
+        return files;
+    }
+
+    /// <summary>
     /// Records an import, replacing whatever the same file recorded last time. Keyed by
     /// source, so there is no state in which two rows describe one file and nobody can say
     /// which is current - the same reason import_health is keyed that way.
@@ -141,19 +186,27 @@ public static class ImportedSources
     {
         using var cmd = db.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO imported_source(source, imported_at_utc, content_hash, documents, occurrences)
-            VALUES ($s, $t, $h, $d, $o)
+            INSERT INTO imported_source(source, imported_at_utc, content_hash, documents, occurrences, scip_modified_at_utc)
+            VALUES ($s, $t, $h, $d, $o, $m)
             ON CONFLICT(source) DO UPDATE SET
-                imported_at_utc = excluded.imported_at_utc,
-                content_hash    = excluded.content_hash,
-                documents       = excluded.documents,
-                occurrences     = excluded.occurrences
+                imported_at_utc      = excluded.imported_at_utc,
+                content_hash         = excluded.content_hash,
+                documents            = excluded.documents,
+                occurrences          = excluded.occurrences,
+                scip_modified_at_utc = excluded.scip_modified_at_utc
             """;
         cmd.Parameters.AddWithValue("$s", record.Source);
         cmd.Parameters.AddWithValue("$t", record.ImportedAtUtc.ToString("O"));
         cmd.Parameters.AddWithValue("$h", record.ContentHash);
         cmd.Parameters.AddWithValue("$d", record.Documents);
         cmd.Parameters.AddWithValue("$o", record.Occurrences);
+
+        // Every import and every successful replay reads the time off the file. A record
+        // with none is one a rebuild could not replay, kept so the next rebuild goes on
+        // saying the file is missing; it wrote no documents, so no file is checked against
+        // this time and the import time stands in for it.
+        var modified = record.ScipModifiedAtUtc ?? record.ImportedAtUtc;
+        cmd.Parameters.AddWithValue("$m", modified.ToString("O"));
         cmd.ExecuteNonQuery();
     }
 

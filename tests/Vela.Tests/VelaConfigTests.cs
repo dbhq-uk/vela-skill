@@ -708,7 +708,7 @@ public class VelaConfigEndToEndTests
         // The indexer is run, by whatever runs it, and its output lands where the job
         // said it would.
         var scip = Path.Combine(mobile, "index.scip");
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "src/Mobile/app.ts", "greet").ToByteArray());
+        WriteScip(scip, fx.Root, "src/Mobile/app.ts", "greet");
 
         var imported = await InvokeAsync("import", scip, "--solution", fx.SolutionPath);
         Assert.Equal(0, imported.ExitCode);
@@ -765,7 +765,7 @@ public class VelaConfigEndToEndTests
         Assert.Contains("vela import src/Mobile/index.scip", indexed.Output, StringComparison.Ordinal);
 
         var scip = Path.Combine(mobile, "index.scip");
-        File.WriteAllBytes(scip, ForeignIndex(fx.Root, "src/Mobile/app.ts", "greet").ToByteArray());
+        WriteScip(scip, fx.Root, "src/Mobile/app.ts", "greet");
 
         // Every one of these names the same file. The user stands in src/, which is where
         // anybody who has just run the indexer over src/Mobile is standing.
@@ -844,7 +844,7 @@ public class VelaConfigEndToEndTests
             Assert.Equal(IndexHealth.ExitDegraded, indexed.ExitCode);
 
             var scip = Path.Combine(link, "src", "Mobile", "index.scip");
-            File.WriteAllBytes(scip, ForeignIndex(fx.Root, "src/Mobile/app.ts", "greet").ToByteArray());
+            WriteScip(scip, fx.Root, "src/Mobile/app.ts", "greet");
 
             var previous = Directory.GetCurrentDirectory();
             (int ExitCode, string Output) imported;
@@ -902,6 +902,21 @@ public class VelaConfigEndToEndTests
         var refs = await InvokeAsync("refs", "ViewData", "--solution", fx.SolutionPath);
         Assert.Equal(0, refs.ExitCode);
         Assert.Contains(".cshtml", refs.Output, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Writes a .scip naming one file, and that file, older than the .scip, the way an
+    /// indexer run leaves them. vela checks the files an import names for freshness, so a
+    /// .scip naming a file that was never there reads as stale, which is what it would be.
+    /// </summary>
+    private static void WriteScip(string scip, string root, string relativePath, params string[] names)
+    {
+        var file = Path.Combine(root, relativePath.Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+        File.WriteAllText(file, "");
+        File.SetLastWriteTimeUtc(file, DateTime.UtcNow.AddHours(-1));
+
+        File.WriteAllBytes(scip, ForeignIndex(root, relativePath, names).ToByteArray());
     }
 
     private static Scip.Index ForeignIndex(string root, string relativePath, params string[] names)

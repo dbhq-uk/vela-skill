@@ -16,7 +16,7 @@ Compiler-exact code search over a SCIP index. .NET answers come from Roslyn, oth
   - references from `.cshtml` and `.razor` files
   - callers, and what a change touches
   - a survey of a clean tree before a change
-- **Not vela** in a repository with no .NET code and no `.scip` to import. There is nothing to index.
+- **Not vela** in a repository with no .NET and no `.scip` to import.
 
 ## Steps
 
@@ -53,7 +53,7 @@ vela import path/to/index.scip             # first time
 vela import --replace path/to/index.scip   # after re-running that indexer
 ```
 
-Run `vela index` first, then import. A later `vela index` replays the imports. If `vela index` names a `.scip` that a `vela.json` job expects, run that indexer and import it: until then every answer carries the banner.
+Run `vela index` first, then import. A later `vela index` replays the imports. In a git repository with no solution, `vela import` alone makes the index. If `vela index` names a `.scip` that a `vela.json` job expects, run that indexer and import it: until then every answer carries the banner.
 
 ### 3. Ask
 
@@ -78,7 +78,7 @@ vela find    <pattern> # discover a name by prefix
 
 **An empty result is not proof that nothing uses the symbol.**
 
-A banner starting `!! INCOMPLETE INDEX`, with exit code 3, means the index is missing code, out of date, or could not be checked, and it says which. Treat the answer as incomplete and say so. Never delete or rename on an empty answer from such an index. A quiet answer is not proof either: the freshness check watches .NET source and project files only. If you have edited code, re-index.
+A banner starting `!! INCOMPLETE INDEX`, with exit code 3, means the index is missing code, out of date, or could not be checked, and it says which. Treat the answer as incomplete and say so. Never delete or rename on an empty answer from such an index. A quiet answer is not proof either: the freshness check watches .NET source and project files, and the files an imported `.scip` names. If you have edited code, re-index.
 
 Every empty answer says which absence it is: no such name, nothing to report, or only in generated code. Read that line.
 

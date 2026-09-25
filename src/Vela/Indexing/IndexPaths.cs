@@ -108,6 +108,10 @@ public static class IndexPaths
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(full)))[..16].ToLowerInvariant();
         var name = Path.GetFileNameWithoutExtension(full);
 
+        // A repository key is the repository's `.git` entry, which has no name before its
+        // extension, so the index is named after the repository instead. See RepositoryKey.
+        if (name.Length == 0) name = Path.GetFileName(solutionDir);
+
         // Resolved the same way the solution directory above it was, because the guard
         // below compares the two and a comparison between a resolved path and an
         // unresolved one answers about spelling rather than about location. It has to be

@@ -191,6 +191,10 @@ read, degrades the index and names itself, and that verdict is written under the
 
 ## Re-running an indexer after the code changed
 
+vela notices when you have not. Every file an imported `.scip` names is checked against the
+time that `.scip` was written, so after you edit TypeScript every answer carries the stale
+banner and exits 3, and the banner names the `.scip` to import again.
+
 Give the TypeScript something more to index, so the counts move:
 
 ```bash
@@ -301,14 +305,16 @@ a config cannot silently shrink an existing index.
 
 ## A repository with no .NET in it
 
-Legitimate, and supported. Import into nothing:
+Legitimate, and supported. Import into nothing, from anywhere in the git repository:
 
 ```bash
-vela import path/to/index.scip --solution whatever.sln
+vela import path/to/index.scip
 ```
 
-vela creates the database, writes a health record so later queries can vouch for it, and
-answers.
+With no `.sln` or `.slnx` to key the index on, vela keys it on the repository and says so.
+The query verbs then find it from anywhere in the repository without `--solution`, and
+`vela import --replace` finds it again. `vela index` has nothing to build in such a
+repository and says so.
 
 ## Things to know about imported indexes
 
