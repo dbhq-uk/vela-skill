@@ -167,8 +167,8 @@ then answer over both.
 ```bash
 mkdir demo && cd demo
 dotnet new webapp -n RazorDemo -o RazorDemo
-dotnet new sln -n RazorDemo --format sln
-dotnet sln RazorDemo.sln add RazorDemo/RazorDemo.csproj
+dotnet new sln -n RazorDemo
+dotnet sln add RazorDemo/RazorDemo.csproj
 
 vela index --stats
 vela refs ShowRequestId

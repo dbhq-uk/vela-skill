@@ -54,7 +54,7 @@ Put a `vela.json` beside the solution:
 ```json
 {
   "version": 1,
-  "solution": "RazorDemo.sln",
+  "solution": "RazorDemo.slnx",
   "jobs": [
     { "language": "csharp", "indexer": "vela", "root": "." },
     { "language": "razor", "indexer": "vela", "root": "." },

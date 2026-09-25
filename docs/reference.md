@@ -42,7 +42,7 @@ The new index is built beside the old one and renamed over it at the end, so
 
 | Option | Meaning |
 |---|---|
-| `--solution <path>` | Path to the `.sln`. Defaults to the only `.sln` in the current directory. |
+| `--solution <path>` | Path to the `.sln` or `.slnx`. Optional: see [global options](#global-options) for how vela finds it when it is not given. |
 | `--stats` | After indexing, print document, generated-document, Razor, occurrence and definition counts, what each source contributed, and list every document that was left out. |
 | `--incremental` | Rebuild only the projects whose inputs changed, and every project downstream of them. **Off by default.** See [`--incremental`](#--incremental). |
 
@@ -373,9 +373,18 @@ An empty `impact` also says why it is empty rather than implying nothing calls t
 
 ## Global options
 
-`--solution <path>` is available on every verb. With no value, vela looks for exactly one
-`.sln` in the current directory; zero or two or more is an error, and a `vela.json` may
-name the solution instead.
+`--solution <path>` is available on every verb. When it is not given, every verb that
+opens an index - `index`, `import` and each query verb - picks the solution the same way:
+
+1. The `solution` named in a [`vela.json`](#velajson), looked for from the current
+   directory upwards, bounded by the repository root.
+2. Otherwise, the only `.sln` or `.slnx` in the current directory, or in the nearest
+   directory above it that holds one, stopping at the repository root.
+
+The walk stops at the first directory holding any solution file. Two there, such as an
+`App.sln` beside the `App.slnx` that `dotnet sln migrate` wrote, is an error that names
+both, because picking one would be a guess. A solution above the repository root is never
+used. A `--solution` you do give always wins, and `vela.json` is not consulted for it.
 
 `--help` and `--version` behave as usual. `--version` reports the package version and the
 commit it was built from.
@@ -824,7 +833,8 @@ nothing about anything else, exactly as it always has.
 }
 ```
 
-It is looked for from the solution's own directory upwards, bounded by the repository root.
+It is looked for from the solution's own directory upwards when `--solution` is given, and
+from the current directory upwards when it is not, bounded by the repository root either way.
 
 ### Top-level properties
 
@@ -832,7 +842,7 @@ It is looked for from the solution's own directory upwards, bounded by the repos
 |---|---|---|
 | `$schema` | string | Ignored by vela, there so an editor can offer completion. |
 | `version` | integer | Must be `1`. A later version is refused rather than half-honoured. |
-| `solution` | string | Which `.sln` this repository means, so `--solution` need not be repeated. |
+| `solution` | string | Which `.sln` or `.slnx` this repository means, relative to the `vela.json`. Every verb uses it when `--solution` is not given, so it need not be repeated. |
 | `jobs` | array | See below. Omitting it keeps the default csharp and razor jobs. |
 | `exclude` | array of glob patterns | **Appended** to the defaults, so a repository states only what is different about it. |
 
