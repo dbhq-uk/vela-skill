@@ -8,26 +8,47 @@ response within 48 hours.
 
 ## What this skill does
 
-Vela answers questions about a .NET solution by compiling it with Roslyn and
-querying the result. Everything happens on your machine.
+vela answers questions about code from an index it builds on your machine. For
+.NET it loads the solution with MSBuild and compiles it with Roslyn. Any other
+language arrives as a `.scip` file that language's own indexer wrote, which
+`vela import` reads. Everything happens locally.
+
+### Indexing runs the solution's build logic
+
+**Index only code you trust.** `vela index` evaluates the solution with MSBuild
+and runs its source generators, as `dotnet build` does. MSBuild targets and
+source generators are code, supplied by the repository and by its packages, so
+indexing a repository runs that code on your machine. Treat `vela index` on an
+unfamiliar repository as you would treat `dotnet build` on it.
+
+`vela import` only reads the `.scip` file. It runs nothing from it.
 
 ### Network
 
-**None at runtime.** The analysis is local: Roslyn loads the solution, and
-queries are answered from the compilation. No source is uploaded, no index is
-sent anywhere, and there is no service behind the skill.
+**None at runtime.** No source is uploaded, no index is sent anywhere, and there
+is no service behind the skill.
 
-The one network dependency is indirect - building requires a .NET SDK, and
-`dotnet` restores NuGet packages for the solution you point it at, exactly as it
-would if you ran `dotnet build` yourself. That is your solution's package feed,
-not ours.
+vela expects a restored solution and does not restore it. Restoring it, with
+`dotnet restore` or a build, fetches NuGet packages from your solution's own
+package feeds, as it would for any build. That is your feed, not ours.
+
+`install.sh` and `install-codex.sh` build vela from source, so that build
+restores vela's own dependencies from nuget.org.
 
 ### On disk
 
-- Installs into `~/.claude/skills/vela` or `~/.codex`, depending on the agent
-- Reads the solution you point it at
-- **Never modifies the repository.** Vela answers questions; it does not edit
-- `dotnet` uses its own `~/.dotnet` tooling directory, as it does for any build
+- **The skill:** `~/.claude/skills/vela` for Claude Code, or `~/.codex/skills/vela`
+  for Codex.
+- **The `vela` command:** a .NET global tool in `~/.dotnet/tools`.
+- **The index cache:** `~/.dbhq/vela` by default. `VELA_CACHE_HOME`, or failing
+  that `XDG_CACHE_HOME`, moves it. An index names every symbol and file path in
+  the code it covers, so treat it as you would the code. `vela cache clear`
+  removes indexes.
+- **Never modifies the repository.** vela reads the solution; it does not edit
+  it. The index is kept outside the repository, and vela refuses to index if the
+  cache directory resolves to somewhere inside it.
+- `dotnet` uses its own `~/.dotnet` and `~/.nuget` directories, as it does for
+  any build.
 
 ### Credentials
 

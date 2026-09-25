@@ -4,7 +4,7 @@ Guidance for AI agents (and people) working in this repository.
 
 ## What this is
 
-**vela** - compiler-exact code search for .NET, for AI coding agents. It follows the [Agent Skills](https://agentskills.io) layout (`skills/<name>/SKILL.md`) and ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins).
+**vela** - compiler-exact code search over a SCIP index, for AI coding agents. It indexes .NET itself - C#, Visual Basic, Razor Pages, MVC views and Blazor components - and imports the `.scip` file any other language's indexer writes. It follows the [Agent Skills](https://agentskills.io) layout (`skills/<name>/SKILL.md`) and ships as a [Claude Code plugin](https://code.claude.com/docs/en/plugins).
 
 ## Layout
 
@@ -12,7 +12,7 @@ Guidance for AI agents (and people) working in this repository.
 .claude-plugin/plugin.json     # plugin manifest
 skills/vela/SKILL.md           # the skill (agent-facing instructions)
 src/Vela/                      # the CLI: Config, Harvest, Indexing, Query, Scip
-tests/Vela.Tests/              # 426 tests, hermetic
+tests/Vela.Tests/              # xUnit; fixtures scaffold real projects in temp directories
 install.sh / install-codex.sh  # local installers (Claude / Codex)
 docs/                          # see docs/README.md for the index
 ```
@@ -66,17 +66,19 @@ documents            : 23
   generated          : 8   (compiled, not on disk)
   razor views        : 7   (.cshtml and .razor)
 occurrences          : 2670
-  in razor views     : 22
+  in razor views     : 27
   definitions        : 182
 sources              : 1   (where each document came from)
   roslyn harvest     : 23 document(s), 2670 occurrence(s)
 ```
 
-The `razor views` count must equal the number of `.cshtml` files on disk, and `in razor views` must be non-zero - seven empty Razor documents would satisfy the first count and mean the mapping has collapsed. `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count.
+Measured on SDK 10.0.400. The `razor views` count must equal the number of `.cshtml` files on disk, and `in razor views` must be non-zero - seven empty Razor documents would satisfy the first count and mean the mapping has collapsed. `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count.
 
 And the suite, which must stay green:
 
 ```bash
-dotnet test          # 432 passed, 3 skipped, 0 failed on Linux. The skips are the
-                     # platform-specific facts, which trade places on Windows.
+dotnet test          # A few facts are platform-specific and skip elsewhere, so the
+                     # skip count differs between Linux, macOS and Windows.
+
+Counts are left out on purpose: a test count written in prose is wrong by the next test.
 ```

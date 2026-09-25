@@ -440,7 +440,7 @@ documents            : 23
   generated          : 8   (compiled, not on disk)
   razor views        : 7   (.cshtml and .razor)
 occurrences          : 2670
-  in razor views     : 22
+  in razor views     : 27
   definitions        : 182
 ```
 
@@ -448,8 +448,8 @@ occurrences          : 2670
 `EndToEndTests.IndexWithStats_ReportsTheCoverageThatMustNotRegress` asserts both by count,
 and CI runs it as a separate named step so a failure says what broke.
 
-426 tests, all hermetic: no network for the tool, throwaway solutions in temp directories.
-The fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
+The tool needs no network under test, and every test works on throwaway solutions in temp
+directories. The fixtures do run `dotnet new webapp`, `dotnet new blazor` and `dotnet restore`, so a cold
 NuGet cache needs network for test setup.
 
 ## Scope
