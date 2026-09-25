@@ -256,13 +256,13 @@ marketplace, and all of them are documented at
 | [dovetail](https://skills.dbhq.uk/dovetail/) | Checks whether your repository still agrees with itself |
 | [verve](https://skills.dbhq.uk/verve/) | Strips AI tells from prose and puts a voice back |
 | [garmin](https://skills.dbhq.uk/garmin/) | Your Garmin data, answered in the terminal |
-| [imager](https://skills.dbhq.uk/imager/) | Images from GPT Image 2, costed before it spends |
-| [gitview](https://skills.dbhq.uk/gitview/) | Which branches are finished, and safe to delete |
-| [atlassian](https://skills.dbhq.uk/atlassian/) | Jira issues and Confluence pages |
+| [imager](https://skills.dbhq.uk/imager/) | Images from OpenAI, costed before it spends |
+| [gitview](https://skills.dbhq.uk/gitview/) | Which branches are finished, and which only look like it |
+| [atlassian](https://skills.dbhq.uk/atlassian/) | It edits a real page without losing what it does not understand |
 | [pennyblack](https://skills.dbhq.uk/pennyblack/) | A physical letter, posted from the terminal |
 | [buildwork](https://skills.dbhq.uk/buildwork/) | Your open issues, run as parallel agents |
 | [deskwork](https://skills.dbhq.uk/deskwork/) | What an agent noticed, tracked as real work |
-| [groupwork](https://skills.dbhq.uk/groupwork/) | A second agent on the work, adversary or partner |
+| [groupwork](https://skills.dbhq.uk/groupwork/) | A second agent on the work, and a result you can cite |
 | [headwork](https://skills.dbhq.uk/headwork/) | One decision at a time, with a recommendation |
 
 Plus [heliograph](https://skills.dbhq.uk/heliograph/), for a machine you cannot log into.
