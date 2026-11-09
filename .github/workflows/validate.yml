@@ -36,7 +36,7 @@ jobs:
   # passes bash -n and shellcheck, ruff E9,F where there is Python (none
   # here), and no em or en dashes. Pinned by SHA; Dependabot moves the pin.
   floor:
-    uses: dbhq-uk/.github/.github/workflows/skill-floor.yml@af131df509f44eb9abfe8b37ad6299c11f496c5f
+    uses: dbhq-uk/.github/.github/workflows/skill-floor.yml@cce52cdffb1a7ce20b5bc5d033ba9e38eaa760ef
 
   test:
     # vela is a global tool people install on Windows and macOS as readily as on
@@ -59,7 +59,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           dotnet-version: '10.0.x'
       - name: Cache NuGet packages
@@ -158,7 +158,7 @@ jobs:
         with:
           # The previous commit as well, which is what the older vela is built from.
           fetch-depth: 2
-      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6
         with:
           dotnet-version: '10.0.x'
       - name: Cache NuGet packages
